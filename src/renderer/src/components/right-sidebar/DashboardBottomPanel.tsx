@@ -106,6 +106,15 @@ export default function DashboardBottomPanel(): React.JSX.Element {
     return () => {
       window.removeEventListener('mousemove', onResizeMove)
       window.removeEventListener('mouseup', onResizeEnd)
+      // Why: if the component unmounts mid-drag (e.g. user hides the
+      // dashboard from settings while dragging, or a hot-reload swaps the
+      // tree), onResizeEnd never fires. Without this restore, document.body
+      // would stay stuck on `row-resize` with text selection disabled
+      // app-wide until the next full reload.
+      if (resizeStateRef.current !== null) {
+        document.body.style.cursor = ''
+        document.body.style.userSelect = ''
+      }
     }
   }, [onResizeMove, onResizeEnd])
 

@@ -102,9 +102,15 @@ const AgentDashboard = React.memo(function AgentDashboard() {
   // Why: focus the container on mount so keyboard shortcuts work immediately
   // without requiring an initial click inside the dashboard. tabIndex={-1}
   // on the container makes it programmatically focusable without inserting
-  // it into the tab order.
+  // it into the tab order. The activeElement guard prevents focus-stealing
+  // when the panel (re)mounts while the user is typing elsewhere — the
+  // dashboard unmounts on collapse and remounts on expand, so without this
+  // guard every expand would yank focus away from the right-sidebar search
+  // box, terminal, or any other input that currently owns focus.
   useEffect(() => {
-    containerRef.current?.focus()
+    if (document.activeElement === null || document.activeElement === document.body) {
+      containerRef.current?.focus()
+    }
   }, [])
 
   const handleClearSearch = useCallback(() => setSearchQuery(''), [])

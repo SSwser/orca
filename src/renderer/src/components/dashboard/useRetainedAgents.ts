@@ -141,13 +141,7 @@ export function enrichGroupsWithRetained(
       } satisfies DashboardWorktreeCard
     })
 
-    const attentionCount = worktrees.reduce(
-      (count, wt) =>
-        count + wt.agents.filter((a) => a.state === 'blocked' || a.state === 'waiting').length,
-      0
-    )
-
-    return { ...group, worktrees, attentionCount } satisfies DashboardRepoGroup
+    return { ...group, worktrees } satisfies DashboardRepoGroup
   })
 }
 

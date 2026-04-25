@@ -71,7 +71,6 @@ export function useDashboardFilter(
   filter: DashboardFilter
   setFilter: (f: DashboardFilter) => void
   filteredGroups: FilteredDashboardGroup[]
-  filteredWorktrees: DashboardWorktreeCard[]
   hasResults: boolean
 } {
   const [filter, setFilter] = useState<DashboardFilter>('all')
@@ -117,18 +116,15 @@ export function useDashboardFilter(
     return out
   }, [groups, filter, searchQuery])
 
-  const filteredWorktrees = useMemo(
-    () => filteredGroups.flatMap((g) => g.worktrees),
-    [filteredGroups]
-  )
-
-  const hasResults = filteredWorktrees.length > 0
+  // Why: filteredGroups drops any group whose worktrees array is empty (see the
+  // early-continue above), so a non-empty groups array guarantees at least one
+  // visible worktree. Avoids an extra flatMap just to check length.
+  const hasResults = filteredGroups.length > 0
 
   return {
     filter,
     setFilter,
     filteredGroups,
-    filteredWorktrees,
     hasResults
   }
 }

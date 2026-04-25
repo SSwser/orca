@@ -35,8 +35,6 @@ export type DashboardWorktreeCard = {
 export type DashboardRepoGroup = {
   repo: Repo
   worktrees: DashboardWorktreeCard[]
-  /** Count of agents in attention-needed states (blocked/waiting). */
-  attentionCount: number
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -75,15 +73,13 @@ function computeDominantState(agents: DashboardAgentRow[]): DashboardWorktreeCar
 function buildAgentRowsForWorktree(
   worktreeId: string,
   tabsByWorktree: Record<string, TerminalTab[]>,
-  agentStatusByPaneKey: Record<string, AgentStatusEntry>
+  entriesByTabId: Map<string, AgentStatusEntry[]>
 ): DashboardAgentRow[] {
   const tabs = tabsByWorktree[worktreeId] ?? []
   const rows: DashboardAgentRow[] = []
 
   for (const tab of tabs) {
-    const explicitEntries = Object.values(agentStatusByPaneKey).filter((entry) =>
-      entry.paneKey.startsWith(`${tab.id}:`)
-    )
+    const explicitEntries = entriesByTabId.get(tab.id) ?? []
     for (const entry of explicitEntries) {
       rows.push({
         paneKey: entry.paneKey,
@@ -108,11 +104,31 @@ function buildDashboardData(
   tabsByWorktree: Record<string, TerminalTab[]>,
   agentStatusByPaneKey: Record<string, AgentStatusEntry>
 ): DashboardRepoGroup[] {
+  // Why: build a tabId -> entries index once per dashboard computation instead
+  // of re-scanning every agent status entry inside the per-tab loop. paneKey
+  // is formatted as `${tabId}:${paneId}`; splitting on the first ':' lets us
+  // bucket entries by tab in a single O(N) pass, turning the per-worktree
+  // build from O(tabs × statuses) into O(tabs).
+  const entriesByTabId = new Map<string, AgentStatusEntry[]>()
+  for (const [paneKey, entry] of Object.entries(agentStatusByPaneKey)) {
+    const colonIndex = paneKey.indexOf(':')
+    if (colonIndex === -1) {
+      continue
+    }
+    const tabId = paneKey.slice(0, colonIndex)
+    const bucket = entriesByTabId.get(tabId)
+    if (bucket) {
+      bucket.push(entry)
+    } else {
+      entriesByTabId.set(tabId, [entry])
+    }
+  }
+
   return repos.map((repo) => {
     const worktrees = (worktreesByRepo[repo.id] ?? [])
       .filter((w) => !w.isArchived)
       .map((worktree) => {
-        const agents = buildAgentRowsForWorktree(worktree.id, tabsByWorktree, agentStatusByPaneKey)
+        const agents = buildAgentRowsForWorktree(worktree.id, tabsByWorktree, entriesByTabId)
         // Why: sort agents within a worktree oldest-first by startedAt. A new
         // agent appears at the BOTTOM so it doesn't shove the row the user
         // is currently reading down the list. Stable order also means
@@ -134,13 +150,7 @@ function buildDashboardData(
         } satisfies DashboardWorktreeCard
       })
 
-    const attentionCount = worktrees.reduce(
-      (count, wt) =>
-        count + wt.agents.filter((a) => a.state === 'blocked' || a.state === 'waiting').length,
-      0
-    )
-
-    return { repo, worktrees, attentionCount } satisfies DashboardRepoGroup
+    return { repo, worktrees } satisfies DashboardRepoGroup
   })
 }
 

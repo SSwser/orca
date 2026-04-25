@@ -1,9 +1,8 @@
 import React, { useCallback, useMemo } from 'react'
 import { HoverCard, HoverCardTrigger, HoverCardContent } from '@/components/ui/hover-card'
 import { useAppStore } from '@/store'
-import { useDashboardData } from '@/components/dashboard/useDashboardData'
-import { enrichGroupsWithRetained } from '@/components/dashboard/useRetainedAgents'
 import DashboardAgentRow from '@/components/dashboard/DashboardAgentRow'
+import type { DashboardAgentRow as DashboardAgentRowType } from '@/components/dashboard/useDashboardData'
 
 type AgentStatusHoverProps = {
   worktreeId: string
@@ -12,34 +11,90 @@ type AgentStatusHoverProps = {
 
 // Why: the hovercard must render the exact same information the per-worktree
 // dashboard card shows — hook-reported agents plus any retained "done"
-// snapshots. Sharing the dashboard's data pipeline (useDashboardData +
-// enrichGroupsWithRetained) and row component (DashboardAgentRow) guarantees
-// the two surfaces cannot drift. Retention state itself is hoisted into the
-// store (see useRetainedAgentsSync wired at App level), so dismissing in the
-// hover reflects in the dashboard and vice versa.
+// snapshots. We intentionally do NOT call useDashboardData() +
+// enrichGroupsWithRetained() here, even though that would centralize the row-
+// building logic. AgentStatusHover wraps every WorktreeCard, so reusing the
+// full dashboard pipeline would mean every agent-status event recomputes the
+// entire repo × worktree × tabs × agentStatus aggregation once per card on
+// screen — O(worktrees²) work per update (render amplification). Instead we
+// read the store's primitive maps via narrow selectors and do a focused
+// per-worktree scan that mirrors buildAgentRowsForWorktree in
+// useDashboardData.ts and the retained-row merge in useRetainedAgents.ts.
+// Retention state itself is still hoisted into the store (see
+// useRetainedAgentsSync wired at App level), so dismissing in the hover
+// reflects in the dashboard and vice versa.
 const AgentStatusHover = React.memo(function AgentStatusHover({
   worktreeId,
   children
 }: AgentStatusHoverProps) {
-  const liveGroups = useDashboardData()
+  const tabs = useAppStore((s) => s.tabsByWorktree[worktreeId])
+  const agentStatusByPaneKey = useAppStore((s) => s.agentStatusByPaneKey)
   const retained = useAppStore((s) => s.retainedAgentsByPaneKey)
+  // Why: agentStatusEpoch is included in the dependency array (but not in the
+  // computation itself) so the memo recomputes when freshness boundaries
+  // expire, even if no new PTY data arrives — same rationale as
+  // useDashboardData.
+  const agentStatusEpoch = useAppStore((s) => s.agentStatusEpoch)
   const dropAgentStatus = useAppStore((s) => s.dropAgentStatus)
   const dismissRetainedAgent = useAppStore((s) => s.dismissRetainedAgent)
   const setActiveWorktree = useAppStore((s) => s.setActiveWorktree)
   const setActiveTab = useAppStore((s) => s.setActiveTab)
   const setActiveView = useAppStore((s) => s.setActiveView)
 
-  const agents = useMemo(() => {
-    const enriched = enrichGroupsWithRetained(liveGroups, retained)
-    for (const group of enriched) {
-      for (const wt of group.worktrees) {
-        if (wt.worktree.id === worktreeId) {
-          return wt.agents
+  const agents = useMemo<DashboardAgentRowType[]>(() => {
+    const rows: DashboardAgentRowType[] = []
+    const seenPaneKeys = new Set<string>()
+
+    // Live rows — mirror buildAgentRowsForWorktree in useDashboardData.ts.
+    const worktreeTabs = tabs ?? []
+    for (const tab of worktreeTabs) {
+      const prefix = `${tab.id}:`
+      for (const entry of Object.values(agentStatusByPaneKey)) {
+        if (!entry.paneKey.startsWith(prefix)) {
+          continue
         }
+        rows.push({
+          paneKey: entry.paneKey,
+          entry,
+          tab,
+          agentType: entry.agentType ?? 'unknown',
+          state: entry.state,
+          // Why: the oldest stateHistory entry's startedAt is the agent's
+          // original "first seen" timestamp. When history is empty the entry
+          // is brand new, so updatedAt is the best start-time approximation
+          // available. Matches useDashboardData's semantics exactly.
+          startedAt: entry.stateHistory[0]?.startedAt ?? entry.updatedAt
+        })
+        seenPaneKeys.add(entry.paneKey)
       }
     }
-    return []
-  }, [liveGroups, retained, worktreeId])
+
+    // Retained rows — mirror enrichGroupsWithRetained: add a retained snapshot
+    // only if it belongs to THIS worktree and no live row already occupies its
+    // paneKey.
+    for (const ra of Object.values(retained)) {
+      if (ra.worktreeId !== worktreeId) {
+        continue
+      }
+      if (seenPaneKeys.has(ra.entry.paneKey)) {
+        continue
+      }
+      rows.push({
+        paneKey: ra.entry.paneKey,
+        entry: ra.entry,
+        tab: ra.tab,
+        agentType: ra.agentType,
+        state: 'done',
+        startedAt: ra.startedAt
+      })
+    }
+
+    // Why: sort oldest-first to match useDashboardData ordering — stable list
+    // order keeps new agents from shoving the row the user is reading.
+    rows.sort((a, b) => a.startedAt - b.startedAt)
+    return rows
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabs, agentStatusByPaneKey, retained, worktreeId, agentStatusEpoch])
 
   // Why: mirror AgentDashboard.handleDismissAgent so dismissing in either
   // surface has identical effect — removes the live store entry and the
