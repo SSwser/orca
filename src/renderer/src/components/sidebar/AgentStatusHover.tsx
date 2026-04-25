@@ -1,9 +1,12 @@
 import React, { useCallback, useMemo } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { HoverCard, HoverCardTrigger, HoverCardContent } from '@/components/ui/hover-card'
 import { useAppStore } from '@/store'
 import DashboardAgentRow from '@/components/dashboard/DashboardAgentRow'
 import type { DashboardAgentRow as DashboardAgentRowType } from '@/components/dashboard/useDashboardData'
 import { isExplicitAgentStatusFresh } from '@/lib/agent-status'
+import type { RetainedAgentEntry } from '@/store/slices/agent-status'
+import type { TerminalTab } from '../../../../shared/types'
 import {
   AGENT_STATUS_STALE_AFTER_MS,
   type AgentStatusEntry
@@ -13,6 +16,14 @@ type AgentStatusHoverProps = {
   worktreeId: string
   children: React.ReactNode
 }
+
+// Why: stable empty-array references so narrow selectors return the same
+// reference when there's nothing for this worktree. Without stable empties,
+// zustand's shallow equality would see a new `[]` every render and trigger
+// unnecessary re-renders — defeating the purpose of the narrow selector.
+const EMPTY_TABS: TerminalTab[] = []
+const EMPTY_LIVE_ENTRIES: AgentStatusEntry[] = []
+const EMPTY_RETAINED: RetainedAgentEntry[] = []
 
 // Why: the hovercard must render the exact same information the per-worktree
 // dashboard card shows — hook-reported agents plus any retained "done"
@@ -33,8 +44,45 @@ const AgentStatusHover = React.memo(function AgentStatusHover({
   children
 }: AgentStatusHoverProps) {
   const tabs = useAppStore((s) => s.tabsByWorktree[worktreeId])
-  const agentStatusByPaneKey = useAppStore((s) => s.agentStatusByPaneKey)
-  const retained = useAppStore((s) => s.retainedAgentsByPaneKey)
+  // Why: narrow the store subscriptions to only THIS worktree's entries via
+  // useShallow. AgentStatusHover wraps every WorktreeCard, so subscribing to
+  // the whole agentStatusByPaneKey/retainedAgentsByPaneKey map would make every
+  // on-screen hovercard re-render on any agent-status update anywhere —
+  // O(worktrees²) render amplification. Pre-filtering here means the card only
+  // re-renders when something relevant to THIS worktree changes.
+  const entries = useAppStore(
+    useShallow((s) => {
+      const wtTabs = s.tabsByWorktree[worktreeId] ?? EMPTY_TABS
+      if (wtTabs.length === 0) {
+        return EMPTY_LIVE_ENTRIES
+      }
+      const tabIds = new Set(wtTabs.map((t) => t.id))
+      const out: AgentStatusEntry[] = []
+      for (const [paneKey, entry] of Object.entries(s.agentStatusByPaneKey)) {
+        const sepIdx = paneKey.indexOf(':')
+        if (sepIdx <= 0) {
+          continue
+        }
+        const tabId = paneKey.slice(0, sepIdx)
+        if (!tabIds.has(tabId)) {
+          continue
+        }
+        out.push(entry)
+      }
+      return out.length > 0 ? out : EMPTY_LIVE_ENTRIES
+    })
+  )
+  const retained = useAppStore(
+    useShallow((s) => {
+      const out: RetainedAgentEntry[] = []
+      for (const ra of Object.values(s.retainedAgentsByPaneKey)) {
+        if (ra.worktreeId === worktreeId) {
+          out.push(ra)
+        }
+      }
+      return out.length > 0 ? out : EMPTY_RETAINED
+    })
+  )
   // Why: agentStatusEpoch is included in the dependency array (but not in the
   // computation itself) so the memo recomputes when freshness boundaries
   // expire, even if no new PTY data arrives — same rationale as
@@ -59,14 +107,16 @@ const AgentStatusHover = React.memo(function AgentStatusHover({
     // `${tabId}:${paneId}`; splitting on the first ':' lets us bucket entries
     // by tab in a single O(N) pass, turning the per-worktree build from
     // O(tabs × statuses) into O(tabs + statuses). Mirrors the same index
-    // built in useDashboardData.buildDashboardData.
+    // built in useDashboardData.buildDashboardData. `entries` is already
+    // pre-filtered to this worktree by the narrow selector above, so this is
+    // O(M) where M is this-worktree-entries, not the global map.
     const entriesByTabId = new Map<string, AgentStatusEntry[]>()
-    for (const [paneKey, entry] of Object.entries(agentStatusByPaneKey)) {
-      const colonIndex = paneKey.indexOf(':')
+    for (const entry of entries) {
+      const colonIndex = entry.paneKey.indexOf(':')
       if (colonIndex === -1) {
         continue
       }
-      const tabId = paneKey.slice(0, colonIndex)
+      const tabId = entry.paneKey.slice(0, colonIndex)
       const bucket = entriesByTabId.get(tabId)
       if (bucket) {
         bucket.push(entry)
@@ -110,11 +160,9 @@ const AgentStatusHover = React.memo(function AgentStatusHover({
 
     // Retained rows — mirror enrichGroupsWithRetained: add a retained snapshot
     // only if it belongs to THIS worktree and no live row already occupies its
-    // paneKey.
-    for (const ra of Object.values(retained)) {
-      if (ra.worktreeId !== worktreeId) {
-        continue
-      }
+    // paneKey. `retained` is already pre-filtered to this worktree by the
+    // narrow selector above.
+    for (const ra of retained) {
       if (seenPaneKeys.has(ra.entry.paneKey)) {
         continue
       }
@@ -133,7 +181,7 @@ const AgentStatusHover = React.memo(function AgentStatusHover({
     rows.sort((a, b) => a.startedAt - b.startedAt)
     return rows
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabs, agentStatusByPaneKey, retained, worktreeId, agentStatusEpoch])
+  }, [tabs, entries, retained, worktreeId, agentStatusEpoch])
 
   // Why: mirror AgentDashboard.handleDismissAgent so dismissing in either
   // surface has identical effect — removes the live store entry and the
@@ -176,11 +224,15 @@ const AgentStatusHover = React.memo(function AgentStatusHover({
         className="w-72 border-neutral-200 bg-popover p-3 text-xs dark:border-white/10"
       >
         {agents.length === 0 ? (
-          <div className="py-1 text-center text-muted-foreground">No running agents</div>
+          <div className="py-1 text-center text-muted-foreground">No agent activity</div>
         ) : (
           <div className="flex flex-col">
+            {/* Why: "Agent activity" rather than "Running agents" — the list
+                now includes retained 'done' snapshots and stale-decayed 'idle'
+                rows alongside live working/blocked/waiting agents, so
+                "running" would be semantically inaccurate. */}
             <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
-              Running agents ({agents.length})
+              Agent activity ({agents.length})
             </div>
             {/* Why: same reason as the card border above — `divide-border/60`
                 on dark `--border` (0.07 alpha) evaluates to ~4% alpha and
