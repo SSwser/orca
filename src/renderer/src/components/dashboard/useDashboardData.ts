@@ -1,6 +1,11 @@
 import { useMemo } from 'react'
 import { useAppStore } from '@/store'
-import type { AgentStatusEntry, AgentType } from '../../../../shared/agent-status-types'
+import { isExplicitAgentStatusFresh } from '@/lib/agent-status'
+import {
+  AGENT_STATUS_STALE_AFTER_MS,
+  type AgentStatusEntry,
+  type AgentType
+} from '../../../../shared/agent-status-types'
 import type { Repo, Worktree, TerminalTab } from '../../../../shared/types'
 
 // ─── Dashboard data types ─────────────────────────────────────────────────────
@@ -73,7 +78,8 @@ function computeDominantState(agents: DashboardAgentRow[]): DashboardWorktreeCar
 function buildAgentRowsForWorktree(
   worktreeId: string,
   tabsByWorktree: Record<string, TerminalTab[]>,
-  entriesByTabId: Map<string, AgentStatusEntry[]>
+  entriesByTabId: Map<string, AgentStatusEntry[]>,
+  now: number
 ): DashboardAgentRow[] {
   const tabs = tabsByWorktree[worktreeId] ?? []
   const rows: DashboardAgentRow[] = []
@@ -81,12 +87,20 @@ function buildAgentRowsForWorktree(
   for (const tab of tabs) {
     const explicitEntries = entriesByTabId.get(tab.id) ?? []
     for (const entry of explicitEntries) {
+      // Why: decay stale working/blocked entries to 'idle' when the hook stream
+      // has gone silent past AGENT_STATUS_STALE_AFTER_MS (30 min TTL). Without
+      // this, an agent process that exited without sending a final update would
+      // remain "working" forever — the Active/Blocked filters and the sidebar's
+      // running-agents count would mislead the user into chasing dead work.
+      // Matches the pre-PR hover behavior (liveEntryToDotState) so the dashboard
+      // and the hover agree on what's actually live.
+      const isFresh = isExplicitAgentStatusFresh(entry, now, AGENT_STATUS_STALE_AFTER_MS)
       rows.push({
         paneKey: entry.paneKey,
         entry,
         tab,
         agentType: entry.agentType ?? 'unknown',
-        state: entry.state,
+        state: isFresh ? entry.state : 'idle',
         // Why: the oldest stateHistory entry's startedAt is the agent's original
         // "first seen" timestamp. When history is empty the entry is brand new,
         // so updatedAt is the best start-time approximation available.
@@ -102,7 +116,8 @@ function buildDashboardData(
   repos: Repo[],
   worktreesByRepo: Record<string, Worktree[]>,
   tabsByWorktree: Record<string, TerminalTab[]>,
-  agentStatusByPaneKey: Record<string, AgentStatusEntry>
+  agentStatusByPaneKey: Record<string, AgentStatusEntry>,
+  now: number
 ): DashboardRepoGroup[] {
   // Why: build a tabId -> entries index once per dashboard computation instead
   // of re-scanning every agent status entry inside the per-tab loop. paneKey
@@ -128,7 +143,7 @@ function buildDashboardData(
     const worktrees = (worktreesByRepo[repo.id] ?? [])
       .filter((w) => !w.isArchived)
       .map((worktree) => {
-        const agents = buildAgentRowsForWorktree(worktree.id, tabsByWorktree, entriesByTabId)
+        const agents = buildAgentRowsForWorktree(worktree.id, tabsByWorktree, entriesByTabId, now)
         // Why: sort agents within a worktree oldest-first by startedAt. A new
         // agent appears at the BOTTOM so it doesn't shove the row the user
         // is currently reading down the list. Stable order also means
@@ -167,7 +182,11 @@ export function useDashboardData(): DashboardRepoGroup[] {
   const agentStatusEpoch = useAppStore((s) => s.agentStatusEpoch)
 
   return useMemo(
-    () => buildDashboardData(repos, worktreesByRepo, tabsByWorktree, agentStatusByPaneKey),
+    // Why: Date.now() is read inside the memo (not as a dep) so stale-decay
+    // recalculates whenever agentStatusEpoch ticks. The epoch bumps when the
+    // freshness boundary crosses, driving re-evaluation without coupling to
+    // wall-clock time directly.
+    () => buildDashboardData(repos, worktreesByRepo, tabsByWorktree, agentStatusByPaneKey, Date.now()),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [repos, worktreesByRepo, tabsByWorktree, agentStatusByPaneKey, agentStatusEpoch]
   )

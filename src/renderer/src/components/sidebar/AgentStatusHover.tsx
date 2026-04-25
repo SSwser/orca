@@ -3,6 +3,8 @@ import { HoverCard, HoverCardTrigger, HoverCardContent } from '@/components/ui/h
 import { useAppStore } from '@/store'
 import DashboardAgentRow from '@/components/dashboard/DashboardAgentRow'
 import type { DashboardAgentRow as DashboardAgentRowType } from '@/components/dashboard/useDashboardData'
+import { isExplicitAgentStatusFresh } from '@/lib/agent-status'
+import { AGENT_STATUS_STALE_AFTER_MS } from '../../../../shared/agent-status-types'
 
 type AgentStatusHoverProps = {
   worktreeId: string
@@ -44,6 +46,10 @@ const AgentStatusHover = React.memo(function AgentStatusHover({
   const agents = useMemo<DashboardAgentRowType[]>(() => {
     const rows: DashboardAgentRowType[] = []
     const seenPaneKeys = new Set<string>()
+    // Why: Date.now() is read inside the memo (not as a dep) so stale-decay
+    // recalculates whenever agentStatusEpoch ticks — same pattern as
+    // useDashboardData.
+    const now = Date.now()
 
     // Live rows — mirror buildAgentRowsForWorktree in useDashboardData.ts.
     const worktreeTabs = tabs ?? []
@@ -53,12 +59,19 @@ const AgentStatusHover = React.memo(function AgentStatusHover({
         if (!entry.paneKey.startsWith(prefix)) {
           continue
         }
+        // Why: decay stale working/blocked entries to 'idle' when the hook
+        // stream has gone silent past AGENT_STATUS_STALE_AFTER_MS. Without
+        // this, an agent that exited without a final update would keep the
+        // hover's "Running agents" count and the dashboard filters inflated
+        // with dead work. Mirrors the pre-PR liveEntryToDotState helper and
+        // the matching decay in useDashboardData.buildAgentRowsForWorktree.
+        const isFresh = isExplicitAgentStatusFresh(entry, now, AGENT_STATUS_STALE_AFTER_MS)
         rows.push({
           paneKey: entry.paneKey,
           entry,
           tab,
           agentType: entry.agentType ?? 'unknown',
-          state: entry.state,
+          state: isFresh ? entry.state : 'idle',
           // Why: the oldest stateHistory entry's startedAt is the agent's
           // original "first seen" timestamp. When history is empty the entry
           // is brand new, so updatedAt is the best start-time approximation

@@ -115,6 +115,18 @@ const DashboardAgentRow = React.memo(function DashboardAgentRow({
   const stopMouseDown = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
   }, [])
+  // Why: the row itself is role="button" with an onKeyDown that activates the
+  // agent's tab on Enter/Space. Nested buttons (dismiss X, expand chevron) are
+  // real <button>s whose native Enter/Space handling fires their onClick, but
+  // the KeyboardEvent still bubbles up to the row and triggers navigation on
+  // top of the intended action. Stopping propagation for Enter/Space only
+  // (not preventDefault) preserves the native button activation while
+  // suppressing the row's duplicate handler.
+  const stopKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.stopPropagation()
+    }
+  }, [])
   // Why: agent rows navigate directly to the agent's own tab, while the
   // surrounding worktree card navigates to whatever tab the worktree last had
   // focused. Stop propagation so the card click handler does not run second
@@ -288,6 +300,7 @@ const DashboardAgentRow = React.memo(function DashboardAgentRow({
                     type="button"
                     onClick={handleDismiss}
                     onMouseDown={stopMouseDown}
+                    onKeyDown={stopKeyDown}
                     className={cn(
                       '[grid-area:1/1] inline-flex items-center justify-center text-muted-foreground/70 hover:text-foreground',
                       'opacity-0 transition-opacity duration-150',
@@ -316,6 +329,7 @@ const DashboardAgentRow = React.memo(function DashboardAgentRow({
                   type="button"
                   onClick={handleDismiss}
                   onMouseDown={stopMouseDown}
+                  onKeyDown={stopKeyDown}
                   className={cn(
                     'inline-flex shrink-0 items-center justify-center text-muted-foreground/70 hover:text-foreground',
                     'opacity-0 transition-opacity duration-150',
@@ -344,6 +358,7 @@ const DashboardAgentRow = React.memo(function DashboardAgentRow({
               type="button"
               onClick={handleToggleExpand}
               onMouseDown={stopMouseDown}
+              onKeyDown={stopKeyDown}
               className="inline-flex shrink-0 items-center justify-center text-muted-foreground/60 hover:text-foreground"
               aria-label={expanded ? 'Collapse details' : 'Expand details'}
               aria-expanded={expanded}
