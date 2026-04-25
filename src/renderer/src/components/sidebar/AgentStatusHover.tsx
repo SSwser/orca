@@ -4,7 +4,10 @@ import { useAppStore } from '@/store'
 import DashboardAgentRow from '@/components/dashboard/DashboardAgentRow'
 import type { DashboardAgentRow as DashboardAgentRowType } from '@/components/dashboard/useDashboardData'
 import { isExplicitAgentStatusFresh } from '@/lib/agent-status'
-import { AGENT_STATUS_STALE_AFTER_MS } from '../../../../shared/agent-status-types'
+import {
+  AGENT_STATUS_STALE_AFTER_MS,
+  type AgentStatusEntry
+} from '../../../../shared/agent-status-types'
 
 type AgentStatusHoverProps = {
   worktreeId: string
@@ -51,14 +54,32 @@ const AgentStatusHover = React.memo(function AgentStatusHover({
     // useDashboardData.
     const now = Date.now()
 
+    // Why: build a tabId -> entries index once instead of re-scanning every
+    // agent status entry inside the per-tab loop. paneKey is formatted as
+    // `${tabId}:${paneId}`; splitting on the first ':' lets us bucket entries
+    // by tab in a single O(N) pass, turning the per-worktree build from
+    // O(tabs × statuses) into O(tabs + statuses). Mirrors the same index
+    // built in useDashboardData.buildDashboardData.
+    const entriesByTabId = new Map<string, AgentStatusEntry[]>()
+    for (const [paneKey, entry] of Object.entries(agentStatusByPaneKey)) {
+      const colonIndex = paneKey.indexOf(':')
+      if (colonIndex === -1) {
+        continue
+      }
+      const tabId = paneKey.slice(0, colonIndex)
+      const bucket = entriesByTabId.get(tabId)
+      if (bucket) {
+        bucket.push(entry)
+      } else {
+        entriesByTabId.set(tabId, [entry])
+      }
+    }
+
     // Live rows — mirror buildAgentRowsForWorktree in useDashboardData.ts.
     const worktreeTabs = tabs ?? []
     for (const tab of worktreeTabs) {
-      const prefix = `${tab.id}:`
-      for (const entry of Object.values(agentStatusByPaneKey)) {
-        if (!entry.paneKey.startsWith(prefix)) {
-          continue
-        }
+      const explicitEntries = entriesByTabId.get(tab.id) ?? []
+      for (const entry of explicitEntries) {
         // Why: decay stale working/blocked/waiting entries to 'idle' when the
         // hook stream has gone silent past AGENT_STATUS_STALE_AFTER_MS. Without
         // this, an agent that exited without a final update would keep the

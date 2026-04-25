@@ -67,8 +67,11 @@ export type AgentStatusSlice = {
    *  Used when the user closes the whole tab. */
   dropAgentStatusByTabPrefix: (tabIdPrefix: string) => void
 
-  /** Retain an agent snapshot (called by the top-level retention sync effect). */
-  retainAgent: (retained: RetainedAgentEntry) => void
+  /** Retain agent snapshots (called by the top-level retention sync effect).
+   *  Accepts an array so multiple agents disappearing in the same frame
+   *  produce a single set(...) — avoids intermediate states visible
+   *  mid-loop to consumers. */
+  retainAgents: (entries: RetainedAgentEntry[]) => void
 
   /** Dismiss a retained entry by its paneKey. */
   dismissRetainedAgent: (paneKey: string) => void
@@ -337,7 +340,13 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
             ...s.retentionSuppressedPaneKeys,
             [paneKey]: true
           },
-          agentStatusEpoch: hasLive ? s.agentStatusEpoch + 1 : s.agentStatusEpoch
+          agentStatusEpoch: hasLive ? s.agentStatusEpoch + 1 : s.agentStatusEpoch,
+          // Why: mirrors removeAgentStatus — dropping a live working/blocked
+          // agent changes its contribution to the worktree sort score, so the
+          // sidebar smart-sort must recompute. Without this bump, a user-
+          // initiated dismissal via the dashboard/hovercard would leave the
+          // sidebar ordering stale until some unrelated event repaired it.
+          sortEpoch: hasLive ? s.sortEpoch + 1 : s.sortEpoch
         }
       })
       queueMicrotask(() => scheduleNextFreshnessExpiry())
@@ -374,22 +383,32 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
           agentStatusByPaneKey: nextLive,
           retainedAgentsByPaneKey: nextRetained,
           retentionSuppressedPaneKeys: nextRetentionSuppressedPaneKeys,
-          agentStatusEpoch: liveKeys.length > 0 ? s.agentStatusEpoch + 1 : s.agentStatusEpoch
+          agentStatusEpoch: liveKeys.length > 0 ? s.agentStatusEpoch + 1 : s.agentStatusEpoch,
+          // Why: mirrors removeAgentStatusByTabPrefix — dropping live agents
+          // changes worktree sort ordering, so the sidebar smart-sort must
+          // recompute. Guarded by liveKeys.length > 0 to avoid spurious bumps
+          // when only retained (non-live) entries were cleared.
+          sortEpoch: liveKeys.length > 0 ? s.sortEpoch + 1 : s.sortEpoch
         }
       })
       queueMicrotask(() => scheduleNextFreshnessExpiry())
     },
 
-    retainAgent: (retained) => {
+    retainAgents: (entries) => {
       // Why: retained entries are a pure read-overlay — consumers read
       // retainedAgentsByPaneKey directly each render, so no sort/status epoch
       // bump is needed. Retention does not participate in sort ordering.
-      set((s) => ({
-        retainedAgentsByPaneKey: {
-          ...s.retainedAgentsByPaneKey,
-          [retained.entry.paneKey]: retained
+      // Batching into a single set(...) keeps multi-agent disappearance atomic.
+      if (entries.length === 0) {
+        return
+      }
+      set((s) => {
+        const next = { ...s.retainedAgentsByPaneKey }
+        for (const retained of entries) {
+          next[retained.entry.paneKey] = retained
         }
-      }))
+        return { retainedAgentsByPaneKey: next }
+      })
     },
 
     dismissRetainedAgent: (paneKey) => {

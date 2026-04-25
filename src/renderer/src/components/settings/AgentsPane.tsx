@@ -247,6 +247,12 @@ export function AgentsPane({ settings, updateSettings }: AgentsPaneProps): React
     defaultAgent === null || (defaultAgent !== 'blank' && !detectedIds?.has(defaultAgent))
   const isBlankDefault = defaultAgent === 'blank'
 
+  // Why: match right-sidebar's `s.settings?.showAgentDashboard !== false` read.
+  // Persisted settings from older versions may be missing this field — treating
+  // `undefined` as "on" here keeps the toggle's displayed state in sync with
+  // the sidebar's actual rendering, so the UI never contradicts itself.
+  const showDashboard = settings.showAgentDashboard !== false
+
   return (
     <div className="space-y-8">
       {/* Dashboard visibility */}
@@ -262,18 +268,18 @@ export function AgentsPane({ settings, updateSettings }: AgentsPaneProps): React
             </div>
             <button
               role="switch"
-              aria-checked={settings.showAgentDashboard}
+              aria-checked={showDashboard}
               aria-label="Show Agent Dashboard"
-              onClick={() => updateSettings({ showAgentDashboard: !settings.showAgentDashboard })}
+              onClick={() => updateSettings({ showAgentDashboard: !showDashboard })}
               className={cn(
                 'relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors',
-                settings.showAgentDashboard ? 'bg-foreground' : 'bg-muted-foreground/30'
+                showDashboard ? 'bg-foreground' : 'bg-muted-foreground/30'
               )}
             >
               <span
                 className={cn(
                   'pointer-events-none block size-3.5 rounded-full bg-background shadow-sm transition-transform',
-                  settings.showAgentDashboard ? 'translate-x-4' : 'translate-x-0.5'
+                  showDashboard ? 'translate-x-4' : 'translate-x-0.5'
                 )}
               />
             </button>

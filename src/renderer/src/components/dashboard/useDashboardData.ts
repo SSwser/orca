@@ -44,7 +44,9 @@ export type DashboardRepoGroup = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function computeDominantState(agents: DashboardAgentRow[]): DashboardWorktreeCard['dominantState'] {
+export function computeDominantState(
+  agents: DashboardAgentRow[]
+): DashboardWorktreeCard['dominantState'] {
   if (agents.length === 0) {
     return 'idle'
   }
@@ -191,7 +193,8 @@ export function useDashboardData(): DashboardRepoGroup[] {
     // recalculates whenever agentStatusEpoch ticks. The epoch bumps when the
     // freshness boundary crosses, driving re-evaluation without coupling to
     // wall-clock time directly.
-    () => buildDashboardData(repos, worktreesByRepo, tabsByWorktree, agentStatusByPaneKey, Date.now()),
+    () =>
+      buildDashboardData(repos, worktreesByRepo, tabsByWorktree, agentStatusByPaneKey, Date.now()),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [repos, worktreesByRepo, tabsByWorktree, agentStatusByPaneKey, agentStatusEpoch]
   )

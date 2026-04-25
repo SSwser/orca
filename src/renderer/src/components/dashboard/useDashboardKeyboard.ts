@@ -103,8 +103,13 @@ export function useDashboardKeyboard({
         // dashboard container so we don't accidentally match a card rendered
         // elsewhere in the app (and so the query fails closed when the
         // container is unmounted).
+        // Why: worktreeId is `${repoId}::${path}` (see src/shared/types.ts)
+        // and filesystem paths can contain characters like `"` or `\` that
+        // would otherwise break the attribute-selector string and throw a
+        // SyntaxError, silently killing arrow-key navigation. CSS.escape()
+        // safely encodes those special characters.
         const cardEl = containerRef.current?.querySelector(
-          `[data-worktree-id="${nextId}"]`
+          `[data-worktree-id="${CSS.escape(nextId)}"]`
         ) as HTMLElement | null
         cardEl?.focus()
         return

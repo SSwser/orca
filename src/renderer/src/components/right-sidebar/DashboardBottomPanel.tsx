@@ -81,9 +81,11 @@ export default function DashboardBottomPanel(): React.JSX.Element {
   const onResizeStart = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
       event.preventDefault()
-      if (collapsed) {
-        setCollapsed(false)
-      }
+      // Why: no `collapsed` guard here — the resize handle is only rendered
+      // when `!collapsed` (see below), so this callback is unreachable while
+      // collapsed. Keeping a `setCollapsed(false)` branch would be dead code
+      // and would mislead future readers into thinking the handle can fire
+      // in the collapsed state.
       // Why: cap expansion so the dashboard can't push the active panel
       // content to a zero-height strip. Leave 160px for the panel above.
       const sidebarEl = containerRef.current?.parentElement
@@ -99,7 +101,7 @@ export default function DashboardBottomPanel(): React.JSX.Element {
       window.addEventListener('mousemove', onResizeMove)
       window.addEventListener('mouseup', onResizeEnd)
     },
-    [collapsed, height, onResizeMove, onResizeEnd]
+    [height, onResizeMove, onResizeEnd]
   )
 
   useEffect(() => {
@@ -135,23 +137,27 @@ export default function DashboardBottomPanel(): React.JSX.Element {
         />
       )}
 
-      {/* Header: title + collapse toggle (click anywhere to toggle) */}
-      <div
-        className="flex shrink-0 cursor-pointer select-none items-center gap-1 px-2"
+      {/* Header: title + collapse toggle (click anywhere to toggle).
+          Why: the entire header is a single <button> rather than a <div>
+          wrapping a nested <button>. Nesting interactive elements is invalid
+          HTML and breaks screen readers — previously the inner button had no
+          onClick of its own and relied on click bubbling to the div, so
+          assistive tech announced a button that appeared to do nothing. */}
+      <button
+        type="button"
+        className="flex w-full shrink-0 select-none items-center gap-1 px-2 text-left"
         style={{ height: HEADER_HEIGHT }}
         onClick={() => setCollapsed((prev) => !prev)}
+        aria-expanded={!collapsed}
+        aria-label={collapsed ? 'Expand dashboard' : 'Collapse dashboard'}
       >
-        <button
-          type="button"
-          className="flex h-5 w-5 items-center justify-center text-muted-foreground hover:text-foreground"
-          aria-label={collapsed ? 'Expand dashboard' : 'Collapse dashboard'}
-        >
+        <span className="flex h-5 w-5 items-center justify-center text-muted-foreground">
           {collapsed ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-        </button>
+        </span>
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           Agents
         </span>
-      </div>
+      </button>
 
       {/* Body: full AgentDashboard */}
       {!collapsed && (

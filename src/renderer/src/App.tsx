@@ -613,6 +613,7 @@ function App(): React.JSX.Element {
       // Cmd/Ctrl+Shift+D — open right sidebar (agent dashboard is now
       // docked at the sidebar bottom, so only toggle visibility).
       if (AGENT_DASHBOARD_ENABLED && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'd') {
+        dispatchClearModifierHints()
         e.preventDefault()
         actions.setRightSidebarOpen(true)
       }

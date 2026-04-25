@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useAppStore } from '@/store'
-import type {
-  DashboardRepoGroup,
-  DashboardAgentRow,
-  DashboardWorktreeCard
+import {
+  computeDominantState,
+  type DashboardRepoGroup,
+  type DashboardAgentRow,
+  type DashboardWorktreeCard
 } from './useDashboardData'
 import type { RetainedAgentEntry } from '@/store/slices/agent-status'
 
@@ -15,7 +16,7 @@ import type { RetainedAgentEntry } from '@/store/slices/agent-status'
 // places, and dismissal in one reflects in the other.
 
 export function useRetainedAgentsSync(liveGroups: DashboardRepoGroup[]): void {
-  const retainAgent = useAppStore((s) => s.retainAgent)
+  const retainAgents = useAppStore((s) => s.retainAgents)
   const pruneRetainedAgents = useAppStore((s) => s.pruneRetainedAgents)
   const clearRetentionSuppressedPaneKeys = useAppStore((s) => s.clearRetentionSuppressedPaneKeys)
   const prevAgentsRef = useRef<Map<string, { row: DashboardAgentRow; worktreeId: string }>>(
@@ -42,16 +43,19 @@ export function useRetainedAgentsSync(liveGroups: DashboardRepoGroup[]): void {
       retainedAgentsByPaneKey: retainedNow,
       retentionSuppressedPaneKeys
     })
-    for (const retained of toRetain) {
-      retainAgent(retained)
-    }
+    // Why: batch retention into a single store mutation. Looping retainAgent
+    // would trigger N set(...) calls and N subscriber notifications when
+    // several agents vanish in the same frame (e.g. tab close, worktree
+    // teardown), exposing intermediate maps to consumers mid-loop. A single
+    // atomic update keeps the dashboard + sidebar hovercard visually stable.
+    retainAgents(toRetain)
 
     prevAgentsRef.current = current
     pruneRetainedAgents(existingWorktreeIds)
     if (consumedSuppressedPaneKeys.length > 0) {
       clearRetentionSuppressedPaneKeys(consumedSuppressedPaneKeys)
     }
-  }, [liveGroups, retainAgent, pruneRetainedAgents, clearRetentionSuppressedPaneKeys])
+  }, [liveGroups, retainAgents, pruneRetainedAgents, clearRetentionSuppressedPaneKeys])
 }
 
 export function useRetainedAgents(liveGroups: DashboardRepoGroup[]): {
@@ -128,7 +132,12 @@ export function enrichGroupsWithRetained(
       return {
         ...wt,
         agents: mergedAgents,
-        dominantState: computeDominant(mergedAgents),
+        // Why: share computeDominantState with useDashboardData so the
+        // dashboard (live-only) and the retained-enriched view apply the
+        // exact same blocked > working > done > idle priority. Keeping two
+        // copies risks drift where a priority tweak in one surface silently
+        // diverges the two — the two surfaces must stay in sync.
+        dominantState: computeDominantState(mergedAgents),
         // Why: earliestStartedAt should anchor to the oldest start across live
         // and retained rows — retained entries can be *older* than current
         // live agents (they're what's lingering from a prior run), so the
@@ -195,30 +204,4 @@ export function collectRetainedAgentsOnDisappear(args: {
   }
 
   return { toRetain, consumedSuppressedPaneKeys }
-}
-
-function computeDominant(agents: DashboardAgentRow[]): DashboardWorktreeCard['dominantState'] {
-  if (agents.length === 0) {
-    return 'idle'
-  }
-  let hasWorking = false
-  let hasDone = false
-  for (const agent of agents) {
-    if (agent.state === 'blocked' || agent.state === 'waiting') {
-      return 'blocked'
-    }
-    if (agent.state === 'working') {
-      hasWorking = true
-    }
-    if (agent.state === 'done') {
-      hasDone = true
-    }
-  }
-  if (hasWorking) {
-    return 'working'
-  }
-  if (hasDone) {
-    return 'done'
-  }
-  return 'idle'
 }

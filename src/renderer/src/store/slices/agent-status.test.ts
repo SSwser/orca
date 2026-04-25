@@ -254,8 +254,7 @@ describe('agent status retention + prefix sweep', () => {
       startedAt: now
     }
 
-    store.getState().retainAgent(retainedA)
-    store.getState().retainAgent(retainedB)
+    store.getState().retainAgents([retainedA, retainedB])
     store.getState().dismissRetainedAgentsByWorktree('wt-a')
 
     const retained = store.getState().retainedAgentsByPaneKey
@@ -298,8 +297,7 @@ describe('agent status retention + prefix sweep', () => {
       startedAt: now
     }
 
-    store.getState().retainAgent(retainedA)
-    store.getState().retainAgent(retainedB)
+    store.getState().retainAgents([retainedA, retainedB])
     store.getState().pruneRetainedAgents(new Set(['wt-a']))
 
     const retained = store.getState().retainedAgentsByPaneKey
