@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Check, ChevronDown, ExternalLink, RefreshCw, Terminal } from 'lucide-react'
 import type { GlobalSettings, TuiAgent } from '../../../../shared/types'
+import { AGENT_DASHBOARD_ENABLED } from '../../../../shared/constants'
 import { AGENT_CATALOG, AgentIcon } from '@/lib/agent-catalog'
 import { useDetectedAgents } from '@/hooks/useDetectedAgents'
 import { Button } from '../ui/button'
@@ -248,6 +249,38 @@ export function AgentsPane({ settings, updateSettings }: AgentsPaneProps): React
 
   return (
     <div className="space-y-8">
+      {/* Dashboard visibility */}
+      {AGENT_DASHBOARD_ENABLED && (
+        <section>
+          <div className="flex items-center justify-between gap-4 px-1 py-2">
+            <div className="space-y-0.5">
+              <span className="text-sm font-medium">Show Agent Dashboard</span>
+              <p className="text-xs text-muted-foreground">
+                Show the live agent activity panel docked at the bottom of the right sidebar —
+                surfaces working, blocked, and done agents across all open worktrees.
+              </p>
+            </div>
+            <button
+              role="switch"
+              aria-checked={settings.showAgentDashboard}
+              aria-label="Show Agent Dashboard"
+              onClick={() => updateSettings({ showAgentDashboard: !settings.showAgentDashboard })}
+              className={cn(
+                'relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors',
+                settings.showAgentDashboard ? 'bg-foreground' : 'bg-muted-foreground/30'
+              )}
+            >
+              <span
+                className={cn(
+                  'pointer-events-none block size-3.5 rounded-full bg-background shadow-sm transition-transform',
+                  settings.showAgentDashboard ? 'translate-x-4' : 'translate-x-0.5'
+                )}
+              />
+            </button>
+          </div>
+        </section>
+      )}
+
       {/* Default agent picker */}
       <section className="space-y-4">
         <div className="space-y-1">

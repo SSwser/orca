@@ -57,6 +57,7 @@ function createSettings(overrides: Partial<GlobalSettings> = {}): GlobalSettings
     openLinksInApp: false,
     rightSidebarOpenByDefault: true,
     showTitlebarAgentActivity: true,
+    showAgentDashboard: true,
     diffDefaultView: 'inline',
     notifications: {
       enabled: true,
