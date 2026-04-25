@@ -87,20 +87,25 @@ function buildAgentRowsForWorktree(
   for (const tab of tabs) {
     const explicitEntries = entriesByTabId.get(tab.id) ?? []
     for (const entry of explicitEntries) {
-      // Why: decay stale working/blocked entries to 'idle' when the hook stream
-      // has gone silent past AGENT_STATUS_STALE_AFTER_MS (30 min TTL). Without
-      // this, an agent process that exited without sending a final update would
-      // remain "working" forever — the Active/Blocked filters and the sidebar's
-      // running-agents count would mislead the user into chasing dead work.
-      // Matches the pre-PR hover behavior (liveEntryToDotState) so the dashboard
-      // and the hover agree on what's actually live.
+      // Why: decay stale working/blocked/waiting entries to 'idle' when the hook
+      // stream has gone silent past AGENT_STATUS_STALE_AFTER_MS (30 min TTL).
+      // Without this, an agent process that exited without sending a final
+      // update would remain "working" forever — the Active/Blocked filters and
+      // the sidebar's running-agents count would mislead the user into chasing
+      // dead work. `done` is terminal and must NOT decay to idle: retention
+      // (collectRetainedAgentsOnDisappear) only retains rows whose prev state
+      // was 'done', so decaying a stale done → idle would silently drop the
+      // completion signal when the entry later disappears.
       const isFresh = isExplicitAgentStatusFresh(entry, now, AGENT_STATUS_STALE_AFTER_MS)
+      const shouldDecay =
+        !isFresh &&
+        (entry.state === 'working' || entry.state === 'blocked' || entry.state === 'waiting')
       rows.push({
         paneKey: entry.paneKey,
         entry,
         tab,
         agentType: entry.agentType ?? 'unknown',
-        state: isFresh ? entry.state : 'idle',
+        state: shouldDecay ? 'idle' : entry.state,
         // Why: the oldest stateHistory entry's startedAt is the agent's original
         // "first seen" timestamp. When history is empty the entry is brand new,
         // so updatedAt is the best start-time approximation available.

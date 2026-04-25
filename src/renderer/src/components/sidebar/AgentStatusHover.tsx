@@ -59,19 +59,24 @@ const AgentStatusHover = React.memo(function AgentStatusHover({
         if (!entry.paneKey.startsWith(prefix)) {
           continue
         }
-        // Why: decay stale working/blocked entries to 'idle' when the hook
-        // stream has gone silent past AGENT_STATUS_STALE_AFTER_MS. Without
+        // Why: decay stale working/blocked/waiting entries to 'idle' when the
+        // hook stream has gone silent past AGENT_STATUS_STALE_AFTER_MS. Without
         // this, an agent that exited without a final update would keep the
         // hover's "Running agents" count and the dashboard filters inflated
-        // with dead work. Mirrors the pre-PR liveEntryToDotState helper and
-        // the matching decay in useDashboardData.buildAgentRowsForWorktree.
+        // with dead work. `done` is terminal and must NOT decay to idle —
+        // retention (collectRetainedAgentsOnDisappear) only keeps rows whose
+        // prev state was 'done', so a stale done → idle would silently drop
+        // the completion signal. Mirrors useDashboardData.buildAgentRowsForWorktree.
         const isFresh = isExplicitAgentStatusFresh(entry, now, AGENT_STATUS_STALE_AFTER_MS)
+        const shouldDecay =
+          !isFresh &&
+          (entry.state === 'working' || entry.state === 'blocked' || entry.state === 'waiting')
         rows.push({
           paneKey: entry.paneKey,
           entry,
           tab,
           agentType: entry.agentType ?? 'unknown',
-          state: isFresh ? entry.state : 'idle',
+          state: shouldDecay ? 'idle' : entry.state,
           // Why: the oldest stateHistory entry's startedAt is the agent's
           // original "first seen" timestamp. When history is empty the entry
           // is brand new, so updatedAt is the best start-time approximation
