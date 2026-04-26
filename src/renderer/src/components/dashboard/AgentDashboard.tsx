@@ -96,6 +96,13 @@ const AgentDashboard = React.memo(function AgentDashboard() {
     [setActiveWorktree, setActiveTab, setActiveView]
   )
 
+  // Why: a stable reference shared across every DashboardWorktreeCard so
+  // React.memo can actually short-circuit re-renders. An inline
+  // `() => setFocusedWorktreeId(card.worktree.id)` per card per render would
+  // mint a fresh function every render and invalidate memo on all N cards
+  // even when nothing else changed — the 30s `now` tick alone would cascade.
+  const handleCardFocus = useCallback((worktreeId: string) => setFocusedWorktreeId(worktreeId), [])
+
   useDashboardKeyboard({
     filteredWorktrees: visibleWorktrees,
     focusedWorktreeId,
@@ -174,21 +181,10 @@ const AgentDashboard = React.memo(function AgentDashboard() {
               // Why: per-repo stats replace the global stats strip that used
               // to sit above the whole dashboard. Counts live at the scope
               // of the grouping so the user sees per-repo agent load instead
-              // of a rollup that hides which repo is busy.
-              let groupRunning = 0
-              let groupBlocked = 0
-              let groupDone = 0
-              for (const wt of group.worktrees) {
-                for (const agent of wt.agents) {
-                  if (agent.state === 'working') {
-                    groupRunning++
-                  } else if (agent.state === 'blocked' || agent.state === 'waiting') {
-                    groupBlocked++
-                  } else if (agent.state === 'done') {
-                    groupDone++
-                  }
-                }
-              }
+              // of a rollup that hides which repo is busy. Counts come from
+              // useDashboardFilter's memo so this doesn't re-walk every agent
+              // in every worktree on each `now` tick or search change.
+              const { running: groupRunning, blocked: groupBlocked, done: groupDone } = group
               const Icon = isCollapsed ? ChevronRight : ChevronDown
               return (
                 <div
@@ -262,7 +258,7 @@ const AgentDashboard = React.memo(function AgentDashboard() {
                         key={card.worktree.id}
                         card={card}
                         isActive={activeWorktreeId === card.worktree.id}
-                        onFocus={() => setFocusedWorktreeId(card.worktree.id)}
+                        onFocus={handleCardFocus}
                         onDismissAgent={handleDismissAgent}
                         onActivateAgentTab={handleActivateAgentTab}
                         isLast={i === group.worktrees.length - 1}

@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from 'react'
+import { useEffect, useCallback, useRef } from 'react'
 import type React from 'react'
 import { useAppStore } from '@/store'
 import type { DashboardWorktreeCard } from './useDashboardData'
@@ -37,6 +37,22 @@ export function useDashboardKeyboard({
   const setActiveView = useAppStore((s) => s.setActiveView)
   const rightSidebarOpen = useAppStore((s) => s.rightSidebarOpen)
 
+  // Why: stash data the handler reads in refs so it doesn't re-bind on every
+  // agent-status update (which produces a fresh filteredWorktrees array most
+  // renders). Without this, the listener is add/removed at PTY event rate.
+  const filteredWorktreesRef = useRef(filteredWorktrees)
+  const focusedWorktreeIdRef = useRef(focusedWorktreeId)
+  const filterRef = useRef(filter)
+  useEffect(() => {
+    filteredWorktreesRef.current = filteredWorktrees
+  })
+  useEffect(() => {
+    focusedWorktreeIdRef.current = focusedWorktreeId
+  })
+  useEffect(() => {
+    filterRef.current = filter
+  })
+
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       // Why: the dashboard now docks at the sidebar bottom regardless of
@@ -72,7 +88,7 @@ export function useDashboardKeyboard({
 
       // Escape: reset filter to 'all' (the default)
       if (e.key === 'Escape') {
-        if (filter !== 'all') {
+        if (filterRef.current !== 'all') {
           e.preventDefault()
           setFilter('all')
         }
@@ -82,12 +98,14 @@ export function useDashboardKeyboard({
       // Arrow key navigation
       if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
         e.preventDefault()
-        const ids = filteredWorktrees.map((wt) => wt.worktree.id)
+        const worktrees = filteredWorktreesRef.current
+        const ids = worktrees.map((wt) => wt.worktree.id)
         if (ids.length === 0) {
           return
         }
 
-        const currentIndex = focusedWorktreeId ? ids.indexOf(focusedWorktreeId) : -1
+        const focused = focusedWorktreeIdRef.current
+        const currentIndex = focused ? ids.indexOf(focused) : -1
 
         let nextIndex: number
         if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
@@ -116,18 +134,15 @@ export function useDashboardKeyboard({
       }
 
       // Enter: navigate to focused worktree
-      if (e.key === 'Enter' && focusedWorktreeId) {
+      if (e.key === 'Enter' && focusedWorktreeIdRef.current) {
         e.preventDefault()
-        setActiveWorktree(focusedWorktreeId)
+        setActiveWorktree(focusedWorktreeIdRef.current)
         setActiveView('terminal')
       }
     },
     [
       rightSidebarOpen,
-      filteredWorktrees,
-      focusedWorktreeId,
       setFocusedWorktreeId,
-      filter,
       setFilter,
       setActiveWorktree,
       setActiveView,

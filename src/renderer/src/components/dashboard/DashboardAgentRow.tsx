@@ -158,7 +158,12 @@ const DashboardAgentRow = React.memo(function DashboardAgentRow({
   const toolInput = isWorking ? (agent.entry.toolInput?.trim() ?? '') : ''
   const lastAssistantMessage = agent.entry.lastAssistantMessage?.trim() ?? ''
 
-  const canExpand = prompt.length > 0 || lastAssistantMessage.length > 0
+  // Why: include `toolInput` for working rows so the chevron appears when only
+  // the tool-input expanded <pre> would reveal new content. Without this, a
+  // working agent with a long tool command but no prompt/message silently
+  // hides the expand control even though there IS more to show.
+  const canExpand =
+    prompt.length > 0 || lastAssistantMessage.length > 0 || (isWorking && toolInput.length > 0)
 
   const tsParts: string[] = []
   if (startedAt !== null) {

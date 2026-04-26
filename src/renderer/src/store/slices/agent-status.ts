@@ -59,8 +59,15 @@ export type AgentStatusSlice = {
    *  Used when a tab is closed — same prefix-sweep as cacheTimerByKey cleanup. */
   removeAgentStatusByTabPrefix: (tabIdPrefix: string) => void
 
-  /** Remove a single entry and suppress re-retention on its next disappearance.
-   *  Used for explicit teardown paths where the row should stay gone. */
+  /** Remove a single entry AND suppress re-retention on its next disappearance.
+   *  Used for USER-INITIATED dismissal (the dashboard/hover X button), where
+   *  the user is telling us "I've seen this, make it stay gone".
+   *
+   *  Do NOT route PTY-exit / tab-close / pane-close teardowns through here:
+   *  those paths call removeAgentStatus instead (no retention suppression), so
+   *  a 'done' agent's row can still be retained after its terminal dies — the
+   *  user may still want to click through to review output even though the
+   *  underlying process has exited. */
   dropAgentStatus: (paneKey: string) => void
 
   /** Retain agent snapshots (called by the top-level retention sync effect).

@@ -6,6 +6,7 @@ import {
   type AgentStatusEntry,
   type AgentType
 } from '../../../../shared/agent-status-types'
+import { AGENT_DASHBOARD_ENABLED } from '../../../../shared/constants'
 import type { Repo, Worktree, TerminalTab } from '../../../../shared/types'
 
 // ─── Dashboard data types ─────────────────────────────────────────────────────
@@ -193,8 +194,22 @@ export function useDashboardData(): DashboardRepoGroup[] {
     // recalculates whenever agentStatusEpoch ticks. The epoch bumps when the
     // freshness boundary crosses, driving re-evaluation without coupling to
     // wall-clock time directly.
-    () =>
-      buildDashboardData(repos, worktreesByRepo, tabsByWorktree, agentStatusByPaneKey, Date.now()),
+    () => {
+      // Why: feature flag gate inside the memo avoids the O(repos × worktrees ×
+      // agents) rebuild on every store update when the dashboard is disabled.
+      // Store selectors still subscribe to keep rules-of-hooks satisfied even
+      // if the flag becomes runtime-dynamic.
+      if (!AGENT_DASHBOARD_ENABLED) {
+        return []
+      }
+      return buildDashboardData(
+        repos,
+        worktreesByRepo,
+        tabsByWorktree,
+        agentStatusByPaneKey,
+        Date.now()
+      )
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [repos, worktreesByRepo, tabsByWorktree, agentStatusByPaneKey, agentStatusEpoch]
   )

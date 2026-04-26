@@ -124,13 +124,22 @@ export function enrichGroupsWithRetained(
   }
 
   return liveGroups.map((group) => {
-    const worktrees = group.worktrees.map((wt) => {
+    // Why: preserve reference identity at the group level when no worktree
+    // inside it has retained rows. Returning a fresh group/worktrees array
+    // unconditionally invalidates downstream React.memo across the entire
+    // tree whenever retainedAgentsByPaneKey changes — even for groups whose
+    // worktrees are untouched.
+    let anyChanged = false
+    const worktrees: DashboardWorktreeCard[] = []
+    for (const wt of group.worktrees) {
       const retainedForWt = byWorktree
         .get(wt.worktree.id)
         ?.filter((ra) => !livePaneKeys.has(ra.entry.paneKey))
       if (!retainedForWt?.length) {
-        return wt
+        worktrees.push(wt)
+        continue
       }
+      anyChanged = true
 
       const retainedRows: DashboardAgentRow[] = retainedForWt.map(retainedToRow)
 
@@ -139,7 +148,7 @@ export function enrichGroupsWithRetained(
       // append at the bottom) and doesn't reshuffle rows the user is
       // currently reading.
       const mergedAgents = [...wt.agents, ...retainedRows].sort((a, b) => a.startedAt - b.startedAt)
-      return {
+      worktrees.push({
         ...wt,
         agents: mergedAgents,
         // Why: share computeDominantState with useDashboardData so the
@@ -157,9 +166,12 @@ export function enrichGroupsWithRetained(
           wt.earliestStartedAt > 0 ? wt.earliestStartedAt : Number.POSITIVE_INFINITY,
           ...retainedForWt.map((ra) => ra.startedAt)
         )
-      } satisfies DashboardWorktreeCard
-    })
+      } satisfies DashboardWorktreeCard)
+    }
 
+    if (!anyChanged) {
+      return group
+    }
     return { ...group, worktrees } satisfies DashboardRepoGroup
   })
 }

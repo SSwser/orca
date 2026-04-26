@@ -13,6 +13,18 @@ export type FilteredDashboardGroup = {
   /** Earliest startedAt across all worktrees in this group. Stable once the
    *  group has any agent — used for deterministic ordering between groups. */
   earliestStartedAt: number
+  /**
+   * Why: per-repo agent state counts are computed here (inside the filter
+   * memo) rather than inline in the render body of AgentDashboard. Inline
+   * iteration re-walked every agent in every worktree on each `now` tick,
+   * search change, or store update; precomputing keeps that O(N) scan scoped
+   * to actual changes in `groups`/`filter`/`searchQuery`. Counts reflect the
+   * *filtered* agents the user actually sees, which matches the header
+   * numbers to the rendered rows.
+   */
+  running: number
+  blocked: number
+  done: number
 }
 
 // Why: filters apply to individual AGENTS, not worktrees. Previously we filtered
@@ -80,6 +92,12 @@ export function useDashboardFilter(
     const out: FilteredDashboardGroup[] = []
     for (const group of groups) {
       const worktrees: DashboardWorktreeCard[] = []
+      // Why: accumulate per-repo state counts while we already iterate the
+      // filtered agents — avoids a second pass (and avoids re-walking every
+      // agent in the AgentDashboard render body on every `now` tick).
+      let running = 0
+      let blocked = 0
+      let done = 0
       for (const wt of group.worktrees) {
         const stateMatched = wt.agents.filter((a) => matchesAgent(a, filter))
         if (stateMatched.length === 0) {
@@ -93,6 +111,15 @@ export function useDashboardFilter(
         // row would just be noise in the list.
         if (agents.length === 0) {
           continue
+        }
+        for (const agent of agents) {
+          if (agent.state === 'working') {
+            running++
+          } else if (agent.state === 'blocked' || agent.state === 'waiting') {
+            blocked++
+          } else if (agent.state === 'done') {
+            done++
+          }
         }
         // Why: recompute earliestStartedAt from the filtered agents so the
         // sort key below reflects the agents this worktree actually displays.
@@ -116,7 +143,10 @@ export function useDashboardFilter(
       out.push({
         repo: group.repo,
         worktrees,
-        earliestStartedAt: worktrees[0]?.earliestStartedAt ?? 0
+        earliestStartedAt: worktrees[0]?.earliestStartedAt ?? 0,
+        running,
+        blocked,
+        done
       })
     }
     // Why: sort groups by the earliest-started worktree asc for the same

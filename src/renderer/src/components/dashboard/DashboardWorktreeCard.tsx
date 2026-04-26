@@ -8,7 +8,13 @@ type Props = {
   card: DashboardWorktreeCardData
   /** True when this worktree is the one the user is currently viewing. */
   isActive: boolean
-  onFocus: () => void
+  /**
+   * Why: accepts the worktree id (not a SyntheticEvent) so the parent can pass
+   * a single stable callback shared across all cards instead of minting a
+   * fresh `() => setFocusedWorktreeId(id)` closure per card per render — that
+   * inline lambda would invalidate React.memo on every AgentDashboard render.
+   */
+  onFocus: (worktreeId: string) => void
   onDismissAgent: (paneKey: string) => void
   /** Navigate to a specific tab inside this card's worktree. */
   onActivateAgentTab: (worktreeId: string, tabId: string) => void
@@ -65,6 +71,13 @@ const DashboardWorktreeCard = React.memo(function DashboardWorktreeCard({
     [handleClick]
   )
 
+  // Why: React's onFocus handler receives a SyntheticEvent, but the parent
+  // needs the worktree id. Wrap here so the parent can pass a single stable
+  // callback that does not get invalidated per-card per-render.
+  const handleFocus = useCallback(() => {
+    onFocus(card.worktree.id)
+  }, [onFocus, card.worktree.id])
+
   const branchName = card.worktree.branch?.replace(/^refs\/heads\//, '') ?? ''
 
   return (
@@ -74,7 +87,7 @@ const DashboardWorktreeCard = React.memo(function DashboardWorktreeCard({
       data-worktree-id={card.worktree.id}
       onClick={handleClick}
       onKeyDown={handleKeyDown}
-      onFocus={onFocus}
+      onFocus={handleFocus}
       className={cn(
         'cursor-pointer px-2.5 py-1 transition-colors duration-100',
         // Why: light-mode hovers have to darken (not lighten) the surface —
