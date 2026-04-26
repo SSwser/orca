@@ -254,9 +254,17 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
         const sortRelevantChange = !existing || existing.state !== payload.state || !wasFresh
         // Why: a new status event means the agent is live again — lift any
         // one-shot retention suppressor so the row can be retained normally
-        // on its next disappearance.
-        const nextRetentionSuppressedPaneKeys = { ...s.retentionSuppressedPaneKeys }
-        delete nextRetentionSuppressedPaneKeys[paneKey]
+        // on its next disappearance. setAgentStatus fires on every PTY status
+        // update (high frequency), so only clone retentionSuppressedPaneKeys
+        // when there is actually a suppressor to remove — otherwise every
+        // status ping would churn that map reference and force spurious
+        // re-renders in any subscriber selecting on it.
+        const hasSuppressor = paneKey in s.retentionSuppressedPaneKeys
+        let nextRetentionSuppressedPaneKeys = s.retentionSuppressedPaneKeys
+        if (hasSuppressor) {
+          nextRetentionSuppressedPaneKeys = { ...s.retentionSuppressedPaneKeys }
+          delete nextRetentionSuppressedPaneKeys[paneKey]
+        }
         return {
           agentStatusByPaneKey: { ...s.agentStatusByPaneKey, [paneKey]: entry },
           retentionSuppressedPaneKeys: nextRetentionSuppressedPaneKeys,
