@@ -110,6 +110,15 @@ src/renderer/src/store/slices/agent-status-drop.test.ts:100-116 | Low | Nice-to-
 src/main/codex-accounts/*.test.ts | Low | Out of scope - test-fixture tech debt | makeDefaultGlobalSettings helper suggestion
 
 ## Iteration State
-Current iteration: 1
-Last completed phase: Validation
-Files fixed this iteration: [DashboardAgentRow.tsx, useDashboardData.ts, AgentStatusHover.tsx, agent-status.ts, agent-status.test.ts]
+Current iteration: 2
+Last completed phase: Iteration 1 complete — 7 files fixed + 1 new helper file (agent-status-freshness-scheduler.ts)
+Files fixed this iteration: []
+
+## Previously Fixed (iteration 1)
+- DashboardAgentRow.tsx: displayLabel fallback when prompt is empty
+- useDashboardData.ts: stateStartedAt fallback instead of updatedAt
+- AgentStatusHover.tsx: same stateStartedAt fallback
+- agent-status.ts: dismissRetainedAgentsByWorktree now plants suppressors for live-overlapping paneKeys; invariant + no-epoch-bump comments added; freshness scheduler extracted to agent-status-freshness-scheduler.ts
+- agent-status.test.ts: added assertion for suppressor contract on bulk dismiss
+- App.tsx: Cmd+Shift+D guarded by xterm-helper-textarea focus check
+- AgentDashboard.tsx: focus moved from []-deps useEffect into setContainerRef callback

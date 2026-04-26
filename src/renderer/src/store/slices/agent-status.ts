@@ -351,10 +351,10 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
           sortEpoch: hasLive ? s.sortEpoch + 1 : s.sortEpoch
         }
       })
-      // Why: scheduleNextFreshnessExpiry only matters when the live map
-      // changed — retained-only and no-op drops don't touch it. Gate on the
-      // pre-set live presence so a noop drop on a paneKey with no live and
-      // no retained entry (or a retained-only dismissal) skips the microtask.
+      // Why: freshness.schedule only matters when the live map changed —
+      // retained-only and no-op drops don't touch it. Gate on the pre-set
+      // live presence so a noop drop on a paneKey with no live and no
+      // retained entry (or a retained-only dismissal) skips the microtask.
       if (hasLiveBeforeSet) {
         queueMicrotask(() => freshness.schedule())
       }
