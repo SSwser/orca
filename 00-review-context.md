@@ -2,7 +2,7 @@
 
 ## Branch Info
 
-- Base: origin/main
+- Base: origin/main (a04be9766d8ecabe654262fe22c71d8eed6b1cab)
 - Current: brennanb2025/pr4-agent-dashboard-v2
 
 ## Changed Files Summary
@@ -23,6 +23,7 @@
 - M src/renderer/src/components/right-sidebar/index.tsx
 - M src/renderer/src/components/settings/AgentsPane.tsx
 - M src/renderer/src/components/sidebar/AgentStatusHover.tsx
+- M src/renderer/src/store/slices/agent-status.test.ts
 - M src/renderer/src/store/slices/agent-status.ts
 - M src/shared/constants.ts
 - M src/shared/types.ts
@@ -32,24 +33,25 @@
 <!-- In scope: issues on these lines OR caused by these changes. Out of scope: unrelated pre-existing issues -->
 
 | File | Changed Lines |
-| ---- | ------------- |
+| --- | --- |
 | src/main/codex-accounts/runtime-home-service.test.ts | 66 |
 | src/main/codex-accounts/service.test.ts | 60 |
-| src/renderer/src/App.tsx | 3-7, 18-19, 148-159, 610-617 |
-| src/renderer/src/components/dashboard/AgentDashboard.tsx | 1-308 (new file) |
-| src/renderer/src/components/dashboard/DashboardAgentRow.tsx | 1-474 (new file) |
-| src/renderer/src/components/dashboard/DashboardFilterBar.tsx | 1-41 (new file) |
-| src/renderer/src/components/dashboard/DashboardWorktreeCard.tsx | 1-122 (new file) |
-| src/renderer/src/components/dashboard/useDashboardData.ts | 1-198 (new file) |
-| src/renderer/src/components/dashboard/useDashboardFilter.ts | 1-130 (new file) |
-| src/renderer/src/components/dashboard/useDashboardKeyboard.ts | 1-145 (new file) |
-| src/renderer/src/components/dashboard/useRetainedAgents.test.ts | 1-95 (new file) |
-| src/renderer/src/components/dashboard/useRetainedAgents.ts | 1-224 (new file) |
-| src/renderer/src/components/right-sidebar/DashboardBottomPanel.tsx | 1-164 (new file) |
+| src/renderer/src/App.tsx | 3-7, 18-19, 148-159, 610-618 |
+| src/renderer/src/components/dashboard/AgentDashboard.tsx | 1-308 (new) |
+| src/renderer/src/components/dashboard/DashboardAgentRow.tsx | 1-474 (new) |
+| src/renderer/src/components/dashboard/DashboardFilterBar.tsx | 1-41 (new) |
+| src/renderer/src/components/dashboard/DashboardWorktreeCard.tsx | 1-122 (new) |
+| src/renderer/src/components/dashboard/useDashboardData.ts | 1-201 (new) |
+| src/renderer/src/components/dashboard/useDashboardFilter.ts | 1-130 (new) |
+| src/renderer/src/components/dashboard/useDashboardKeyboard.ts | 1-150 (new) |
+| src/renderer/src/components/dashboard/useRetainedAgents.test.ts | 1-95 (new) |
+| src/renderer/src/components/dashboard/useRetainedAgents.ts | 1-207 (new) |
+| src/renderer/src/components/right-sidebar/DashboardBottomPanel.tsx | 1-170 (new) |
 | src/renderer/src/components/right-sidebar/index.tsx | 9, 25, 116-121, 158-168 |
-| src/renderer/src/components/settings/AgentsPane.tsx | 4, 252-283 |
-| src/renderer/src/components/sidebar/AgentStatusHover.tsx | 4-7, 14-27, 32-38, 40, 46-51, 54-86, 90-94, 97-106, 110-125, 157, 162, 169-172 |
-| src/renderer/src/store/slices/agent-status.ts | 43-47, 62-69, 81-84, 149, 249-253, 256, 310-382, 434-448 |
+| src/renderer/src/components/settings/AgentsPane.tsx | 4, 250-255, 258-289 |
+| src/renderer/src/components/sidebar/AgentStatusHover.tsx | many (major rewrite — see diff) |
+| src/renderer/src/store/slices/agent-status.test.ts | 257, 300 |
+| src/renderer/src/store/slices/agent-status.ts | 43-47, 62-74, 84-87, 152, 252-256, 259, 313-397, 401-408, 410-411, 453-467 |
 | src/shared/constants.ts | 148 |
 | src/shared/types.ts | 792-793 |
 
@@ -61,8 +63,11 @@
 
 ## File Categories
 
-### Category 3: Frontend/UI (primary category for most files)
+### Electron/Main (2 files)
+- src/main/codex-accounts/runtime-home-service.test.ts
+- src/main/codex-accounts/service.test.ts
 
+### Frontend/UI (16 files)
 - src/renderer/src/App.tsx
 - src/renderer/src/components/dashboard/AgentDashboard.tsx
 - src/renderer/src/components/dashboard/DashboardAgentRow.tsx
@@ -71,18 +76,16 @@
 - src/renderer/src/components/dashboard/useDashboardData.ts
 - src/renderer/src/components/dashboard/useDashboardFilter.ts
 - src/renderer/src/components/dashboard/useDashboardKeyboard.ts
+- src/renderer/src/components/dashboard/useRetainedAgents.test.ts
 - src/renderer/src/components/dashboard/useRetainedAgents.ts
 - src/renderer/src/components/right-sidebar/DashboardBottomPanel.tsx
 - src/renderer/src/components/right-sidebar/index.tsx
 - src/renderer/src/components/settings/AgentsPane.tsx
 - src/renderer/src/components/sidebar/AgentStatusHover.tsx
+- src/renderer/src/store/slices/agent-status.test.ts
 - src/renderer/src/store/slices/agent-status.ts
 
-### Category 5: Utility/Common
-
-- src/renderer/src/components/dashboard/useRetainedAgents.test.ts
-- src/main/codex-accounts/runtime-home-service.test.ts
-- src/main/codex-accounts/service.test.ts
+### Utility/Common (2 files)
 - src/shared/constants.ts
 - src/shared/types.ts
 
@@ -91,26 +94,35 @@
 <!-- Issues validated but deemed not worth fixing. Do not re-validate these in future iterations. -->
 <!-- Format: [file:line-range] | [severity] | [reason skipped] | [issue summary] -->
 
+- [src/renderer/src/components/dashboard/DashboardAgentRow.tsx:174-347] | Low | requires architecture-level refactor >50 lines, author intentionally designed with explicit stop-propagation handling, functional behavior works | Nested interactive elements (role="button" div containing nested <button>s) — a11y pattern.
+- [src/renderer/src/components/sidebar/AgentStatusHover.tsx:46] | Low | purely cosmetic consistency; `tabs ?? []` fallback at the call site is already present, no correctness impact | tabs selector missing EMPTY_TABS module-scoped fallback.
+- [src/renderer/src/components/dashboard/AgentDashboard.tsx:172-185] | Low | minor perf — recompute per-render O(agents) is fine at current scale, moving counts into useDashboardFilter requires threading a new FilteredDashboardGroup field | per-repo rollup counts recomputed inside render.
+- [src/renderer/src/components/dashboard/useDashboardKeyboard.ts:40-149] | Low | minor perf — element-level listener churn per PTY tick is cheap; ref-based refactor requires >50 lines of indirection | listener re-attaches on every dashboard data tick.
+- [src/renderer/src/components/sidebar/AgentStatusHover.tsx:53-85] | Medium | architectural refactor (materialize bucketed index across store) >50 lines, current narrow selectors already solve the primary re-render concern documented in the comments | O(W·E) scan per store update.
+- [src/renderer/src/components/dashboard/useRetainedAgents.ts:107-114] | Low | already guarded by early-return when retainedList is empty; remaining scan is O(total agents) only when retention is active | livePaneKeys construction on every enrichment.
+- [src/renderer/src/store/slices/agent-status.ts:355-395] | Low | dead code — will be removed by fix #2 (dropAgentStatusByTabPrefix has no call sites), so scan-fusion is moot | two separate Object.keys scans.
+- [src/renderer/src/components/dashboard/useDashboardFilter.ts:78-117] | Low | performance optimization at scale; acceptable at current worktree/agent counts, and `q` is already hoisted before the loop | re-filter on every keystroke without debounce.
+
 ## Iteration State
 
 Current iteration: 1
 Last completed phase: Validation
 Files fixed this iteration: []
 
-## Skipped Issues (Do Not Re-validate)
+## Validated Fixes (Iteration 1)
 
-- src/main/codex-accounts/runtime-home-service.test.ts:66 | Low | Low-value test coverage gap note (non-actionable in this file) | No-op
-- src/renderer/src/components/dashboard/useDashboardKeyboard.ts:129 (containerRef in deps) | Low | containerRef is stable - this is a stylistic lint preference; removing it risks ESLint exhaustive-deps warnings | Minor style
-- src/renderer/src/components/dashboard/useDashboardKeyboard.ts:67-69 (FILTER_KEYS double lookup) | Low | Cosmetic micro-optimization; object lookup is O(1) | Cosmetic
-- src/renderer/src/components/dashboard/useRetainedAgents.test.ts (test coverage gaps) | Low | Added tests would be nice-to-have but don't guard a regression path; the code logic is already thoroughly commented | Coverage
-- src/renderer/src/components/dashboard/DashboardAgentRow.tsx:465-469 (canExpand edge case) | Low | Current behavior is acceptable per comments — prompt alone triggering chevron is reasonable | Intentional
-- src/renderer/src/components/dashboard/AgentDashboard.tsx:110-114 (ESLint suppression) | Low | Only matters if lint rules change; refs are stable | Style
-- src/renderer/src/App.tsx:155-159 (conditional hook guard) | Low | AGENT_DASHBOARD_ENABLED is a hard-coded const; eslint-disable is already explicit. Per the comment, this entire block goes away when the flag flips | Intentional, flagged
-- src/shared/constants.ts:148 field ordering | Low | Purely cosmetic; doesn't affect runtime | Cosmetic
-- src/renderer/src/components/right-sidebar/index.tsx:121 (!== false pattern) | Low | Field is required boolean; the pattern is intentional per comment for load-time | Intentional
-- src/renderer/src/components/dashboard/useDashboardKeyboard.ts listener churn (high-churn attach/detach) | Low | Works correctly; optimization would require ref-based handler pattern refactor. Not blocking | Perf micro-opt
-- src/renderer/src/components/dashboard/useDashboardData.ts:163 (sentinel 0 for earliestStartedAt) | Low | Empty-agents worktrees are filtered out before sort; changing to POSITIVE_INFINITY is defensive but current invariant is enforced | Defensive only
-- src/renderer/src/components/dashboard/useRetainedAgents.ts:37-38 (stale suppressor GC) | Low | Covered by explicit-teardown flow; stale suppressors only on retained-only dismiss which is rare; memory leak is bounded by paneKey count | Low-impact
-- src/renderer/src/components/dashboard/useDashboardFilter.ts:97 (earliestStartedAt not recomputed after filter) | Low | Intentional: "stability while reading" design. Already documented elsewhere. Would flip behavior if changed | Intentional
-- src/renderer/src/components/dashboard/useRetainedAgents.ts:75-80 (unnecessary useCallback) | Low | Defensive — shields against future upstream ref instability. Removal is purely stylistic | Cosmetic
-- src/renderer/src/components/sidebar/AgentStatusHover.tsx:32,135 variable shadowing | Low | Readability nit; the local shadow is intentional (reads latest store state at click time) | Cosmetic
+1. **src/renderer/src/store/slices/agent-status.ts** (dropAgentStatus suppressor leak + dead code removal)
+   - Line 313-353 `dropAgentStatus` adds a retention suppressor entry even when the paneKey is retained-only (not live). Retained-only paneKeys never flow through `collectRetainedAgentsOnDisappear` (which only iterates `previousAgents`), so the suppressor entry leaks and only clears if the same paneKey later goes live via `setAgentStatus`. Severity: Medium (Claude + Codex). Fix: only add suppression when `hasLive` is true (live agent being torn down).
+   - Line 68, 355-395 `dropAgentStatusByTabPrefix` is declared and implemented but never called in the codebase. Severity: Low (Claude). Fix: remove the declaration and implementation.
+
+2. **src/renderer/src/components/dashboard/useDashboardFilter.ts** (stale earliestStartedAt after filtering)
+   - Line 97 — when filter removes the earliest agent, the `{...wt, agents}` spread keeps the original `earliestStartedAt` and the worktree sorts by a stale value. Severity: Low (Claude). Fix: recompute `earliestStartedAt` as the minimum `startedAt` in the filtered agents (with positive-value guard).
+
+3. **src/renderer/src/components/right-sidebar/DashboardBottomPanel.tsx** (unclamped persisted height)
+   - Line 24-28 — `loadPersistedState` accepts any number including NaN/negative/extreme values, which can break layout on load. Severity: Low-Medium (Claude + Codex). Fix: validate `Number.isFinite(parsed.height)` and clamp to `MIN_HEIGHT` minimum.
+
+4. **src/renderer/src/App.tsx** (conditional hook calls)
+   - Line 155-159 — `useDashboardData()` and `useRetainedAgentsSync(...)` are gated on `AGENT_DASHBOARD_ENABLED` with two `eslint-disable react-hooks/rules-of-hooks` suppressions. The existing pattern in the codebase (see WorktreeList.tsx:551, visible-worktrees.ts:123) always calls the hooks and no-ops the internals when the flag is off. Severity: Low (Claude). Fix: always call the hooks; have them short-circuit internally.
+
+5. **src/renderer/src/components/dashboard/DashboardAgentRow.tsx** (N setIntervals)
+   - Line 69-85 — each DashboardAgentRow owns its own 30s `setInterval`. With N rows on screen, N timers independently tick and cause N separate re-render commits. Severity: Medium (Claude). Fix: hoist `useNow` into the two callers that own collections of rows (AgentDashboard.tsx, AgentStatusHover.tsx) and pass `now` as a prop into DashboardAgentRow. Collapses N intervals → 1 per surface, and the passed `now` is memoized at the parent level.
