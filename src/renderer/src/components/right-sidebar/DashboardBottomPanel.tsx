@@ -3,7 +3,7 @@ import { ChevronDown, ChevronUp } from 'lucide-react'
 import AgentDashboard from '../dashboard/AgentDashboard'
 
 const MIN_HEIGHT = 140
-const DEFAULT_HEIGHT = 300
+const DEFAULT_HEIGHT = 220
 const HEADER_HEIGHT = 28
 const STORAGE_KEY = 'orca.dashboardSidebarPanel'
 

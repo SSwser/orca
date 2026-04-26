@@ -654,6 +654,14 @@ function normalizeClaudeEvent(
   // ended because the user hit ESC / Ctrl+C rather than completing normally.
   // This is the authoritative signal (the agent itself reports it), so we
   // forward it through only on Stop — other hook events don't carry it.
+  //
+  // TODO: Claude Code does not currently fire `Stop` on Ctrl+C when the user
+  // cancels the turn but leaves the agent alive. The last event received is
+  // `PostToolUse` → `working`, so the dashboard spinner stays lit until the
+  // next `UserPromptSubmit`. We need upstream to fire `Stop` with
+  // `is_interrupt: true` (or a dedicated cancellation event) — any workaround
+  // here (input-side Ctrl+C detection, staleness timeout) is a heuristic, not
+  // a real signal, and we have explicitly chosen not to add one.
   const interrupted =
     eventName === 'Stop' && hookPayload['is_interrupt'] === true ? true : undefined
 

@@ -224,10 +224,17 @@ const AgentStatusHover = React.memo(function AgentStatusHover({
           collapses to ~3% alpha and the card looks borderless. Override to
           explicit light/dark tokens so the card outline reads the same in
           both modes. */}
+      {/* Why: cap the card to the viewport and let its body scroll. When a row
+          is expanded (tool input, prompt, or assistant message unfurled), the
+          content can exceed the sidebar's vertical space; without a bounded
+          card the hover overflows off-screen with no way to reach the rows
+          below. `max-h-[85vh]` + `flex flex-col` keeps the card within the
+          viewport, and the inner list below owns the scroll so the "Agent
+          activity (N)" header stays pinned. */}
       <HoverCardContent
         side="right"
         align="start"
-        className="w-72 border-neutral-200 bg-popover p-3 text-xs dark:border-white/10"
+        className="flex w-72 max-h-[85vh] flex-col border-neutral-200 bg-popover p-3 text-xs dark:border-white/10"
       >
         <AgentStatusHoverContent
           agents={agents}
@@ -274,19 +281,22 @@ const AgentStatusHoverContent = React.memo(function AgentStatusHoverContent({
   }
 
   return (
-    <div className="flex flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       {/* Why: "Agent activity" rather than "Running agents" — the list
           now includes retained 'done' snapshots and stale-decayed 'idle'
           rows alongside live working/blocked/waiting agents, so
           "running" would be semantically inaccurate. */}
-      <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
+      <div className="mb-1 shrink-0 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
         Agent activity ({agents.length})
       </div>
       {/* Why: same reason as the card border above — `divide-border/60`
           on dark `--border` (0.07 alpha) evaluates to ~4% alpha and
           the row separators disappear. Pin explicit light/dark tokens
-          so the dividers stay legible in either mode. */}
-      <div className="flex flex-col divide-y divide-neutral-200 dark:divide-white/10">
+          so the dividers stay legible in either mode.
+          Why scroll here (and not on HoverCardContent): keeping the header
+          pinned above a scrolling list preserves the row count as context
+          when one row is expanded and pushes the rest below the fold. */}
+      <div className="flex min-h-0 flex-1 flex-col divide-y divide-neutral-200 overflow-y-auto dark:divide-white/10">
         {agents.map((agent) => (
           <div key={agent.paneKey} className="py-1">
             <DashboardAgentRow
