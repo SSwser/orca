@@ -45,6 +45,14 @@ export function useRetainedAgentsSync(liveGroups: DashboardRepoGroup[]): void {
       }
     }
 
+    // Why: read retention state via getState() instead of subscribing. This
+    // effect's driving input is liveGroups — retention decisions only need to
+    // happen when an agent appears/disappears from the live set. Subscribing
+    // to retainedAgentsByPaneKey would create a feedback loop (this effect
+    // calls retainAgents which updates that map, re-firing the effect).
+    // retentionSuppressedPaneKeys is only acted on when the corresponding
+    // pane disappears from liveGroups, so its changes are naturally picked
+    // up on the next liveGroups-driven run via this fresh getState() read.
     const { retainedAgentsByPaneKey: retainedNow, retentionSuppressedPaneKeys } =
       useAppStore.getState()
     const { toRetain, consumedSuppressedPaneKeys } = collectRetainedAgentsOnDisappear({
