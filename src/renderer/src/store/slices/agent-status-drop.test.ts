@@ -75,6 +75,59 @@ describe('dropAgentStatus + retention suppressor', () => {
     expect(s.sortEpoch).toBe(sortEpochBefore)
   })
 
+  it('drops both live and retained entries when the same paneKey has both', () => {
+    vi.useFakeTimers()
+    const store = createTestStore()
+    // Seed a live entry first.
+    store
+      .getState()
+      .setAgentStatus('tab-1:0', { state: 'working', prompt: 'p', agentType: 'claude' })
+    // Seed a retained entry for the SAME paneKey. The retainAgents path is
+    // what the production retention sync calls on live→gone transitions; here
+    // we invoke it directly to construct the "both live AND retained for the
+    // same paneKey" state that the dropAgentStatus hasLive+hasRetained branch
+    // (agent-status.ts lines 301-311) handles.
+    const now = Date.now()
+    const retainedEntry: AgentStatusEntry = {
+      state: 'done',
+      prompt: '',
+      updatedAt: now,
+      stateStartedAt: now,
+      paneKey: 'tab-1:0',
+      stateHistory: []
+    }
+    const retained: RetainedAgentEntry = {
+      entry: retainedEntry,
+      worktreeId: 'wt-x',
+      tab: { id: 'tab-1', title: 'claude' } as unknown as TerminalTab,
+      agentType: 'claude',
+      startedAt: now
+    }
+    store.getState().retainAgents([retained])
+
+    // Sanity-check the precondition: both maps carry the paneKey.
+    expect(store.getState().agentStatusByPaneKey['tab-1:0']).toBeDefined()
+    expect(store.getState().retainedAgentsByPaneKey['tab-1:0']).toBeDefined()
+
+    const agentEpochBefore = store.getState().agentStatusEpoch
+    const sortEpochBefore = store.getState().sortEpoch
+
+    store.getState().dropAgentStatus('tab-1:0')
+
+    const s = store.getState()
+    // Both maps drop the paneKey in the combined branch.
+    expect(s.agentStatusByPaneKey['tab-1:0']).toBeUndefined()
+    expect(s.retainedAgentsByPaneKey['tab-1:0']).toBeUndefined()
+    // Why: hasLive=true, so the suppressor IS planted (mirrors the live-only
+    // test above). The concurrent retained entry does not change that logic —
+    // the live→gone transition on the next frame still needs to be suppressed.
+    expect(s.retentionSuppressedPaneKeys['tab-1:0']).toBe(true)
+    // Why: hasLive=true means both epochs bump in lockstep (same rationale
+    // as the live-only case).
+    expect(s.agentStatusEpoch).toBe(agentEpochBefore + 1)
+    expect(s.sortEpoch).toBe(sortEpochBefore + 1)
+  })
+
   it('on a paneKey with neither live nor retained entry: no-op (same state reference, no epoch bumps)', () => {
     vi.useFakeTimers()
     const store = createTestStore()

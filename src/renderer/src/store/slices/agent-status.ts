@@ -95,6 +95,11 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
   set,
   get
 ) => {
+  // Why: the freshness scheduler is intentionally process-lifetime-scoped —
+  // no dispose path — because it matches the store's own lifetime model
+  // (the zustand store is a module-level singleton that lives until process
+  // exit). Adding a teardown hook would require a store-dispose lifecycle
+  // that does not exist anywhere else in the codebase.
   const freshness = createFreshnessScheduler({
     getEntries: () => Object.values(get().agentStatusByPaneKey),
     bumpEpochs: () => {
@@ -284,9 +289,14 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
     },
 
     dropAgentStatus: (paneKey) => {
-      const hasLiveBeforeSet = paneKey in get().agentStatusByPaneKey
+      // Why: single sync read — zustand set is synchronous, so the value we
+      // observe inside the set callback is the same one we would re-read via
+      // get() immediately after. Capture it once from inside the callback
+      // rather than double-reading the store before and during set.
+      let liveExisted = false
       set((s) => {
         const hasLive = paneKey in s.agentStatusByPaneKey
+        liveExisted = hasLive
         const hasRetained = paneKey in s.retainedAgentsByPaneKey
         // Why: bail when there is genuinely nothing to do. The old guard
         // `!hasLive && !hasRetained && alreadySuppressed` leaked a phantom
@@ -312,6 +322,15 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
 
         // Why: explicit teardown means "the user is done with this row", so
         // the next retention sync must not resurrect it from the previous frame.
+        //
+        // Why same-frame race is acceptable: if dropAgentStatus fires in the
+        // same React frame as setAgentStatus, before useRetainedAgentsSync's
+        // prevAgentsRef has captured the live entry, the planted suppressor
+        // may never be consumed by a live→gone transition and would persist.
+        // In practice suppressors are bounded by user-dismissed paneKeys (a
+        // small set), so the leak is pragmatically inert — accepting it is
+        // cheaper than threading frame-level ordering guarantees through the
+        // retention sync.
         //
         // Why gate on hasLive: the suppressor is a one-shot flag consumed by
         // `collectRetainedAgentsOnDisappear` (useRetainedAgents.ts), which
@@ -352,10 +371,11 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
         }
       })
       // Why: freshness.schedule only matters when the live map changed —
-      // retained-only and no-op drops don't touch it. Gate on the pre-set
-      // live presence so a noop drop on a paneKey with no live and no
-      // retained entry (or a retained-only dismissal) skips the microtask.
-      if (hasLiveBeforeSet) {
+      // retained-only and no-op drops don't touch it. Gate on the live
+      // presence observed inside set() so a noop drop on a paneKey with no
+      // live and no retained entry (or a retained-only dismissal) skips the
+      // microtask.
+      if (liveExisted) {
         queueMicrotask(() => freshness.schedule())
       }
     },
@@ -469,6 +489,12 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
     },
 
     pruneRetainedAgents: (validWorktreeIds) => {
+      // Why: deliberately does NOT sweep retentionSuppressedPaneKeys for
+      // pruned worktrees. PaneKeys are minted fresh when a worktree is
+      // re-created (worktrees keep unique tab IDs), so stale suppressors
+      // keyed on pruned paneKeys can never be matched by a future live entry
+      // — they are inert and harmless. Sweeping them would add churn for no
+      // observable benefit.
       set((s) => {
         let changed = false
         const next: Record<string, RetainedAgentEntry> = {}

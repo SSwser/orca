@@ -47,6 +47,7 @@ function loadPersistedState(): PersistedState {
 // user drags the top edge to resize upward and can fully collapse to a
 // single header row.
 export default function DashboardBottomPanel(): React.JSX.Element {
+  // Why: read localStorage once per mount; multi-window state diverges intentionally.
   const initial = useMemo(loadPersistedState, [])
   const [height, setHeight] = useState<number>(initial.height)
   const [collapsed, setCollapsed] = useState<boolean>(initial.collapsed)
@@ -108,6 +109,9 @@ export default function DashboardBottomPanel(): React.JSX.Element {
         // ignore quota / privacy-mode errors
       }
     }
+    // Why: empty deps are intentional — adding [height, collapsed] would turn
+    // this unmount-only flush into a per-change write, defeating the debounce.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const onResizeMove = useCallback((event: MouseEvent) => {

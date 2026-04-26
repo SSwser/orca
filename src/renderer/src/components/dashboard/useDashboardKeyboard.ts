@@ -164,8 +164,8 @@ export function useDashboardKeyboard({
       // itself is role="button" with tabIndex=0, so it receives focus during
       // arrow navigation, and Enter on it should navigate as intended.
       if (e.key === 'Enter' && focusedWorktreeIdRef.current) {
-        const target = e.target as HTMLElement | null
-        if (!target || !('dataset' in target) || !target.dataset.worktreeId) {
+        const enterTarget = e.target as HTMLElement | null
+        if (!enterTarget || !enterTarget.dataset.worktreeId) {
           return
         }
         e.preventDefault()

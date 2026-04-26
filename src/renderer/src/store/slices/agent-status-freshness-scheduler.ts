@@ -8,7 +8,6 @@ export type FreshnessSchedulerDeps = {
 
 export type FreshnessScheduler = {
   schedule: () => void
-  clear: () => void
 }
 
 export function createFreshnessScheduler(deps: FreshnessSchedulerDeps): FreshnessScheduler {
@@ -57,5 +56,5 @@ export function createFreshnessScheduler(deps: FreshnessSchedulerDeps): Freshnes
     }, delayMs)
   }
 
-  return { schedule, clear }
+  return { schedule }
 }

@@ -260,7 +260,9 @@ const DashboardAgentRow = React.memo(function DashboardAgentRow({
               ? 'font-semibold text-foreground'
               : 'font-medium text-foreground/90'
           )}
-          title={expanded ? undefined : displayLabel}
+          // Why: tooltip should only reveal truncated prompt text — not echo state-word fallbacks
+          // (e.g. "Working"/"Done") that already fit on one line and never overflow.
+          title={expanded || !prompt ? undefined : displayLabel}
         >
           {displayLabel}
         </span>
