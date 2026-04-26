@@ -61,21 +61,6 @@ const DashboardWorktreeCard = React.memo(function DashboardWorktreeCard({
     [card.worktree.id, onActivateAgentTab]
   )
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      // Why: WAI-ARIA requires elements with role="button" to activate on both
-      // Enter AND Space. Without the Space branch, keyboard users (and screen
-      // reader users in particular) pressing Space see nothing happen and the
-      // page scrolls instead, because Space's default action on a focused
-      // non-button element is to scroll.
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault()
-        handleClick()
-      }
-    },
-    [handleClick]
-  )
-
   // Why: React's onFocus handler receives a SyntheticEvent, but the parent
   // needs the worktree id. Wrap here so the parent can pass a single stable
   // callback that does not get invalidated per-card per-render.
@@ -85,13 +70,20 @@ const DashboardWorktreeCard = React.memo(function DashboardWorktreeCard({
 
   const branchName = card.worktree.branch?.replace(/^refs\/heads\//, '') ?? ''
 
+  // Why: the card is a clickable *surface* but NOT a `role="button"` — its
+  // children (DashboardAgentRow) render real <button>s (dismiss X, chevron),
+  // and ARIA forbids interactive descendants inside a role=button ancestor
+  // (screen readers flatten it, leaving the inner buttons unreachable). The
+  // dashboard's keyboard hook (useDashboardKeyboard.ts) owns Enter/arrow-key
+  // routing via `closest('[data-worktree-id]')`, so activation is handled
+  // there — we only need the surface to be programmatically focusable
+  // (tabIndex={-1}) so arrow-key navigation's `cardEl.focus()` works. This
+  // mirrors the DashboardBottomPanel.tsx:247-253 pattern.
   return (
     <div
-      role="button"
-      tabIndex={0}
+      tabIndex={-1}
       data-worktree-id={card.worktree.id}
       onClick={handleClick}
-      onKeyDown={handleKeyDown}
       onFocus={handleFocus}
       className={cn(
         'cursor-pointer px-2.5 py-1 transition-colors duration-100',

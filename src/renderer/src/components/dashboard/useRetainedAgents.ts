@@ -208,7 +208,15 @@ export function collectRetainedAgentsOnDisappear(args: {
   const consumedSuppressedPaneKeys: string[] = []
 
   for (const [paneKey, prev] of args.previousAgents) {
-    if (args.currentAgents.has(paneKey) || args.retainedAgentsByPaneKey[paneKey]) {
+    if (args.currentAgents.has(paneKey)) {
+      continue
+    }
+    // Why: skip only when the retained snapshot is for the SAME (or newer) run.
+    // A reused paneKey (same tab+pane, fresh agent start after a prior run was
+    // retained) produces a newer startedAt — we must overwrite so stale
+    // completion data doesn't linger forever for the reused pane.
+    const alreadyRetained = args.retainedAgentsByPaneKey[paneKey]
+    if (alreadyRetained && alreadyRetained.startedAt >= prev.row.startedAt) {
       continue
     }
     if (args.retentionSuppressedPaneKeys[paneKey]) {

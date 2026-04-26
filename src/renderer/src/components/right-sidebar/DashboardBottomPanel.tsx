@@ -124,6 +124,46 @@ export default function DashboardBottomPanel(): React.JSX.Element {
     setHeight(next)
   }, [])
 
+  // Why: keyboard support for the resize separator is required for a11y —
+  // pointer-only resize locks out keyboard and assistive-tech users. Mirrors
+  // the clamp logic in onResizeMove (MIN_HEIGHT lower, measuredMaxHeight
+  // upper) so arrow/Home/End nudges obey the same bounds as mouse drags.
+  // Step sizes (10px default, 40px with Shift) match common separator-widget
+  // conventions for coarse vs. fine adjustment.
+  const onResizeKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      const step = event.shiftKey ? 40 : 10
+      const upperBound = measuredMaxHeight
+      const clamp = (value: number): number => {
+        const lowered = Math.max(MIN_HEIGHT, value)
+        return upperBound !== null ? Math.min(upperBound, lowered) : lowered
+      }
+      switch (event.key) {
+        case 'ArrowUp':
+          event.preventDefault()
+          setHeight((prev) => clamp(prev + step))
+          break
+        case 'ArrowDown':
+          event.preventDefault()
+          setHeight((prev) => clamp(prev - step))
+          break
+        case 'Home':
+          event.preventDefault()
+          setHeight(MIN_HEIGHT)
+          break
+        case 'End':
+          if (upperBound !== null) {
+            event.preventDefault()
+            setHeight(upperBound)
+          }
+          break
+        default:
+          break
+      }
+    },
+    [measuredMaxHeight]
+  )
+
   const onResizeEnd = useCallback(() => {
     resizeStateRef.current = null
     document.body.style.cursor = ''
@@ -235,11 +275,24 @@ export default function DashboardBottomPanel(): React.JSX.Element {
       className="relative flex shrink-0 flex-col border-t border-border bg-sidebar"
       style={{ height: effectiveHeight }}
     >
-      {/* Resize handle — hidden while collapsed so the user must expand first. */}
+      {/* Resize handle — hidden while collapsed so the user must expand first.
+          Why: exposed as role="separator" with keyboard support (Arrow keys,
+          Home/End) so keyboard and assistive-tech users can resize the panel.
+          Without tabIndex + onKeyDown a mouse-only drag handle is an a11y gap:
+          sighted keyboard users (and screen-reader users navigating widgets)
+          would have no way to adjust the split. aria-value* advertises the
+          current height and its bounds to assistive tech. */}
       {!collapsed && (
         <div
+          role="separator"
+          tabIndex={0}
+          aria-orientation="horizontal"
+          aria-valuenow={Math.round(height)}
+          aria-valuemin={MIN_HEIGHT}
+          aria-valuemax={measuredMaxHeight ?? undefined}
           className="absolute left-0 right-0 z-10 -mt-[3px] h-[6px] cursor-row-resize transition-colors hover:bg-ring/20 active:bg-ring/30"
           onMouseDown={onResizeStart}
+          onKeyDown={onResizeKeyDown}
           aria-label="Resize dashboard panel"
         />
       )}

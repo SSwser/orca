@@ -102,7 +102,22 @@ Totals: 24 files changed, ~3108 insertions, ~337 deletions
 ## Skipped Issues (Do Not Re-validate)
 <!-- Format: [file:line-range] | [severity] | [reason skipped] | [issue summary] -->
 
+src/renderer/src/components/dashboard/useDashboardData.ts:197-220 | Medium | Epoch mechanism verifiably sound; threading `now` would either undo RetainedAgentsSyncGate isolation or reintroduce same Date.now fallback. Existing comments document the coupling. | Hidden Date.now() in useMemo
+src/renderer/src/components/dashboard/useRetainedAgents.ts:56-76 | Low | Existing comments already adequate | Snapshot semantics documentation
+src/renderer/src/components/dashboard/useRetainedAgents.ts:173-176 | Low | False positive — upstream length guard already protects spread | Filter guard order (retainedForWt)
+src/renderer/src/components/dashboard/useDashboardKeyboard.ts:53 | Low | React setState setter identity is stable; existing comment documents pattern | setContainerEl as callback ref
+src/renderer/src/components/dashboard/useNow.ts:14 | Low | 30s tick is negligible; visibility listener is new feature not bug fix | useNow visibility pause
+src/renderer/src/components/dashboard/useDashboardFilter.ts:63-77 | Low | Short-string micro-opt; already memoized on searchQuery | Lowercasing each candidate
+src/renderer/src/components/dashboard/DashboardFilterBar.tsx:22-27 | Low | ToggleGroup re-renders on value change anyway; purely cosmetic perf | Inline handler vs memo
+src/renderer/src/components/sidebar/AgentStatusHover.tsx:76-86 | Low | Current narrow selector is already the explicitly-justified optimization; store-level refactor out of scope | Per-card Object.values scan
+src/renderer/src/components/right-sidebar/DashboardBottomPanel.tsx:117-125 | Medium | Micro-optimization; React 18 batches, rows memoized, only wrapper re-renders; would add rAF cancel complexity | setHeight on every mousemove
+src/renderer/src/components/right-sidebar/DashboardBottomPanel.tsx:101-115 | Low | Intentional design to avoid losing last drag in debounce window; thrash risk theoretical | Unmount flush localStorage
+src/renderer/src/components/dashboard/AgentDashboard.tsx:173 | Low | Parent re-renders per keystroke anyway; Input not memoized | Inline onChange
+src/renderer/src/store/slices/agent-status.ts:296-299 | Low | False positive — zustand set() is synchronous by documented API contract; alternative is strictly worse | liveExisted mutated from reducer
+src/renderer/src/App.tsx:896-899 | Low | False positive — both hooks early-return on !AGENT_DASHBOARD_ENABLED as documented | RetainedAgentsSyncGate flag gating
+
 ## Iteration State
-Current iteration: 1
-Last completed phase: Setup
-Files fixed this iteration: []
+Current iteration: 3
+Last completed phase: Phase 3 validation + partial inline fixes from validation agents
+Files fixed in prior phase: useDashboardKeyboard.ts, AgentDashboard.tsx, agent-status.ts, agent-status-freshness-scheduler.ts, types.ts
+Remaining to fix: DashboardAgentRow.tsx, DashboardWorktreeCard.tsx, useRetainedAgents.ts, DashboardBottomPanel.tsx

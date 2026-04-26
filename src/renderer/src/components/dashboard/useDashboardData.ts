@@ -4,6 +4,7 @@ import { isExplicitAgentStatusFresh } from '@/lib/agent-status'
 import {
   AGENT_STATUS_STALE_AFTER_MS,
   type AgentStatusEntry,
+  type AgentStatusState,
   type AgentType
 } from '../../../../shared/agent-status-types'
 import { AGENT_DASHBOARD_ENABLED } from '../../../../shared/constants'
@@ -16,7 +17,7 @@ export type DashboardAgentRow = {
   entry: AgentStatusEntry
   tab: TerminalTab
   agentType: AgentType
-  state: string
+  state: AgentStatusState | 'idle'
   /** When this agent first began reporting status. Derived from the oldest
    *  stateHistory entry, falling back to updatedAt when no history exists yet.
    *  Used to sort agents by when they started. */

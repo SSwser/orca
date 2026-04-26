@@ -6,12 +6,13 @@ import { AgentStateDot, agentStateLabel, type AgentDotState } from '@/components
 import { AgentIcon } from '@/lib/agent-catalog'
 import { agentTypeToIconAgent, formatAgentTypeLabel } from '@/lib/agent-status'
 import CommentMarkdown from '@/components/sidebar/CommentMarkdown'
+import type { AgentStatusState } from '../../../../shared/agent-status-types'
 import type { DashboardAgentRow as DashboardAgentRowData } from './useDashboardData'
 
 // Why: the dashboard tracks its own rollup states (incl. 'idle'); narrow to the
 // shared dot states for rendering, falling back to 'idle' for any unknown
 // value so an unexpected state never crashes a row.
-function asDotState(state: string): AgentDotState {
+function asDotState(state: AgentStatusState | 'idle'): AgentDotState {
   switch (state) {
     case 'working':
     case 'blocked':
@@ -93,32 +94,20 @@ const DashboardAgentRow = React.memo(function DashboardAgentRow({
   // Why: the chevron toggles expand-collapse and must not propagate — clicks
   // on it would otherwise bubble to the row's activate handler and navigate
   // away the instant the user tried to reveal the full text. Stop mousedown
-  // too so focus-based navigation on the parent role=button can't fire first.
-  //
-  // After a pointer click we also blur the chevron: `group-focus-within` on
-  // the row drives the timestamp→X crossfade, so retained focus on the
-  // chevron after a mouse click would keep the X visible and the "Xm ago"
-  // label hidden even after the pointer leaves — reading as a stuck hover.
-  // `event.detail === 0` means the click came from keyboard activation
-  // (Enter/Space), in which case we preserve focus for tab users.
+  // too so focus-based navigation on the parent can't fire first.
   const handleToggleExpand = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
     e.preventDefault()
     e.stopPropagation()
     setExpanded((prev) => !prev)
-    if (e.detail !== 0) {
-      e.currentTarget.blur()
-    }
   }, [])
   const stopMouseDown = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
   }, [])
-  // Why: the row itself is role="button" with an onKeyDown that activates the
-  // agent's tab on Enter/Space. Nested buttons (dismiss X, expand chevron) are
-  // real <button>s whose native Enter/Space handling fires their onClick, but
-  // the KeyboardEvent still bubbles up to the row and triggers navigation on
-  // top of the intended action. Stopping propagation for Enter/Space only
-  // (not preventDefault) preserves the native button activation while
-  // suppressing the row's duplicate handler.
+  // Why: nested buttons (dismiss X, expand chevron) are real <button>s whose
+  // native Enter/Space handling fires their onClick. Stopping Enter/Space
+  // propagation (not preventDefault) preserves native button activation while
+  // defending against any ancestor key handlers that might otherwise react to
+  // the bubbled event.
   const stopKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.stopPropagation()
@@ -132,16 +121,6 @@ const DashboardAgentRow = React.memo(function DashboardAgentRow({
     (e: React.MouseEvent) => {
       e.stopPropagation()
       onActivate(agent.tab.id)
-    },
-    [onActivate, agent.tab.id]
-  )
-  const handleActivateKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault()
-        e.stopPropagation()
-        onActivate(agent.tab.id)
-      }
     },
     [onActivate, agent.tab.id]
   )
@@ -181,11 +160,16 @@ const DashboardAgentRow = React.memo(function DashboardAgentRow({
   }
 
   return (
+    // Why: NOT role="button" / tabIndex={0}. The row contains real <button>
+    // children (dismiss X, expand chevron) and tooltip triggers that forward
+    // button semantics to their children — nesting them inside an outer
+    // role=button violates ARIA's "no interactive content inside interactive
+    // content" rule and breaks keyboard/AT navigation. Keyboard users reach
+    // the agent via the child buttons and the tab switcher; the outer <div>
+    // stays a plain clickable surface for pointer activation, mirroring the
+    // pattern in DashboardBottomPanel.tsx's collapse header.
     <div
-      role="button"
-      tabIndex={0}
       onClick={handleActivate}
-      onKeyDown={handleActivateKeyDown}
       className={cn(
         'group relative flex flex-col pl-1 pr-1.5 py-0.5',
         // Why: hover tints have to go in opposite directions per theme —
@@ -194,8 +178,7 @@ const DashboardAgentRow = React.memo(function DashboardAgentRow({
         // near-nothing because accent (#f5f5f5) is already ~white. Use a
         // black alpha overlay in light mode (mirrors WorktreeCard.tsx's
         // active-state pattern) so the lift is symmetric across themes.
-        'cursor-pointer rounded-sm hover:bg-black/[0.06] dark:hover:bg-accent/30',
-        'focus-visible:outline-none focus-visible:bg-black/[0.09] dark:focus-visible:bg-accent/40'
+        'cursor-pointer rounded-sm hover:bg-black/[0.06] dark:hover:bg-accent/30'
       )}
       title={tsParts.length > 0 ? tsParts.join(' • ') : undefined}
     >
@@ -297,7 +280,7 @@ const DashboardAgentRow = React.memo(function DashboardAgentRow({
                 className={cn(
                   '[grid-area:1/1] pointer-events-none text-[10px] leading-none text-muted-foreground/60',
                   'transition-opacity duration-150',
-                  'group-hover:opacity-0 group-focus-within:opacity-0'
+                  'group-hover:opacity-0'
                 )}
                 aria-hidden
               >
@@ -317,7 +300,7 @@ const DashboardAgentRow = React.memo(function DashboardAgentRow({
                     className={cn(
                       '[grid-area:1/1] inline-flex items-center justify-center text-muted-foreground/70 hover:text-foreground',
                       'opacity-0 transition-opacity duration-150',
-                      'group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100'
+                      'group-hover:opacity-100 focus-visible:opacity-100'
                     )}
                     aria-label="Dismiss agent"
                   >
@@ -346,7 +329,7 @@ const DashboardAgentRow = React.memo(function DashboardAgentRow({
                   className={cn(
                     'inline-flex shrink-0 items-center justify-center text-muted-foreground/70 hover:text-foreground',
                     'opacity-0 transition-opacity duration-150',
-                    'group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100'
+                    'group-hover:opacity-100 focus-visible:opacity-100'
                   )}
                   aria-label="Dismiss agent"
                 >
