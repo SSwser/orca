@@ -63,7 +63,12 @@ const DashboardWorktreeCard = React.memo(function DashboardWorktreeCard({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter') {
+      // Why: WAI-ARIA requires elements with role="button" to activate on both
+      // Enter AND Space. Without the Space branch, keyboard users (and screen
+      // reader users in particular) pressing Space see nothing happen and the
+      // page scrolls instead, because Space's default action on a focused
+      // non-button element is to scroll.
+      if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault()
         handleClick()
       }

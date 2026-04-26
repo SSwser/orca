@@ -126,11 +126,13 @@ export function useDashboardFilter(
         // Otherwise a filter that removes the earliest-starting agent leaves
         // a phantom sort key from useDashboardData's un-filtered list and
         // worktrees drift out of order when filters/search are applied.
-        // Agents are pre-sorted asc by startedAt upstream, so agents[0] is
-        // the minimum; fall back to wt.earliestStartedAt if no positive
-        // startedAt exists (agent never started).
-        const filteredEarliest =
-          agents.find((a) => a.startedAt > 0)?.startedAt ?? wt.earliestStartedAt
+        // agents.length > 0 is guaranteed by the early-continue above, and
+        // agents are pre-sorted asc by startedAt upstream, so agents[0] is
+        // the minimum. startedAt is always set (useDashboardData derives it
+        // from stateStartedAt, which is set on every entry), so no fallback
+        // to wt.earliestStartedAt is needed — and using that upstream value
+        // would reintroduce the exact phantom sort key this block avoids.
+        const filteredEarliest = agents[0].startedAt
         worktrees.push({ ...wt, agents, earliestStartedAt: filteredEarliest })
       }
       if (worktrees.length === 0) {

@@ -260,8 +260,10 @@ export function AgentsPane({ settings, updateSettings }: AgentsPaneProps): React
         <section>
           <div className="flex items-center justify-between gap-4 px-1 py-2">
             <div className="space-y-0.5">
-              <span className="text-sm font-medium">Show Agent Dashboard</span>
-              <p className="text-xs text-muted-foreground">
+              <span id="show-agent-dashboard-label" className="text-sm font-medium">
+                Show Agent Dashboard
+              </span>
+              <p id="show-agent-dashboard-desc" className="text-xs text-muted-foreground">
                 Show the live agent activity panel docked at the bottom of the right sidebar —
                 surfaces working, blocked, and done agents across all open worktrees.
               </p>
@@ -269,7 +271,8 @@ export function AgentsPane({ settings, updateSettings }: AgentsPaneProps): React
             <button
               role="switch"
               aria-checked={showDashboard}
-              aria-label="Show Agent Dashboard"
+              aria-labelledby="show-agent-dashboard-label"
+              aria-describedby="show-agent-dashboard-desc"
               onClick={() => updateSettings({ showAgentDashboard: !showDashboard })}
               className={cn(
                 'relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors',

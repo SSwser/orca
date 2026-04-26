@@ -97,9 +97,19 @@
 ## Skipped Issues (Do Not Re-validate)
 <!-- Format: [file:line-range] | [severity] | [reason skipped] | [issue summary] -->
 
-(empty)
+src/renderer/src/components/right-sidebar/DashboardBottomPanel.tsx:155-177 | Low | Edge-case only (reviewer: none needed) | Concurrent drag body-style stomp
+src/renderer/src/components/dashboard/useDashboardKeyboard.ts:62-70 | Low | Stylistic micro-opt; current form correct | Ref-mirror useEffects with no deps
+src/renderer/src/components/sidebar/AgentStatusHover.tsx:189-190 | Low | Rationale already documented above | eslint-disable lacks why comment
+src/renderer/src/components/dashboard/AgentDashboard.tsx:293-301 | Low | Cosmetic-only readability | Nested empty-state ternary
 
 ## Iteration State
 Current iteration: 1
-Last completed phase: Setup
-Files fixed this iteration: []
+Last completed phase: Fix (9 fixes across 6 files + 1 test)
+Files fixed this iteration:
+  - src/renderer/src/components/dashboard/useRetainedAgents.ts (validator added comment)
+  - src/renderer/src/components/right-sidebar/DashboardBottomPanel.tsx
+  - src/renderer/src/components/dashboard/useDashboardKeyboard.ts
+  - src/renderer/src/components/dashboard/DashboardAgentRow.tsx
+  - src/renderer/src/store/slices/agent-status-freshness-scheduler.ts
+  - src/renderer/src/store/slices/agent-status.ts
+  - src/renderer/src/store/slices/agent-status-drop.test.ts
