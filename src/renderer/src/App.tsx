@@ -149,14 +149,14 @@ function App(): React.JSX.Element {
   // the sidebar hovercard also reads retained entries. If retention only ran
   // when the dashboard is mounted, "done" agents would vanish from the hover
   // any time the user collapses the dashboard panel.
-  // AGENT_DASHBOARD_ENABLED is a compile-time constant, so rules-of-hooks is
-  // not violated — the branch is static for the lifetime of the build.
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  const dashboardLiveGroups = AGENT_DASHBOARD_ENABLED ? useDashboardData() : []
-  if (AGENT_DASHBOARD_ENABLED) {
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    useRetainedAgentsSync(dashboardLiveGroups)
-  }
+  // The AGENT_DASHBOARD_ENABLED gate now lives inside the hooks themselves:
+  // useDashboardData is a pure store-selector+memo (no IPC, no effects), and
+  // useRetainedAgentsSync early-returns from its effect when the flag is off.
+  // Calling both unconditionally keeps rules-of-hooks satisfied without any
+  // eslint suppressions and makes the code safe if the flag ever becomes
+  // runtime-dynamic (e.g., driven by settings).
+  const dashboardLiveGroups = useDashboardData()
+  useRetainedAgentsSync(dashboardLiveGroups)
   // Why: git conflict-operation state also drives the worktree cards. Polling
   // cannot live under RightSidebar because App unmounts that subtree when the
   // sidebar is closed, which leaves stale "Rebasing"/"Merging" badges behind

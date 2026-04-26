@@ -94,7 +94,17 @@ export function useDashboardFilter(
         if (agents.length === 0) {
           continue
         }
-        worktrees.push({ ...wt, agents })
+        // Why: recompute earliestStartedAt from the filtered agents so the
+        // sort key below reflects the agents this worktree actually displays.
+        // Otherwise a filter that removes the earliest-starting agent leaves
+        // a phantom sort key from useDashboardData's un-filtered list and
+        // worktrees drift out of order when filters/search are applied.
+        // Agents are pre-sorted asc by startedAt upstream, so agents[0] is
+        // the minimum; fall back to wt.earliestStartedAt if no positive
+        // startedAt exists (agent never started).
+        const filteredEarliest =
+          agents.find((a) => a.startedAt > 0)?.startedAt ?? wt.earliestStartedAt
+        worktrees.push({ ...wt, agents, earliestStartedAt: filteredEarliest })
       }
       if (worktrees.length === 0) {
         continue

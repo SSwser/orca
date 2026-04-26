@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import AgentDashboard from '../dashboard/AgentDashboard'
 
@@ -22,8 +22,19 @@ function loadPersistedState(): PersistedState {
       return { height: DEFAULT_HEIGHT, collapsed: false }
     }
     const parsed = JSON.parse(raw) as Partial<PersistedState>
+    // Why: stale or tampered localStorage can hold NaN, negative, zero, or
+    // absurdly large heights. The runtime clamp in onResizeMove only fires
+    // during an active drag, so without validation here the initial render
+    // can produce a zero-height strip or a panel that eats the whole sidebar
+    // before the user ever touches the resize handle. We can't clamp the
+    // upper bound yet (sidebarHeight isn't known until mount), but enforcing
+    // finite + MIN_HEIGHT eliminates the worst-case visual breakage.
+    const rawHeight =
+      typeof parsed.height === 'number' && Number.isFinite(parsed.height)
+        ? parsed.height
+        : DEFAULT_HEIGHT
     return {
-      height: typeof parsed.height === 'number' ? parsed.height : DEFAULT_HEIGHT,
+      height: Math.max(MIN_HEIGHT, rawHeight),
       collapsed: typeof parsed.collapsed === 'boolean' ? parsed.collapsed : false
     }
   } catch {
@@ -39,6 +50,11 @@ export default function DashboardBottomPanel(): React.JSX.Element {
   const initial = useMemo(loadPersistedState, [])
   const [height, setHeight] = useState<number>(initial.height)
   const [collapsed, setCollapsed] = useState<boolean>(initial.collapsed)
+  // Why: tracks the sidebar-derived upper bound used to clamp rendering only.
+  // We deliberately keep this separate from `height` so the user's persisted
+  // preference is never overwritten by a transient small-window measurement
+  // (see the useLayoutEffect below for the full rationale).
+  const [measuredMaxHeight, setMeasuredMaxHeight] = useState<number | null>(null)
 
   const containerRef = useRef<HTMLDivElement>(null)
   const resizeStateRef = useRef<{
@@ -120,7 +136,51 @@ export default function DashboardBottomPanel(): React.JSX.Element {
     }
   }, [onResizeMove, onResizeEnd])
 
-  const effectiveHeight = collapsed ? HEADER_HEIGHT : height
+  // Why: complements the lower-bound clamp in loadPersistedState. At load
+  // time we can't compute the sidebar's max height because the parent isn't
+  // measured yet, so a persisted `height` of e.g. 99999 (from a prior absurd
+  // drag, a browser dimension change, or tampering) would render taller than
+  // the entire sidebar, pushing the active panel (Explorer/Search/
+  // SourceControl) to zero height and placing the resize handle off-screen
+  // where the user can't easily recover.
+  //
+  // CRITICAL: we measure to clamp for RENDERING only, and NEVER overwrite
+  // the persisted `height` preference. An earlier version called
+  // `setHeight((prev) => Math.min(prev, max))` here, which caused a nasty
+  // regression: a user who had dragged to 500px in a large window and later
+  // opened the app in a smaller window would have their stored preference
+  // silently shrunk (via the debounced localStorage-write effect) to whatever
+  // `max` happened to be. Resizing the window back up would NOT restore the
+  // original 500px — the preference was gone. By storing the measurement in
+  // a separate `measuredMaxHeight` state and clamping only at render time,
+  // the user's intent survives every window-size change.
+  //
+  // useLayoutEffect (not useEffect) runs before first paint to avoid a
+  // visual flash of an oversized panel. The window-resize listener keeps
+  // the clamp adaptive when the user shrinks the window after mount; it
+  // MUST only update `measuredMaxHeight`, never `height`.
+  useLayoutEffect(() => {
+    const measure = (): void => {
+      const sidebarEl = containerRef.current?.parentElement
+      const sidebarHeight = sidebarEl?.getBoundingClientRect().height
+      if (typeof sidebarHeight !== 'number' || !Number.isFinite(sidebarHeight)) {
+        return
+      }
+      const max = Math.max(MIN_HEIGHT, sidebarHeight - 160)
+      setMeasuredMaxHeight(max)
+    }
+    measure()
+    window.addEventListener('resize', measure)
+    return () => {
+      window.removeEventListener('resize', measure)
+    }
+  }, [])
+
+  const effectiveHeight = collapsed
+    ? HEADER_HEIGHT
+    : measuredMaxHeight !== null
+      ? Math.min(height, measuredMaxHeight)
+      : height
 
   return (
     <div

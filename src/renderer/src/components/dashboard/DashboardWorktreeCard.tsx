@@ -13,6 +13,13 @@ type Props = {
   /** Navigate to a specific tab inside this card's worktree. */
   onActivateAgentTab: (worktreeId: string, tabId: string) => void
   isLast: boolean
+  /**
+   * Why: `now` is owned by the dashboard container and threaded through every
+   * card to its rows. One shared 30s tick re-renders all visible "Xm ago"
+   * labels instead of each row owning its own setInterval (which would fire N
+   * times per cycle, staggered by mount time).
+   */
+  now: number
 }
 
 const DashboardWorktreeCard = React.memo(function DashboardWorktreeCard({
@@ -21,7 +28,8 @@ const DashboardWorktreeCard = React.memo(function DashboardWorktreeCard({
   onFocus,
   onDismissAgent,
   onActivateAgentTab,
-  isLast
+  isLast,
+  now
 }: Props) {
   const setActiveWorktree = useAppStore((s) => s.setActiveWorktree)
   const setActiveView = useAppStore((s) => s.setActiveView)
@@ -110,6 +118,7 @@ const DashboardWorktreeCard = React.memo(function DashboardWorktreeCard({
                 agent={agent}
                 onDismiss={onDismissAgent}
                 onActivate={handleActivateAgent}
+                now={now}
               />
             </div>
           ))}

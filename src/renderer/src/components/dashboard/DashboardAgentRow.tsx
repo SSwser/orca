@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useState, useCallback } from 'react'
 import { X, Wrench, ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
@@ -64,25 +64,22 @@ type Props = {
   onDismiss: (paneKey: string) => void
   /** Navigate directly to the tab this agent lives in. */
   onActivate: (tabId: string) => void
-}
-
-function useNow(intervalMs: number): number {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    // Why: relative timestamps drift once mounted. A 30s tick keeps the "Xm
-    // ago" labels honest without burning a render every second.
-    const id = setInterval(() => setNow(Date.now()), intervalMs)
-    return () => clearInterval(id)
-  }, [intervalMs])
-  return now
+  /**
+   * Why: the relative-time labels ("Xm ago") need a periodic re-render to stay
+   * honest. We accept `now` from a parent container so a single 30s tick owned
+   * by the container drives every visible row, rather than each row running
+   * its own setInterval. See useNow.ts for the shared hook — callers own the
+   * tick (AgentDashboard for the dashboard, AgentStatusHover for hovercards).
+   */
+  now: number
 }
 
 const DashboardAgentRow = React.memo(function DashboardAgentRow({
   agent,
   onDismiss,
-  onActivate
+  onActivate,
+  now
 }: Props) {
-  const now = useNow(30_000)
   const [expanded, setExpanded] = useState(false)
   // Why: stop propagation so clicking the X doesn't also fire the worktree
   // card's click handler (which navigates away from the dashboard).

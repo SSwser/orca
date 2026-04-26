@@ -4,6 +4,7 @@ import { HoverCard, HoverCardTrigger, HoverCardContent } from '@/components/ui/h
 import { useAppStore } from '@/store'
 import DashboardAgentRow from '@/components/dashboard/DashboardAgentRow'
 import type { DashboardAgentRow as DashboardAgentRowType } from '@/components/dashboard/useDashboardData'
+import { useNow } from '@/components/dashboard/useNow'
 import { isExplicitAgentStatusFresh } from '@/lib/agent-status'
 import type { RetainedAgentEntry } from '@/store/slices/agent-status'
 import type { TerminalTab } from '../../../../shared/types'
@@ -223,36 +224,76 @@ const AgentStatusHover = React.memo(function AgentStatusHover({
         align="start"
         className="w-72 border-neutral-200 bg-popover p-3 text-xs dark:border-white/10"
       >
-        {agents.length === 0 ? (
-          <div className="py-1 text-center text-muted-foreground">No agent activity</div>
-        ) : (
-          <div className="flex flex-col">
-            {/* Why: "Agent activity" rather than "Running agents" — the list
-                now includes retained 'done' snapshots and stale-decayed 'idle'
-                rows alongside live working/blocked/waiting agents, so
-                "running" would be semantically inaccurate. */}
-            <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
-              Agent activity ({agents.length})
-            </div>
-            {/* Why: same reason as the card border above — `divide-border/60`
-                on dark `--border` (0.07 alpha) evaluates to ~4% alpha and
-                the row separators disappear. Pin explicit light/dark tokens
-                so the dividers stay legible in either mode. */}
-            <div className="flex flex-col divide-y divide-neutral-200 dark:divide-white/10">
-              {agents.map((agent) => (
-                <div key={agent.paneKey} className="py-1">
-                  <DashboardAgentRow
-                    agent={agent}
-                    onDismiss={handleDismissAgent}
-                    onActivate={handleActivateAgentTab}
-                  />
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        <AgentStatusHoverContent
+          agents={agents}
+          onDismiss={handleDismissAgent}
+          onActivate={handleActivateAgentTab}
+        />
       </HoverCardContent>
     </HoverCard>
+  )
+})
+
+type AgentStatusHoverContentProps = {
+  agents: DashboardAgentRowType[]
+  onDismiss: (paneKey: string) => void
+  onActivate: (tabId: string) => void
+}
+
+// Why: split out so `useNow(30_000)` only runs while the hovercard body is
+// actually mounted. AgentStatusHover wraps EVERY WorktreeCard in the sidebar
+// and stays mounted regardless of whether the card is open, so placing the
+// timer on the outer component would run one 30s interval per visible
+// worktree for the entire session — strictly worse than pre-hoist, since the
+// common path is that the user never opens the hovercard. HoverCardContent is
+// portaled by Radix and only mounts while open, so rendering this child there
+// naturally gates the timer: 0 intervals while closed, exactly 1 per open
+// card. The outer component still owns the narrow store subscriptions and the
+// `agents` memo so those don't re-run on every open/close, and to preserve
+// the render-amplification protection that originally motivated the narrow
+// selectors.
+const AgentStatusHoverContent = React.memo(function AgentStatusHoverContent({
+  agents,
+  onDismiss,
+  onActivate
+}: AgentStatusHoverContentProps) {
+  // Why: own one 30s tick per OPEN hovercard instance and thread it to every
+  // row we render. Previously each DashboardAgentRow ran its own setInterval,
+  // so an N-row hovercard fired N staggered re-renders every cycle. Scoping
+  // this to the inner content (which only mounts while the card is open)
+  // keeps the overhead bounded to the card the user is actually looking at.
+  const now = useNow(30_000)
+
+  if (agents.length === 0) {
+    return <div className="py-1 text-center text-muted-foreground">No agent activity</div>
+  }
+
+  return (
+    <div className="flex flex-col">
+      {/* Why: "Agent activity" rather than "Running agents" — the list
+          now includes retained 'done' snapshots and stale-decayed 'idle'
+          rows alongside live working/blocked/waiting agents, so
+          "running" would be semantically inaccurate. */}
+      <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
+        Agent activity ({agents.length})
+      </div>
+      {/* Why: same reason as the card border above — `divide-border/60`
+          on dark `--border` (0.07 alpha) evaluates to ~4% alpha and
+          the row separators disappear. Pin explicit light/dark tokens
+          so the dividers stay legible in either mode. */}
+      <div className="flex flex-col divide-y divide-neutral-200 dark:divide-white/10">
+        {agents.map((agent) => (
+          <div key={agent.paneKey} className="py-1">
+            <DashboardAgentRow
+              agent={agent}
+              onDismiss={onDismiss}
+              onActivate={onActivate}
+              now={now}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
   )
 })
 

@@ -10,6 +10,7 @@ import { useDashboardKeyboard } from './useDashboardKeyboard'
 import { useRetainedAgents } from './useRetainedAgents'
 import DashboardFilterBar from './DashboardFilterBar'
 import DashboardWorktreeCard from './DashboardWorktreeCard'
+import { useNow } from './useNow'
 
 const AgentDashboard = React.memo(function AgentDashboard() {
   const liveGroups = useDashboardData()
@@ -28,6 +29,11 @@ const AgentDashboard = React.memo(function AgentDashboard() {
   // app-level activeWorktreeId makes the dashboard highlight what the user is
   // currently viewing rather than where the keyboard/mouse last landed.
   const activeWorktreeId = useAppStore((s) => s.activeWorktreeId)
+  // Why: own the 30s relative-time tick once for the whole dashboard and
+  // thread it down to every agent row. Previously each DashboardAgentRow
+  // instantiated its own setInterval, which scaled linearly with the number
+  // of rows on screen (N timers → N staggered re-renders per cycle).
+  const now = useNow(30_000)
 
   // Why: the store's explicit status entry persists after an agent reports
   // `done` until the pane actually exits — which may be much later, since the
@@ -260,6 +266,7 @@ const AgentDashboard = React.memo(function AgentDashboard() {
                         onDismissAgent={handleDismissAgent}
                         onActivateAgentTab={handleActivateAgentTab}
                         isLast={i === group.worktrees.length - 1}
+                        now={now}
                       />
                     ))}
                 </div>
