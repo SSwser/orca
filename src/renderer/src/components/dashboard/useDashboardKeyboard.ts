@@ -133,8 +133,19 @@ export function useDashboardKeyboard({
         return
       }
 
-      // Enter: navigate to focused worktree
+      // Enter: navigate to focused worktree.
+      // Why: only fire when the native keydown target IS a worktree card
+      // (has data-worktree-id). Otherwise Enter on an interactive descendant
+      // (dismiss X, expand chevron, clear-search button, filter toggle) would
+      // be preventDefault'd by this handler — blocking the button's own
+      // activation AND triggering unwanted navigation. The card element
+      // itself is role="button" with tabIndex=0, so it receives focus during
+      // arrow navigation, and Enter on it should navigate as intended.
       if (e.key === 'Enter' && focusedWorktreeIdRef.current) {
+        const target = e.target as HTMLElement | null
+        if (!target || !('dataset' in target) || !target.dataset.worktreeId) {
+          return
+        }
         e.preventDefault()
         setActiveWorktree(focusedWorktreeIdRef.current)
         setActiveView('terminal')
