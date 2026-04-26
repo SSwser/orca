@@ -269,6 +269,7 @@ export function AgentsPane({ settings, updateSettings }: AgentsPaneProps): React
               </p>
             </div>
             <button
+              type="button"
               role="switch"
               aria-checked={showDashboard}
               aria-labelledby="show-agent-dashboard-label"

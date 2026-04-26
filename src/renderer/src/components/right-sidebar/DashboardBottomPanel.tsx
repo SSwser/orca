@@ -289,7 +289,14 @@ export default function DashboardBottomPanel(): React.JSX.Element {
           aria-orientation="horizontal"
           aria-valuenow={Math.round(height)}
           aria-valuemin={MIN_HEIGHT}
-          aria-valuemax={measuredMaxHeight ?? undefined}
+          // Why: WAI-ARIA best practice is to always expose a finite range
+          // alongside aria-valuenow so assistive tech can announce a
+          // consistent bound. `measuredMaxHeight` is null until the
+          // useLayoutEffect runs on mount, so fall back to the current
+          // rendered `height` — it's guaranteed finite and correctly
+          // represents the max the user can currently observe (valuenow ==
+          // valuemax pre-measurement), avoiding an omitted upper bound.
+          aria-valuemax={measuredMaxHeight ?? height}
           className="absolute left-0 right-0 z-10 -mt-[3px] h-[6px] cursor-row-resize transition-colors hover:bg-ring/20 active:bg-ring/30"
           onMouseDown={onResizeStart}
           onKeyDown={onResizeKeyDown}

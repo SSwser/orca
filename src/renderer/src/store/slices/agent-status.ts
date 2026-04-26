@@ -186,9 +186,9 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
           // stomped by a later ping that lost the identity (e.g. legacy/partial
           // integrations).
           agentType:
-            payload.agentType && payload.agentType !== 'unknown'
+            (payload.agentType && payload.agentType !== 'unknown'
               ? payload.agentType
-              : existing?.agentType,
+              : existing?.agentType) ?? 'unknown',
           paneKey,
           terminalTitle: effectiveTitle,
           stateHistory: history,

@@ -111,6 +111,20 @@ export function useDashboardKeyboard({
         if (!onCardOrContainer) {
           return
         }
+        // Why: if the target itself is an interactive descendant of the worktree
+        // card (dismiss X, expand chevron, filter toggle, clear-search button),
+        // a digit keystroke would change the filter even though the user has a
+        // nested button focused. Reject those so filter keys only fire from the
+        // card surface itself or the dashboard container. (The container-is-target
+        // fast path is already handled above.)
+        if (target !== containerElRef.current) {
+          const interactiveAncestor = target.closest(
+            'button, a, input, textarea, select, [role="button"], [role="switch"], [role="tab"], [contenteditable="true"]'
+          )
+          if (interactiveAncestor && interactiveAncestor !== containerElRef.current) {
+            return
+          }
+        }
         e.preventDefault()
         setFilter(FILTER_KEYS[e.key])
         return
