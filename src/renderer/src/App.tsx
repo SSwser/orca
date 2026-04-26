@@ -15,8 +15,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { useAppStore } from './store'
 import { useShallow } from 'zustand/react/shallow'
 import { useIpcEvents } from './hooks/useIpcEvents'
-import { useDashboardData } from './components/dashboard/useDashboardData'
-import { useRetainedAgentsSync } from './components/dashboard/useRetainedAgents'
+import RetainedAgentsSyncGate from './components/dashboard/RetainedAgentsSyncGate'
 import Sidebar from './components/Sidebar'
 import Terminal from './components/Terminal'
 import { shutdownBufferCaptures } from './components/terminal-pane/TerminalPane'
@@ -149,14 +148,17 @@ function App(): React.JSX.Element {
   // the sidebar hovercard also reads retained entries. If retention only ran
   // when the dashboard is mounted, "done" agents would vanish from the hover
   // any time the user collapses the dashboard panel.
-  // The AGENT_DASHBOARD_ENABLED gate now lives inside the hooks themselves:
-  // useDashboardData is a pure store-selector+memo (no IPC, no effects), and
-  // useRetainedAgentsSync early-returns from its effect when the flag is off.
-  // Calling both unconditionally keeps rules-of-hooks satisfied without any
-  // eslint suppressions and makes the code safe if the flag ever becomes
-  // runtime-dynamic (e.g., driven by settings).
-  const dashboardLiveGroups = useDashboardData()
-  useRetainedAgentsSync(dashboardLiveGroups)
+  //
+  // The retention hooks are hosted inside <RetainedAgentsSyncGate /> (a leaf
+  // component that renders null) rather than being called inline here.
+  // Calling useDashboardData() from App.tsx would subscribe the root component
+  // to high-churn slices (agentStatusByPaneKey + agentStatusEpoch tick at PTY
+  // event frequency), re-rendering the entire app tree on every agent status
+  // update. Hosting the subscriptions in a leaf isolates that churn.
+  //
+  // The AGENT_DASHBOARD_ENABLED gate still lives inside the hooks themselves
+  // (useDashboardData early-returns [] from its memo; useRetainedAgentsSync
+  // early-returns from its effect), so the gate component is cheap when off.
   // Why: git conflict-operation state also drives the worktree cards. Polling
   // cannot live under RightSidebar because App unmounts that subtree when the
   // sidebar is closed, which leaves stale "Rebasing"/"Merging" badges behind
@@ -880,6 +882,10 @@ function App(): React.JSX.Element {
       }
     >
       <TooltipProvider delayDuration={400}>
+        {/* Why: leaf-mounted retention sync. Hosts useDashboardData() +
+            useRetainedAgentsSync() so their high-churn store subscriptions
+            re-render a null component rather than the entire App tree. */}
+        <RetainedAgentsSyncGate />
         {/* Why: in workspace view (split groups always enabled), the full-width
             titlebar is removed so tab groups + terminal extend to the top of
             the window. Left titlebar controls move to a header above the sidebar.
