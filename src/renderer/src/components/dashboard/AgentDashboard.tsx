@@ -80,10 +80,10 @@ const AgentDashboard = React.memo(function AgentDashboard() {
   // terminal or other focused inputs when the dashboard pane is merely open.
   // We keep a local ref so the callback ref below can detect the null → element
   // transition (for focus-on-first-mount), and separately feed the element into
-  // `useDashboardKeyboard` via its callback ref. A plain RefObject alone is
-  // insufficient for the hook because the container can mount AFTER the hook
-  // first runs (the no-repos empty state skips rendering the container div
-  // entirely) — see the hook for details.
+  // `useDashboardKeyboard` via its callback ref. The container is rendered
+  // unconditionally (including on the no-repos empty state) so keyboard
+  // shortcuts remain wired even before any repo is added — otherwise the
+  // filter keys (1-5) would silently no-op until the first repo arrived.
   const containerRef = useRef<HTMLDivElement | null>(null)
 
   // Why: clicking an agent row takes the user to the specific tab the agent
@@ -146,18 +146,12 @@ const AgentDashboard = React.memo(function AgentDashboard() {
 
   const handleClearSearch = useCallback(() => setSearchQuery(''), [])
 
-  if (groups.length === 0) {
-    return (
-      <div className="flex h-full w-full items-center justify-center p-4">
-        <div className="text-center text-[11px] text-muted-foreground">
-          No repos added. Add a repo to see agent activity.
-        </div>
-      </div>
-    )
-  }
-
   const searchActive = searchQuery.trim().length > 0
   const showNoResults = searchActive && !hasResults
+  // Why: render the container unconditionally so the keyboard hook's
+  // callback ref fires on mount even when no repos exist yet — otherwise
+  // filter/arrow shortcuts don't bind until the first repo arrives.
+  const hasRepos = groups.length > 0
 
   return (
     <div
@@ -165,6 +159,14 @@ const AgentDashboard = React.memo(function AgentDashboard() {
       tabIndex={-1}
       className="flex h-full w-full flex-col overflow-hidden outline-none"
     >
+      {!hasRepos ? (
+        <div className="flex h-full w-full items-center justify-center p-4">
+          <div className="text-center text-[11px] text-muted-foreground">
+            No repos added. Add a repo to see agent activity.
+          </div>
+        </div>
+      ) : (
+        <>
       <div className="flex shrink-0 flex-col gap-1.5 border-b border-border/40 px-2 py-1.5">
         <div className="relative flex items-center">
           <Search className="absolute left-2 size-3.5 text-muted-foreground pointer-events-none" />
@@ -322,6 +324,8 @@ const AgentDashboard = React.memo(function AgentDashboard() {
           </div>
         )}
       </div>
+        </>
+      )}
     </div>
   )
 })

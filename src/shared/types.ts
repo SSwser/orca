@@ -789,8 +789,16 @@ export type GlobalSettings = {
   rightSidebarOpenByDefault: boolean
   /** Whether to show the live agent activity count badge in the titlebar. */
   showTitlebarAgentActivity: boolean
-  /** Whether to show the Agent Dashboard panel at the bottom of the right sidebar. */
-  showAgentDashboard: boolean
+  /** Whether to show the Agent Dashboard panel at the bottom of the right sidebar.
+   *  Why: optional because readers use the `settings?.showAgentDashboard !== false`
+   *  idiom (right-sidebar/index.tsx, AgentsPane.tsx) which presumes the field may
+   *  be undefined — e.g. on first hydrate before main-process defaults apply, or
+   *  when migrating settings persisted before this field existed. A required
+   *  `boolean` here would make those readers' fallback branches dead-on-paper
+   *  while still being reached at runtime, which is exactly the kind of type
+   *  hack that drifts silently. Aligning the declaration with reader intent
+   *  keeps the contract honest. */
+  showAgentDashboard?: boolean
   diffDefaultView: 'inline' | 'side-by-side'
   notifications: NotificationSettings
   /** When true, a countdown timer is shown after a Claude agent becomes idle,

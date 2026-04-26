@@ -8,11 +8,17 @@ export type FreshnessSchedulerDeps = {
 
 export type FreshnessScheduler = {
   schedule: () => void
+  /**
+   * Cancel any pending freshness timer. Intended for tests that create a
+   * fresh store per case — production callers do not need this because the
+   * zustand store is a module-level singleton that lives until process exit.
+   */
+  dispose: () => void
 }
 
 export function createFreshnessScheduler(deps: FreshnessSchedulerDeps): FreshnessScheduler {
-  // Why: tests that trigger scheduling must use vi.useFakeTimers() or tear the
-  // entry down before teardown — otherwise a real 30-minute setTimeout leaks
+  // Why: tests that trigger scheduling must use vi.useFakeTimers() or call
+  // `dispose()` in teardown — otherwise a real 30-minute setTimeout leaks
   // into the test process.
   let timer: ReturnType<typeof setTimeout> | null = null
 
@@ -35,6 +41,13 @@ export function createFreshnessScheduler(deps: FreshnessSchedulerDeps): Freshnes
     // exactly one epoch bump at crossing, and rescheduling on them would spin
     // the timer forever because the bump doesn't clear them from the map
     // (retention is intentional so freshness-aware selectors can decay).
+    //
+    // Invariant: the agent-status slice always writes `updatedAt = Date.now()`
+    // on insert/update (see `setAgentStatus` in agent-status.ts), so a
+    // newly-scheduled entry cannot already be stale here. If that invariant
+    // ever breaks (e.g. persistence rehydrate, IPC-synced backdated entries),
+    // the scheduler would silently no-op and miss the epoch bump — revisit
+    // this filter at that time.
     for (const entry of entries) {
       const expiryAt = entry.updatedAt + AGENT_STATUS_STALE_AFTER_MS
       if (expiryAt > now) {
@@ -56,5 +69,5 @@ export function createFreshnessScheduler(deps: FreshnessSchedulerDeps): Freshnes
     }, delayMs)
   }
 
-  return { schedule }
+  return { schedule, dispose: clear }
 }

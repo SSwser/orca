@@ -45,7 +45,14 @@ export function useDashboardKeyboard({
 }: UseDashboardKeyboardParams): ContainerCallbackRef {
   const setActiveWorktree = useAppStore((s) => s.setActiveWorktree)
   const setActiveView = useAppStore((s) => s.setActiveView)
-  const rightSidebarOpen = useAppStore((s) => s.rightSidebarOpen)
+  // Why: no `rightSidebarOpen` guard needed. The keydown listener is attached
+  // to the dashboard container element (see attach-effect below), which lives
+  // inside the right sidebar. When the sidebar is closed it collapses to 0
+  // width with overflow hidden, so focus cannot land inside the dashboard,
+  // and keydown events from the focused element (typically the terminal) are
+  // never dispatched to the dashboard container. Subscribing to the flag here
+  // would only cause this hook to recompute and re-attach the listener on
+  // every sidebar toggle without adding any safety.
 
   // Why: track the container element in state so the attach-effect re-runs
   // whenever the element mounts or unmounts. See the file-level comment for
@@ -59,13 +66,12 @@ export function useDashboardKeyboard({
   const focusedWorktreeIdRef = useRef(focusedWorktreeId)
   const filterRef = useRef(filter)
   const containerElRef = useRef<HTMLDivElement | null>(null)
+  // Why: mirror the three render-driven inputs into refs in a single
+  // commit-phase effect so the stable handleKeyDown callback always reads
+  // the latest values without re-binding the listener at PTY event rate.
   useEffect(() => {
     filteredWorktreesRef.current = filteredWorktrees
-  })
-  useEffect(() => {
     focusedWorktreeIdRef.current = focusedWorktreeId
-  })
-  useEffect(() => {
     filterRef.current = filter
   })
   useEffect(() => {
@@ -77,14 +83,6 @@ export function useDashboardKeyboard({
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
-      // Why: the dashboard now docks at the sidebar bottom regardless of
-      // active tab, so gate only on whether the sidebar is visible. The
-      // listener is already scoped to the dashboard container's element,
-      // so focus-based scoping still isolates these shortcuts.
-      if (!rightSidebarOpen) {
-        return
-      }
-
       // Don't intercept when focus is in an editable element
       const target = e.target as HTMLElement
       if (
@@ -101,8 +99,18 @@ export function useDashboardKeyboard({
         return
       }
 
-      // Filter quick-select: 1-4 keys
+      // Filter quick-select: 1-4 keys.
+      // Why: only fire when focus is on the dashboard container or a worktree
+      // card, not on interactive descendants (dismiss X, expand chevron,
+      // filter toggle, clear-search). Otherwise pressing a digit while such
+      // a button is focused would silently change the filter — a foot-gun,
+      // since buttons are common focus targets after clicks/keyboard nav.
       if (FILTER_KEYS[e.key]) {
+        const onCardOrContainer =
+          target === containerElRef.current || !!target.closest('[data-worktree-id]')
+        if (!onCardOrContainer) {
+          return
+        }
         e.preventDefault()
         setFilter(FILTER_KEYS[e.key])
         return
@@ -156,16 +164,17 @@ export function useDashboardKeyboard({
       }
 
       // Enter: navigate to focused worktree.
-      // Why: only fire when the native keydown target IS a worktree card
-      // (has data-worktree-id). Otherwise Enter on an interactive descendant
-      // (dismiss X, expand chevron, clear-search button, filter toggle) would
-      // be preventDefault'd by this handler — blocking the button's own
-      // activation AND triggering unwanted navigation. The card element
-      // itself is role="button" with tabIndex=0, so it receives focus during
-      // arrow navigation, and Enter on it should navigate as intended.
+      // Why: only fire when the native keydown target is the card itself OR
+      // is nested inside one — but never on interactive descendants like the
+      // dismiss X, expand chevron, clear-search button, or filter toggle,
+      // whose own handlers would be blocked by preventDefault. Today the card
+      // has no focusable descendants (the action buttons stopPropagation and
+      // are reached via mouse, not keyboard Tab from the card), so using
+      // `closest('[data-worktree-id]')` is safe AND robust against future
+      // changes that might add focusable descendants elsewhere in the card.
       if (e.key === 'Enter' && focusedWorktreeIdRef.current) {
         const enterTarget = e.target as HTMLElement | null
-        if (!enterTarget || !enterTarget.dataset.worktreeId) {
+        if (!enterTarget || !enterTarget.closest('[data-worktree-id]')) {
           return
         }
         e.preventDefault()
@@ -173,7 +182,7 @@ export function useDashboardKeyboard({
         setActiveView('terminal')
       }
     },
-    [rightSidebarOpen, setFocusedWorktreeId, setFilter, setActiveWorktree, setActiveView]
+    [setFocusedWorktreeId, setFilter, setActiveWorktree, setActiveView]
   )
 
   useEffect(() => {

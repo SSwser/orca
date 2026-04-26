@@ -389,6 +389,22 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
         return
       }
       set((s) => {
+        // Why: skip the allocation + set(...) entirely when every input entry
+        // is already present by reference. Consumers of retainedAgentsByPaneKey
+        // select on its identity (dashboard + hovercard), so a spurious map
+        // reallocation forces re-renders even when nothing changed. Mirrors
+        // the identity-preservation pattern used by pruneRetainedAgents and
+        // clearRetentionSuppressedPaneKeys.
+        let changed = false
+        for (const retained of entries) {
+          if (s.retainedAgentsByPaneKey[retained.entry.paneKey] !== retained) {
+            changed = true
+            break
+          }
+        }
+        if (!changed) {
+          return s
+        }
         const next = { ...s.retainedAgentsByPaneKey }
         for (const retained of entries) {
           // Why: INVARIANT — the map key equals retained.entry.paneKey. This
