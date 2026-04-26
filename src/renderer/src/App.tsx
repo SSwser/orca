@@ -614,7 +614,18 @@ function App(): React.JSX.Element {
 
       // Cmd/Ctrl+Shift+D — open right sidebar (agent dashboard is now
       // docked at the sidebar bottom, so only toggle visibility).
+      // Why: skip when a terminal is focused — that combo is the terminal
+      // split-pane shortcut (see terminal-shortcut-policy.ts). Both listeners
+      // share the window capture phase and registration order can vary with
+      // React effect re-runs, so a DOM check is the reliable coordination
+      // mechanism (same pattern as Cmd+Shift+G above). xterm-helper-textarea
+      // is the focus target the terminal handler itself uses to detect
+      // terminal focus (see keyboard-handlers.ts isEditableTarget).
       if (AGENT_DASHBOARD_ENABLED && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'd') {
+        const active = document.activeElement as HTMLElement | null
+        if (active?.classList.contains('xterm-helper-textarea')) {
+          return
+        }
         dispatchClearModifierHints()
         e.preventDefault()
         actions.setRightSidebarOpen(true)

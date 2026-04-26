@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react'
+import React, { useState, useCallback, useMemo, useRef } from 'react'
 import { Search, X, ChevronDown, ChevronRight, FolderGit2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/store'
@@ -78,11 +78,12 @@ const AgentDashboard = React.memo(function AgentDashboard() {
   // Why: the keyboard hook scopes its listener to this container (not window)
   // so dashboard shortcuts (1-5, arrows, Enter, Escape) don't hijack the
   // terminal or other focused inputs when the dashboard pane is merely open.
-  // We keep a local ref for the focus-on-mount effect below, and separately
-  // feed the element into `useDashboardKeyboard` via its callback ref. A
-  // plain RefObject alone is insufficient for the hook because the container
-  // can mount AFTER the hook first runs (the no-repos empty state skips
-  // rendering the container div entirely) — see the hook for details.
+  // We keep a local ref so the callback ref below can detect the null → element
+  // transition (for focus-on-first-mount), and separately feed the element into
+  // `useDashboardKeyboard` via its callback ref. A plain RefObject alone is
+  // insufficient for the hook because the container can mount AFTER the hook
+  // first runs (the no-repos empty state skips rendering the container div
+  // entirely) — see the hook for details.
   const containerRef = useRef<HTMLDivElement | null>(null)
 
   // Why: clicking an agent row takes the user to the specific tab the agent
@@ -116,34 +117,32 @@ const AgentDashboard = React.memo(function AgentDashboard() {
     setFilter
   })
 
-  // Why: combine the local RefObject (used by the focus-on-mount effect
-  // below) with the keyboard hook's callback ref so both see the same
-  // element on attach/detach. A callback ref is the canonical React pattern
-  // for "run code when an element mounts/unmounts" and is required here
-  // because the container div is conditionally rendered — a RefObject alone
-  // wouldn't notify the keyboard hook when the container appears after the
-  // empty-state branch is replaced.
+  // Why: combine the local RefObject with the keyboard hook's callback ref so
+  // both see the same element on attach/detach, and use the callback to drive
+  // focus-on-first-mount (below). A callback ref is the canonical React
+  // pattern for "run code when an element mounts/unmounts" and is required
+  // here because the container div is conditionally rendered — a RefObject
+  // alone wouldn't notify the keyboard hook (or the focus logic) when the
+  // container appears after the empty-state branch is replaced.
   const setContainerRef = useCallback(
     (el: HTMLDivElement | null) => {
+      const hadEl = containerRef.current !== null
       containerRef.current = el
       setKeyboardContainer(el)
+      // Why: focus the container the first time it becomes non-null so keyboard
+      // shortcuts work immediately — including on the path where the empty-state
+      // branch renders first (no container) and repos arrive later. A []-deps
+      // useEffect would fire once against a null ref on that path and never
+      // re-run. activeElement guard prevents stealing focus from inputs the
+      // user is currently typing in (e.g. sidebar search, terminal).
+      if (el && !hadEl) {
+        if (document.activeElement === null || document.activeElement === document.body) {
+          el.focus()
+        }
+      }
     },
     [setKeyboardContainer]
   )
-
-  // Why: focus the container on mount so keyboard shortcuts work immediately
-  // without requiring an initial click inside the dashboard. tabIndex={-1}
-  // on the container makes it programmatically focusable without inserting
-  // it into the tab order. The activeElement guard prevents focus-stealing
-  // when the panel (re)mounts while the user is typing elsewhere — the
-  // dashboard unmounts on collapse and remounts on expand, so without this
-  // guard every expand would yank focus away from the right-sidebar search
-  // box, terminal, or any other input that currently owns focus.
-  useEffect(() => {
-    if (document.activeElement === null || document.activeElement === document.body) {
-      containerRef.current?.focus()
-    }
-  }, [])
 
   const handleClearSearch = useCallback(() => setSearchQuery(''), [])
 

@@ -10,6 +10,7 @@ import {
 } from '../../../../shared/agent-status-types'
 import type { TerminalTab } from '../../../../shared/types'
 import { isExplicitAgentStatusFresh } from '@/lib/agent-status'
+import { createFreshnessScheduler } from './agent-status-freshness-scheduler'
 
 /** Snapshot of a finished (or vanished) agent status entry, kept around so
  *  the dashboard + sidebar hover can continue showing the completion until the
@@ -94,47 +95,9 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
   set,
   get
 ) => {
-  // Why: tests that call setAgentStatus must use vi.useFakeTimers() or remove the entry before teardown — otherwise a real 30-minute setTimeout leaks into the test process.
-  let staleExpiryTimer: ReturnType<typeof setTimeout> | null = null
-
-  const clearStaleExpiryTimer = (): void => {
-    if (staleExpiryTimer !== null) {
-      clearTimeout(staleExpiryTimer)
-      staleExpiryTimer = null
-    }
-  }
-
-  const scheduleNextFreshnessExpiry = (): void => {
-    clearStaleExpiryTimer()
-
-    const entries = Object.values(get().agentStatusByPaneKey)
-    if (entries.length === 0) {
-      return
-    }
-
-    const now = Date.now()
-    let nextExpiryAt = Number.POSITIVE_INFINITY
-    // Why: skip entries already past the stale boundary — they each contribute
-    // exactly one epoch bump at crossing, and rescheduling on them would spin
-    // the timer forever because the bump doesn't clear them from the map
-    // (retention is intentional so freshness-aware selectors can decay).
-    for (const entry of entries) {
-      const expiryAt = entry.updatedAt + AGENT_STATUS_STALE_AFTER_MS
-      if (expiryAt > now) {
-        nextExpiryAt = Math.min(nextExpiryAt, expiryAt)
-      }
-    }
-    if (!Number.isFinite(nextExpiryAt)) {
-      return
-    }
-
-    // Why: +1 ms ensures the timer fires strictly after the stale boundary,
-    // so isExplicitAgentStatusFresh (which uses `<=`) flips to stale when the
-    // timer runs. Without the +1, float/rounding could leave the entry "just
-    // fresh enough" at the tick, delaying the epoch bump by one tick.
-    const delayMs = nextExpiryAt - now + 1
-    staleExpiryTimer = setTimeout(() => {
-      staleExpiryTimer = null
+  const freshness = createFreshnessScheduler({
+    getEntries: () => Object.values(get().agentStatusByPaneKey),
+    bumpEpochs: () => {
       // Why: freshness is time-based, not event-based. Advancing these epochs
       // at the exact stale boundary forces all freshness-aware selectors to
       // recompute — and re-sorts WorktreeList — even when no new PTY output
@@ -144,9 +107,8 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
         agentStatusEpoch: s.agentStatusEpoch + 1,
         sortEpoch: s.sortEpoch + 1
       }))
-      scheduleNextFreshnessExpiry()
-    }, delayMs)
-  }
+    }
+  })
 
   return {
     agentStatusByPaneKey: {},
@@ -274,7 +236,7 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
       })
       // Why: schedule after set completes so the timer reads the updated map.
       // queueMicrotask avoids re-entry into the zustand store during set.
-      queueMicrotask(() => scheduleNextFreshnessExpiry())
+      queueMicrotask(() => freshness.schedule())
     },
 
     removeAgentStatus: (paneKey) => {
@@ -293,7 +255,7 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
           sortEpoch: s.sortEpoch + 1
         }
       })
-      queueMicrotask(() => scheduleNextFreshnessExpiry())
+      queueMicrotask(() => freshness.schedule())
     },
 
     removeAgentStatusByTabPrefix: (tabIdPrefix) => {
@@ -318,7 +280,7 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
           sortEpoch: s.sortEpoch + 1
         }
       })
-      queueMicrotask(() => scheduleNextFreshnessExpiry())
+      queueMicrotask(() => freshness.schedule())
     },
 
     dropAgentStatus: (paneKey) => {
@@ -394,7 +356,7 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
       // pre-set live presence so a noop drop on a paneKey with no live and
       // no retained entry (or a retained-only dismissal) skips the microtask.
       if (hasLiveBeforeSet) {
-        queueMicrotask(() => scheduleNextFreshnessExpiry())
+        queueMicrotask(() => freshness.schedule())
       }
     },
 
@@ -409,6 +371,13 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
       set((s) => {
         const next = { ...s.retainedAgentsByPaneKey }
         for (const retained of entries) {
+          // Why: INVARIANT — the map key equals retained.entry.paneKey. This
+          // lets callers look up a retained row by the same paneKey they use
+          // for agentStatusByPaneKey and keeps dismissal (dismissRetainedAgent)
+          // keyed on a single identifier. collectRetainedAgentsOnDisappear
+          // relies on this invariant too: it checks
+          // `retainedAgentsByPaneKey[paneKey]` to decide whether a vanished
+          // agent is already retained.
           next[retained.entry.paneKey] = retained
         }
         return { retainedAgentsByPaneKey: next }
@@ -416,6 +385,13 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
     },
 
     dismissRetainedAgent: (paneKey) => {
+      // Why: no agentStatusEpoch / sortEpoch bump here (mirrors retainAgents).
+      // Retained rows are a pure read-overlay on top of agentStatusByPaneKey —
+      // they do not contribute to smart-sort scoring (see computeSmartScore*
+      // in smart-sort.ts, which reads agentStatusByPaneKey only) and dashboard
+      // selectors re-render on retainedAgentsByPaneKey identity changes
+      // directly. Bumping epochs would force sidebar re-sorts and selector
+      // recomputations for a change that cannot affect either result.
       set((s) => {
         if (!(paneKey in s.retainedAgentsByPaneKey)) {
           return s
@@ -453,14 +429,42 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
       set((s) => {
         let changed = false
         const next: Record<string, RetainedAgentEntry> = {}
+        // Why: mirror dismissRetainedAgent's hasLive-gated suppressor logic.
+        // When a dismissed paneKey ALSO has a concurrent live entry in
+        // agentStatusByPaneKey, removing the retained row alone lets the next
+        // live→gone transition for that paneKey re-retain the row via the
+        // retention sync (collectRetainedAgentsOnDisappear only skips paneKeys
+        // currently present in retainedAgentsByPaneKey). Without planting a
+        // suppressor here, "Dismiss all" for a worktree would silently
+        // resurrect the just-dismissed rows as soon as the live agents
+        // disappeared. Only plant suppressors for the hasLive subset — a stray
+        // suppressor on a retained-only paneKey would leak indefinitely
+        // because no live→gone transition would ever consume it.
+        const toSuppress: string[] = []
         for (const [key, ra] of Object.entries(s.retainedAgentsByPaneKey)) {
           if (ra.worktreeId === worktreeId) {
             changed = true
+            if (key in s.agentStatusByPaneKey && !(key in s.retentionSuppressedPaneKeys)) {
+              toSuppress.push(key)
+            }
             continue
           }
           next[key] = ra
         }
-        return changed ? { retainedAgentsByPaneKey: next } : s
+        if (!changed) {
+          return s
+        }
+        if (toSuppress.length === 0) {
+          return { retainedAgentsByPaneKey: next }
+        }
+        const nextSuppressed = { ...s.retentionSuppressedPaneKeys }
+        for (const key of toSuppress) {
+          nextSuppressed[key] = true
+        }
+        return {
+          retainedAgentsByPaneKey: next,
+          retentionSuppressedPaneKeys: nextSuppressed
+        }
       })
     },
 

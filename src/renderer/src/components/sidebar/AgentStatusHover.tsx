@@ -151,9 +151,14 @@ const AgentStatusHover = React.memo(function AgentStatusHover({
           state: shouldDecay ? 'idle' : entry.state,
           // Why: the oldest stateHistory entry's startedAt is the agent's
           // original "first seen" timestamp. When history is empty the entry
-          // is brand new, so updatedAt is the best start-time approximation
-          // available. Matches useDashboardData's semantics exactly.
-          startedAt: entry.stateHistory[0]?.startedAt ?? entry.updatedAt
+          // has never transitioned state, so stateStartedAt (the moment the
+          // current — and only — state began) is the true first-seen
+          // timestamp. Do NOT fall back to updatedAt: it advances on every
+          // tool/prompt ping within the same state, which would corrupt
+          // oldest-first ordering and the "started … ago" display for
+          // long-running agents between state transitions. Matches
+          // useDashboardData's semantics exactly.
+          startedAt: entry.stateHistory[0]?.startedAt ?? entry.stateStartedAt
         })
         seenPaneKeys.add(entry.paneKey)
       }

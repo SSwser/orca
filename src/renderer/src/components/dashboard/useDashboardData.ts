@@ -110,9 +110,14 @@ function buildAgentRowsForWorktree(
         agentType: entry.agentType ?? 'unknown',
         state: shouldDecay ? 'idle' : entry.state,
         // Why: the oldest stateHistory entry's startedAt is the agent's original
-        // "first seen" timestamp. When history is empty the entry is brand new,
-        // so updatedAt is the best start-time approximation available.
-        startedAt: entry.stateHistory[0]?.startedAt ?? entry.updatedAt
+        // "first seen" timestamp. When history is empty the entry has never
+        // transitioned state, so stateStartedAt (the moment the current — and
+        // only — state began) is the true first-seen timestamp. Do NOT fall back
+        // to updatedAt: it advances on every tool/prompt ping within the same
+        // state, which would corrupt oldest-first ordering and the "started …
+        // ago" display for long-running agents between state transitions. See
+        // agent-status.ts (stateStartedAt carry-forward on same-state pings).
+        startedAt: entry.stateHistory[0]?.startedAt ?? entry.stateStartedAt
       })
     }
   }

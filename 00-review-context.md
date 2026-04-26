@@ -29,33 +29,31 @@
 - M src/shared/constants.ts
 - M src/shared/types.ts
 
-Total: 23 files changed, 2683 insertions(+), 288 deletions(-)
-
 ## Changed Line Ranges (PR Scope)
 <!-- In scope: issues on these lines OR caused by these changes. Out of scope: unrelated pre-existing issues -->
 | File | Changed Lines |
 |------|---------------|
-| src/main/codex-accounts/runtime-home-service.test.ts | 66 |
-| src/main/codex-accounts/service.test.ts | 60 |
-| src/renderer/src/App.tsx | 3-7, 18, 147-161, 612-620, 885-888 |
-| src/renderer/src/components/dashboard/AgentDashboard.tsx | 1-311 (all new) |
-| src/renderer/src/components/dashboard/DashboardAgentRow.tsx | 1-476 (all new) |
-| src/renderer/src/components/dashboard/DashboardFilterBar.tsx | 1-41 (all new) |
-| src/renderer/src/components/dashboard/DashboardWorktreeCard.tsx | 1-144 (all new) |
-| src/renderer/src/components/dashboard/RetainedAgentsSyncGate.tsx | 1-17 (all new) |
-| src/renderer/src/components/dashboard/useDashboardData.ts | 1-216 (all new) |
-| src/renderer/src/components/dashboard/useDashboardFilter.ts | 1-170 (all new) |
-| src/renderer/src/components/dashboard/useDashboardKeyboard.ts | 1-176 (all new) |
-| src/renderer/src/components/dashboard/useNow.ts | 1-18 (all new) |
-| src/renderer/src/components/dashboard/useRetainedAgents.test.ts | 1-95 (all new) |
-| src/renderer/src/components/dashboard/useRetainedAgents.ts | 1-229 (all new) |
-| src/renderer/src/components/right-sidebar/DashboardBottomPanel.tsx | 1-230 (all new) |
+| src/main/codex-accounts/runtime-home-service.test.ts | 66-66 |
+| src/main/codex-accounts/service.test.ts | 60-60 |
+| src/renderer/src/App.tsx | 3-7, 18-18, 147-161, 612-620, 885-888 |
+| src/renderer/src/components/dashboard/AgentDashboard.tsx | 1-330 |
+| src/renderer/src/components/dashboard/DashboardAgentRow.tsx | 1-476 |
+| src/renderer/src/components/dashboard/DashboardFilterBar.tsx | 1-41 |
+| src/renderer/src/components/dashboard/DashboardWorktreeCard.tsx | 1-144 |
+| src/renderer/src/components/dashboard/RetainedAgentsSyncGate.tsx | 1-17 |
+| src/renderer/src/components/dashboard/useDashboardData.ts | 1-216 |
+| src/renderer/src/components/dashboard/useDashboardFilter.ts | 1-170 |
+| src/renderer/src/components/dashboard/useDashboardKeyboard.ts | 1-200 |
+| src/renderer/src/components/dashboard/useNow.ts | 1-18 |
+| src/renderer/src/components/dashboard/useRetainedAgents.test.ts | 1-95 |
+| src/renderer/src/components/dashboard/useRetainedAgents.ts | 1-229 |
+| src/renderer/src/components/right-sidebar/DashboardBottomPanel.tsx | 1-273 |
 | src/renderer/src/components/right-sidebar/index.tsx | 9, 25, 116-121, 158-168 |
-| src/renderer/src/components/settings/AgentsPane.tsx | 4, 250-255, 258-289 |
-| src/renderer/src/components/sidebar/AgentStatusHover.tsx | 1-300 (large rewrite, most of file) |
-| src/renderer/src/store/slices/agent-status-drop.test.ts | 1-142 (all new) |
+| src/renderer/src/components/settings/AgentsPane.tsx | 4, 250-289 |
+| src/renderer/src/components/sidebar/AgentStatusHover.tsx | 5-10, 21-42, 47-53, 78-81, 87-92, 98-176, 180-195, 227-231, 237-299 |
+| src/renderer/src/store/slices/agent-status-drop.test.ts | 1-142 |
 | src/renderer/src/store/slices/agent-status.test.ts | 257, 300 |
-| src/renderer/src/store/slices/agent-status.ts | 43-47, 62-77, 87-90, 155, 255-267, 270, 324-386, 390-397, 399-400, 442-456 |
+| src/renderer/src/store/slices/agent-status.ts | 43-47, 62-77, 87-90, 155, 255-270, 324-401, 405-415, 425-448, 480-494 |
 | src/shared/constants.ts | 148 |
 | src/shared/types.ts | 792-793 |
 
@@ -77,48 +75,41 @@ Total: 23 files changed, 2683 insertions(+), 288 deletions(-)
 - src/renderer/src/components/dashboard/useDashboardFilter.ts
 - src/renderer/src/components/dashboard/useDashboardKeyboard.ts
 - src/renderer/src/components/dashboard/useNow.ts
-- src/renderer/src/components/dashboard/useRetainedAgents.test.ts
 - src/renderer/src/components/dashboard/useRetainedAgents.ts
+- src/renderer/src/components/dashboard/useRetainedAgents.test.ts
 - src/renderer/src/components/right-sidebar/DashboardBottomPanel.tsx
 - src/renderer/src/components/right-sidebar/index.tsx
 - src/renderer/src/components/settings/AgentsPane.tsx
 - src/renderer/src/components/sidebar/AgentStatusHover.tsx
 
-### Backend/API
-- src/main/codex-accounts/runtime-home-service.test.ts
-- src/main/codex-accounts/service.test.ts
-
-### Utility/Common (state management/shared types)
+### Utility/Common (store slices + shared types/constants + test stubs)
 - src/renderer/src/store/slices/agent-status.ts
 - src/renderer/src/store/slices/agent-status.test.ts
 - src/renderer/src/store/slices/agent-status-drop.test.ts
 - src/shared/constants.ts
 - src/shared/types.ts
+- src/main/codex-accounts/runtime-home-service.test.ts
+- src/main/codex-accounts/service.test.ts
 
 ## Skipped Issues (Do Not Re-validate)
-<!-- Issues validated but deemed not worth fixing. Do not re-validate these in future iterations. -->
 <!-- Format: [file:line-range] | [severity] | [reason skipped] | [issue summary] -->
 
-src/renderer/src/components/right-sidebar/DashboardBottomPanel.tsx:123-137 | Medium | Defensive doc only - handlers stable by construction | Drag teardown fragility against future edits
-src/renderer/src/components/dashboard/useDashboardKeyboard.ts:46-54 | Low | Cosmetic perf polish - 3 ref writes per render is negligible | Ref-sync effects lack dep arrays
-src/renderer/src/components/dashboard/DashboardAgentRow.tsx:178-181 | Medium | Requires composite-widget refactor - out of scope for review-fix | role=button nested interactive elements
-src/renderer/src/components/dashboard/DashboardAgentRow.tsx:229-257 | Low | Electron/Chromium-only is fine - already documented | interpolate-size CSS Chromium-only
-src/renderer/src/components/dashboard/DashboardWorktreeCard.tsx:84-90 | Medium | Requires composite-widget refactor - out of scope | role=button nested interactive elements
-src/renderer/src/components/dashboard/useDashboardData.ts:192-215 | Medium | Structural perf concern - deferred per reviewer guidance | Memo recomputes on every PTY event
-src/renderer/src/components/dashboard/useDashboardData.ts:150-178 | Low | Structural per-worktree cache - non-trivial refactor | repos.map creates new refs, breaks React.memo
-src/renderer/src/components/dashboard/useRetainedAgents.ts:44-55 | Medium | Structural concern - current behavior is safe | Effect only observes suppressor on liveGroups change
-src/renderer/src/components/dashboard/useRetainedAgents.ts:165-168 | Low | Guarded defensively - no actual bug | POSITIVE_INFINITY fallback unreachable
-src/renderer/src/components/dashboard/useRetainedAgents.ts:150 | Low | Safe by construction - tab IDs unique | Cross-worktree paneKey collision theoretical only
-src/renderer/src/components/dashboard/AgentDashboard.tsx:124 | Low | Current behavior is intentional per comment | document.activeElement check
-src/renderer/src/components/dashboard/AgentDashboard.tsx:87-97 | Low | Existing comment sufficient | Optional comment request
-src/renderer/src/components/sidebar/AgentStatusHover.tsx:47 | Low | Not confirmed without profiling | Possible render amplification
-src/renderer/src/components/sidebar/AgentStatusHover.tsx:114-127 | Low | Style choice only | Minor inefficiency in entriesByTabId
-src/renderer/src/components/right-sidebar/index.tsx:168 | Low | Intentional product decision | Brief dashboard flash on launch
-src/renderer/src/components/settings/AgentsPane.tsx:273 | Low | Already fine | Toggle switch a11y
-src/renderer/src/store/slices/agent-status.test.ts:257,300 | Low | False positive - retainAgents does not schedule timers | Missing vi.useFakeTimers()
-src/shared/types.ts:792-793 | Low | Comments document defense rationale | showAgentDashboard type/consumer inconsistency
+src/renderer/src/components/dashboard/useDashboardKeyboard.ts:89 | Medium | Theoretical, no realistic bug path | target.isContentEditable cast to HTMLElement
+src/renderer/src/components/dashboard/useDashboardKeyboard.ts:167 | Medium | Stylistic shadowing, no bug | target variable shadowed
+src/renderer/src/components/dashboard/useDashboardKeyboard.ts:62-76 | Low | Safe idiomatic pattern | useEffect writes to refs
+src/renderer/src/components/dashboard/useDashboardKeyboard.ts:105-108 | Low | Cosmetic, no bug | FILTER_KEYS[e.key] double lookup
+src/renderer/src/components/dashboard/DashboardAgentRow.tsx:122-126 | Low | False positive | stopKeyDown no preventDefault on Space
+src/renderer/src/components/dashboard/DashboardAgentRow.tsx:283-321 | Low | Working as designed (a11y) | X button opacity crossfade focus behavior
+src/renderer/src/components/dashboard/DashboardAgentRow.tsx:148 | Low | Correct code | startedAt > 0 ? x : null sentinel
+src/renderer/src/components/dashboard/useDashboardData.ts:213-214 | Low | Self-refuting - buildDashboardData already takes now param | eslint-disable-next-line exhaustive-deps
+src/renderer/src/components/dashboard/useDashboardData.ts:81-121 + src/renderer/src/components/sidebar/AgentStatusHover.tsx:98-160 | Medium | Structural refactor, consistency now enforced by Finding 1 fix | Duplicated row-building logic
+src/renderer/src/components/dashboard/useRetainedAgents.ts:165-168 | Medium | False positive - startedAt in retained is always real timestamp | retained startedAt 0 edge case in Math.min
+src/renderer/src/store/slices/agent-status.ts:97-98 | Medium | Structural fix >50 unrelated lines; existing comment warns | staleExpiryTimer no dispose hook
+src/renderer/src/store/slices/agent-status.ts:155 | Low | Consumption already invariant; documented | retentionSuppressedPaneKeys orphan concern
+src/renderer/src/store/slices/agent-status-drop.test.ts:100-116 | Low | Nice-to-have, not a regression-risk | Missing identity-preservation assertion
+src/main/codex-accounts/*.test.ts | Low | Out of scope - test-fixture tech debt | makeDefaultGlobalSettings helper suggestion
 
 ## Iteration State
 Current iteration: 1
 Last completed phase: Validation
-Files fixed this iteration: []
+Files fixed this iteration: [DashboardAgentRow.tsx, useDashboardData.ts, AgentStatusHover.tsx, agent-status.ts, agent-status.test.ts]

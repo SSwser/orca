@@ -148,6 +148,13 @@ const DashboardAgentRow = React.memo(function DashboardAgentRow({
   const startedAt = agent.startedAt > 0 ? agent.startedAt : null
   const doneAt = lastEnteredDoneAt(agent)
   const prompt = agent.entry.prompt.trim()
+  // Why: `agent.entry.prompt` is normalized to '' when the prompt is unknown
+  // (fresh agent, missing telemetry). Rendering the row with an empty primary
+  // slot would collapse the text column and leave the row with no human-
+  // readable label — just a state dot and icon. Fall back to the state label
+  // ("Working", "Done", "Waiting", …) so every row is identifiable at a
+  // glance, matching the old AgentStatusHover.tsx behavior.
+  const displayLabel = prompt || agentStateLabel(asDotState(agent.state))
   // Why: the tool row describes what the agent is *currently* doing; once it
   // leaves working, that line goes stale and misleads (a done row showing
   // "Bash: pnpm test" reads as if the command is still running). Gate tool
@@ -226,35 +233,37 @@ const DashboardAgentRow = React.memo(function DashboardAgentRow({
             {formatAgentTypeLabel(agent.agentType)}
           </TooltipContent>
         </Tooltip>
-        {prompt && (
-          // Why: animate between a 1-line clipped height and the content's
-          // natural height using Chromium's `interpolate-size: allow-keywords`
-          // — this is the only way to transition a `height` property to/from
-          // `auto` without measuring sizes in JS. Falls back to an instant
-          // swap in engines that don't support it. The inner span keeps
-          // overflow-hidden so the truncate→wrap class flip stays clipped
-          // during the interpolation.
-          //
-          // Done and waiting rows get "unread" weight (semibold + full
-          // foreground) so the user can tell at a glance which rows need
-          // their attention. Working/idle stay at the quieter baseline
-          // since the state dot (spinner or neutral) is already doing the
-          // work. Mirrors the convention in Slack/Gmail/Linear where the
-          // row text thickens to signal "you haven't dealt with this yet."
-          <span
-            className={cn(
-              'block min-w-0 flex-1 overflow-hidden text-[11px] leading-snug',
-              'transition-[height] duration-200 ease-out [interpolate-size:allow-keywords]',
-              expanded ? 'h-auto whitespace-pre-wrap break-words' : 'h-[1lh] truncate',
-              agent.state === 'done' || agent.state === 'waiting' || agent.state === 'blocked'
-                ? 'font-semibold text-foreground'
-                : 'font-medium text-foreground/90'
-            )}
-            title={expanded ? undefined : prompt}
-          >
-            {prompt}
-          </span>
-        )}
+        {/* Why: animate between a 1-line clipped height and the content's
+            natural height using Chromium's `interpolate-size: allow-keywords`
+            — this is the only way to transition a `height` property to/from
+            `auto` without measuring sizes in JS. Falls back to an instant
+            swap in engines that don't support it. The inner span keeps
+            overflow-hidden so the truncate→wrap class flip stays clipped
+            during the interpolation.
+
+            Done and waiting rows get "unread" weight (semibold + full
+            foreground) so the user can tell at a glance which rows need
+            their attention. Working/idle stay at the quieter baseline
+            since the state dot (spinner or neutral) is already doing the
+            work. Mirrors the convention in Slack/Gmail/Linear where the
+            row text thickens to signal "you haven't dealt with this yet."
+
+            Rendered unconditionally with a state-label fallback so rows
+            without a prompt (fresh/unknown) still have a human-readable
+            primary label instead of an empty text column. */}
+        <span
+          className={cn(
+            'block min-w-0 flex-1 overflow-hidden text-[11px] leading-snug',
+            'transition-[height] duration-200 ease-out [interpolate-size:allow-keywords]',
+            expanded ? 'h-auto whitespace-pre-wrap break-words' : 'h-[1lh] truncate',
+            agent.state === 'done' || agent.state === 'waiting' || agent.state === 'blocked'
+              ? 'font-semibold text-foreground'
+              : 'font-medium text-foreground/90'
+          )}
+          title={expanded ? undefined : displayLabel}
+        >
+          {displayLabel}
+        </span>
         {/* Why: right cluster mirrors the screenshot reference — the status
             indicator (state dot), identity (agent icon), a muted timestamp,
             and the dismiss-X all live in one flex group on the right so
