@@ -63,6 +63,20 @@ export default function DashboardBottomPanel(): React.JSX.Element {
     maxHeight: number
   } | null>(null)
 
+  // Why: mirror `height`/`collapsed` into refs so callbacks and the unmount
+  // flush can read the latest value without being re-created on every change.
+  // `onResizeStart` previously listed `height` in its deps, which meant every
+  // mousemove (which calls setHeight) recreated the callback — pure waste on
+  // the hot drag path. Refs keep the callback identity stable.
+  const heightRef = useRef(height)
+  const collapsedRef = useRef(collapsed)
+  useEffect(() => {
+    heightRef.current = height
+  }, [height])
+  useEffect(() => {
+    collapsedRef.current = collapsed
+  }, [collapsed])
+
   // Why: persist height + collapsed via localStorage (renderer-only) so the
   // layout survives reloads. Debounce writes so continuous drag doesn't spam.
   useEffect(() => {
@@ -75,6 +89,26 @@ export default function DashboardBottomPanel(): React.JSX.Element {
     }, 150)
     return () => window.clearTimeout(timer)
   }, [height, collapsed])
+
+  // Why: the debounced write above clears its pending timeout on every deps
+  // change AND on unmount — so the user's final drag value is lost if the
+  // component unmounts within the 150ms debounce window (hot reload, hiding
+  // the dashboard, closing the window). This separate mount-lifecycle effect
+  // has empty deps, so its cleanup runs ONLY on true unmount (never on deps
+  // re-run), and it flushes the latest values synchronously to localStorage.
+  // Reading via refs ensures we write the final state, not a stale snapshot.
+  useEffect(() => {
+    return () => {
+      try {
+        window.localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({ height: heightRef.current, collapsed: collapsedRef.current })
+        )
+      } catch {
+        // ignore quota / privacy-mode errors
+      }
+    }
+  }, [])
 
   const onResizeMove = useCallback((event: MouseEvent) => {
     const state = resizeStateRef.current
@@ -109,7 +143,13 @@ export default function DashboardBottomPanel(): React.JSX.Element {
       const maxHeight = Math.max(MIN_HEIGHT, sidebarHeight - 160)
       resizeStateRef.current = {
         startY: event.clientY,
-        startHeight: height,
+        // Why: use the CLAMPED height, not the raw persisted value. If the
+        // stored height exceeds the current sidebar max (e.g. reopening in a
+        // smaller window), the panel renders at `maxHeight` but drag math
+        // would start from the raw value, so the handle appears unresponsive
+        // until the cursor travels the difference. Clamping here keeps the
+        // drag feel 1:1 with what's on screen.
+        startHeight: Math.min(heightRef.current, maxHeight),
         maxHeight
       }
       document.body.style.cursor = 'row-resize'
@@ -117,7 +157,10 @@ export default function DashboardBottomPanel(): React.JSX.Element {
       window.addEventListener('mousemove', onResizeMove)
       window.addEventListener('mouseup', onResizeEnd)
     },
-    [height, onResizeMove, onResizeEnd]
+    // Why: `height` intentionally omitted — we read it via `heightRef` so the
+    // callback identity stays stable during a drag. Including `height` would
+    // recreate this callback on every mousemove (see heightRef declaration).
+    [onResizeMove, onResizeEnd]
   )
 
   useEffect(() => {

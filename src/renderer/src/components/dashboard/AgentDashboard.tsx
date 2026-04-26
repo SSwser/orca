@@ -78,7 +78,12 @@ const AgentDashboard = React.memo(function AgentDashboard() {
   // Why: the keyboard hook scopes its listener to this container (not window)
   // so dashboard shortcuts (1-5, arrows, Enter, Escape) don't hijack the
   // terminal or other focused inputs when the dashboard pane is merely open.
-  const containerRef = useRef<HTMLDivElement>(null)
+  // We keep a local ref for the focus-on-mount effect below, and separately
+  // feed the element into `useDashboardKeyboard` via its callback ref. A
+  // plain RefObject alone is insufficient for the hook because the container
+  // can mount AFTER the hook first runs (the no-repos empty state skips
+  // rendering the container div entirely) — see the hook for details.
+  const containerRef = useRef<HTMLDivElement | null>(null)
 
   // Why: clicking an agent row takes the user to the specific tab the agent
   // ran in, not just the worktree's last-active tab. Retained rows can outlive
@@ -103,14 +108,28 @@ const AgentDashboard = React.memo(function AgentDashboard() {
   // even when nothing else changed — the 30s `now` tick alone would cascade.
   const handleCardFocus = useCallback((worktreeId: string) => setFocusedWorktreeId(worktreeId), [])
 
-  useDashboardKeyboard({
+  const setKeyboardContainer = useDashboardKeyboard({
     filteredWorktrees: visibleWorktrees,
     focusedWorktreeId,
     setFocusedWorktreeId,
     filter,
-    setFilter,
-    containerRef
+    setFilter
   })
+
+  // Why: combine the local RefObject (used by the focus-on-mount effect
+  // below) with the keyboard hook's callback ref so both see the same
+  // element on attach/detach. A callback ref is the canonical React pattern
+  // for "run code when an element mounts/unmounts" and is required here
+  // because the container div is conditionally rendered — a RefObject alone
+  // wouldn't notify the keyboard hook when the container appears after the
+  // empty-state branch is replaced.
+  const setContainerRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      containerRef.current = el
+      setKeyboardContainer(el)
+    },
+    [setKeyboardContainer]
+  )
 
   // Why: focus the container on mount so keyboard shortcuts work immediately
   // without requiring an initial click inside the dashboard. tabIndex={-1}
@@ -143,7 +162,7 @@ const AgentDashboard = React.memo(function AgentDashboard() {
 
   return (
     <div
-      ref={containerRef}
+      ref={setContainerRef}
       tabIndex={-1}
       className="flex h-full w-full flex-col overflow-hidden outline-none"
     >
