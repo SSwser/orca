@@ -1,6 +1,7 @@
 import type { Terminal } from '@xterm/xterm'
 import type { ITerminalOptions } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
+import type { LigaturesAddon } from '@xterm/addon-ligatures'
 import type { SearchAddon } from '@xterm/addon-search'
 import type { Unicode11Addon } from '@xterm/addon-unicode11'
 import type { WebLinksAddon } from '@xterm/addon-web-links'
@@ -18,6 +19,7 @@ export type PaneManagerOptions = {
   onLayoutChanged?: () => void
   terminalOptions?: (paneId: number) => Partial<ITerminalOptions>
   onLinkClick?: (event: MouseEvent | undefined, url: string) => void
+  initialRenderingSuspended?: boolean
 }
 
 export type PaneStyleOptions = {
@@ -32,6 +34,8 @@ export type PaneStyleOptions = {
   // separate style vs behavior types is a refactor worth its own change
   // when a second behavior flag lands. See docs/focus-follows-mouse-design.md.
   focusFollowsMouse?: boolean
+  paddingX?: number
+  paddingY?: number
 }
 
 export type ManagedPane = {
@@ -59,7 +63,13 @@ export type ManagedPaneInternal = {
   xtermContainer: HTMLElement
   linkTooltip: HTMLElement
   gpuRenderingEnabled: boolean
+  webglAttachmentDeferred: boolean
+  webglDisabledAfterContextLoss: boolean
   webglAddon: WebglAddon | null
+  // Why nullable: ligatures are opt-in per font and toggleable at runtime,
+  // so the addon instance only exists while the feature is active. A null
+  // value means "currently disabled".
+  ligaturesAddon: LigaturesAddon | null
   fitResizeObserver: ResizeObserver | null
   pendingObservedFitRafId: number | null
   serializeAddon: SerializeAddon

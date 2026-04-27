@@ -43,6 +43,7 @@ function createSettings(overrides: Partial<GlobalSettings> = {}): GlobalSettings
     terminalFontFamily: 'JetBrains Mono',
     terminalFontWeight: 500,
     terminalLineHeight: 1,
+    terminalLigatures: 'auto',
     terminalCursorStyle: 'block',
     terminalCursorBlink: false,
     terminalThemeDark: 'orca-dark',
@@ -64,6 +65,7 @@ function createSettings(overrides: Partial<GlobalSettings> = {}): GlobalSettings
     rightSidebarOpenByDefault: true,
     showTitlebarAgentActivity: true,
     showAgentDashboard: true,
+    showTaskProviderIcons: true,
     diffDefaultView: 'inline',
     notifications: {
       enabled: true,

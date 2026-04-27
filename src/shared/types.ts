@@ -310,6 +310,13 @@ export type WorkspaceSessionState = {
   tabGroupLayouts?: Record<string, TabGroupLayoutNode>
   /** Per-worktree focused group at shutdown. */
   activeGroupIdByWorktree?: Record<string, string>
+  /** SSH target IDs that were connected at shutdown. Used on startup to
+   *  auto-reconnect before attempting remote PTY reattach. */
+  activeConnectionIdsAtShutdown?: string[]
+  /** Maps tab IDs to their remote relay PTY session IDs. Populated at
+   *  shutdown from renderer state so remote PTYs can be reattached via
+   *  the relay's pty.attach RPC on startup. */
+  remoteSessionIdsByTabId?: Record<string, string>
 }
 
 // ─── GitHub ──────────────────────────────────────────────────────────
@@ -374,6 +381,12 @@ export type PRComment = {
   line?: number
   /** Start line of the review annotation range (1-based). Absent for single-line comments. */
   startLine?: number
+  /** True when GitHub identifies the author as a bot (REST `user.type === 'Bot'` or
+   *  GraphQL `__typename === 'Bot'`). Preferred over login-string heuristics because
+   *  third-party review bots (e.g. qodo-ai-reviewer, coderabbitai) don't follow a
+   *  predictable naming convention. Absent when the data source can't report it
+   *  (non-GitHub fallbacks via `gh pr view`). */
+  isBot?: boolean
 }
 
 export type IssueInfo = {
@@ -729,6 +742,35 @@ export type SetupScriptLaunchMode = 'split-vertical' | 'split-horizontal' | 'new
 /** Direction used when the setup script launch mode is a split. */
 export type SetupSplitDirection = 'vertical' | 'horizontal'
 
+export type TerminalColorOverrides = {
+  foreground?: string
+  background?: string
+  cursor?: string
+  cursorAccent?: string
+  selectionBackground?: string
+  selectionForeground?: string
+  black?: string
+  red?: string
+  green?: string
+  yellow?: string
+  blue?: string
+  magenta?: string
+  cyan?: string
+  white?: string
+  brightBlack?: string
+  brightRed?: string
+  brightGreen?: string
+  brightYellow?: string
+  brightBlue?: string
+  brightMagenta?: string
+  brightCyan?: string
+  brightWhite?: string
+  // Why: xterm.js ITheme does not expose a `bold` key, but Ghostty users
+  // expect the setting to be preserved so a future renderer CSS override
+  // or xterm upgrade can honour it without a migration.
+  bold?: string
+}
+
 export type GlobalSettings = {
   workspaceDir: string
   nestWorkspaces: boolean
@@ -743,6 +785,15 @@ export type GlobalSettings = {
   terminalFontFamily: string
   terminalFontWeight: number
   terminalLineHeight: number
+  /** Whether to enable programming-ligatures rendering via
+   *  `@xterm/addon-ligatures`.
+   *  - `'auto'` (default): enabled only when the configured font is known to
+   *    ship ligatures (Fira Code, JetBrains Mono, Cascadia Code, etc.). This
+   *    keeps the out-of-the-box experience right for users who install a
+   *    ligature font without touching settings.
+   *  - `'on'` / `'off'`: explicit override. Never changes when the user
+   *    switches fonts, so "off" always stays off. */
+  terminalLigatures: 'auto' | 'on' | 'off'
   terminalCursorStyle: 'bar' | 'block' | 'underline'
   terminalCursorBlink: boolean
   terminalThemeDark: string
@@ -754,6 +805,14 @@ export type GlobalSettings = {
   terminalActivePaneOpacity: number
   terminalPaneOpacityTransitionMs: number
   terminalDividerThicknessPx: number
+  terminalBackgroundOpacity?: number
+  terminalColorOverrides?: TerminalColorOverrides
+  terminalPaddingX?: number
+  terminalPaddingY?: number
+  terminalMouseHideWhileTyping?: boolean
+  terminalWordSeparator?: string
+  terminalCursorOpacity?: number
+  windowBackgroundBlur?: boolean
   /** Why: Windows terminals conventionally use right-click as a paste gesture.
    *  The setting stays Windows-only so macOS/Linux keep their existing context
    *  menu behavior and users can still reach the menu with Ctrl+right-click. */
@@ -799,6 +858,9 @@ export type GlobalSettings = {
    *  hack that drifts silently. Aligning the declaration with reader intent
    *  keeps the contract honest. */
   showAgentDashboard?: boolean
+  /** Why: the Tasks sidebar label can be kept cleaner for users who do not
+   *  actively use the GitHub/Linear integrations behind it. */
+  showTaskProviderIcons: boolean
   diffDefaultView: 'inline' | 'side-by-side'
   notifications: NotificationSettings
   /** When true, a countdown timer is shown after a Claude agent becomes idle,
@@ -883,6 +945,14 @@ export type GlobalSettings = {
    *  toast shown to users upgrading from v1.3.0 (where the daemon was on by
    *  default). Set to true the first time the toast fires so it never repeats. */
   experimentalTerminalDaemonNoticeShown: boolean
+}
+
+export type GhosttyImportPreview = {
+  found: boolean
+  configPath?: string
+  diff: Partial<GlobalSettings>
+  unsupportedKeys: string[]
+  error?: string
 }
 
 export type NotificationEventSource = 'agent-task-complete' | 'terminal-bell' | 'test'

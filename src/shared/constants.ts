@@ -114,6 +114,11 @@ export function getDefaultSettings(homedir: string): GlobalSettings {
     terminalFontFamily: defaultTerminalFontFamily(),
     terminalFontWeight: DEFAULT_TERMINAL_FONT_WEIGHT,
     terminalLineHeight: 1,
+    // Why 'auto': when the user has picked a known ligature font we want the
+    // feature enabled by default, but we never force it if they pick a font
+    // that lacks ligatures or if they've explicitly opted out. The resolver
+    // is in shared/terminal-ligatures.ts.
+    terminalLigatures: 'auto',
     terminalCursorStyle: 'bar',
     terminalCursorBlink: true,
     terminalThemeDark: 'Ghostty Default Style Dark',
@@ -129,15 +134,14 @@ export function getDefaultSettings(homedir: string): GlobalSettings {
     // box. Other platforms ignore this field because the UI never exposes it,
     // and Ctrl+right-click still opens the context menu when paste is enabled.
     terminalRightClickToPaste: true,
-    // Why: COMSPEC on a stock Windows machine always resolves to cmd.exe, so
-    // falling back to COMSPEC would silently open CMD instead of PowerShell.
-    // Defaulting to powershell.exe matches what users expect from a modern IDE.
     terminalWindowsShell: 'powershell.exe',
+    terminalMouseHideWhileTyping: false,
     // Default false: opt-in only (matches Ghostty's default). Existing users
     // on upgrade inherit this default via persistence.ts's
     // { ...defaults.settings, ...parsed.settings } merge, so enabling
     // focus-follows-mouse never happens unexpectedly.
     terminalFocusFollowsMouse: false,
+    windowBackgroundBlur: false,
     terminalClipboardOnSelect: false,
     terminalAllowOsc52Clipboard: false,
     setupScriptLaunchMode: 'new-tab',
@@ -146,6 +150,7 @@ export function getDefaultSettings(homedir: string): GlobalSettings {
     rightSidebarOpenByDefault: true,
     showTitlebarAgentActivity: true,
     showAgentDashboard: true,
+    showTaskProviderIcons: true,
     notifications: getDefaultNotificationSettings(),
     diffDefaultView: 'inline',
     promptCacheTimerEnabled: false,

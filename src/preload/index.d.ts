@@ -1,6 +1,7 @@
 import type { ElectronAPI } from '@electron-toolkit/preload'
 import type {
   CreateWorktreeResult,
+  GhosttyImportPreview,
   GitHubPRFile,
   GitHubPRFileContents,
   GitHubWorkItem,
@@ -69,6 +70,8 @@ type PtyApi = {
     snapshotRows?: number
     isReattach?: boolean
     isAlternateScreen?: boolean
+    replay?: string
+    sessionExpired?: boolean
     coldRestore?: { scrollback: string; cwd: string }
   }>
   write: (id: string, data: string) => void
@@ -144,6 +147,7 @@ type SettingsApi = {
   get: () => Promise<GlobalSettings>
   set: (args: Partial<GlobalSettings>) => Promise<GlobalSettings>
   listFonts: () => Promise<string[]>
+  previewGhosttyImport: () => Promise<GhosttyImportPreview>
 }
 
 type CliApi = {
