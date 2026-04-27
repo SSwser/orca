@@ -21,10 +21,7 @@
 
 import { rebuild } from '@electron/rebuild'
 import { readFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
-
-const require = createRequire(import.meta.url)
 
 const projectDir = process.cwd()
 const electronVersion = JSON.parse(

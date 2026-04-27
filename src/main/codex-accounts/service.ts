@@ -399,6 +399,9 @@ export class CodexAccountService {
       const { spawnCmd, spawnArgs } = getSpawnArgsForWindows(codexCommand, ['login'])
       const child = spawn(spawnCmd, spawnArgs, {
         stdio: ['ignore', 'pipe', 'pipe'],
+        // Why: route through cmd.exe for .cmd/.bat entrypoints would otherwise
+        // flash a console window in the packaged GUI app on Windows.
+        windowsHide: true,
         env: {
           ...process.env,
           CODEX_HOME: managedHomePath

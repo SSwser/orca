@@ -103,6 +103,10 @@ async function fetchViaRpc(options?: FetchCodexRateLimitsOptions): Promise<Provi
       // Why: the selected Codex rate-limit account must only affect this fetch
       // subprocess. Never mutate process.env globally or other Codex features
       // would inherit the managed account unintentionally.
+      // Why windowsHide: this fetch runs periodically in the background;
+      // without the flag, cmd.exe /c would flash a console window for each
+      // poll on Windows.
+      windowsHide: true,
       env: {
         ...process.env,
         ...(options?.codexHomePath ? { CODEX_HOME: options.codexHomePath } : {})

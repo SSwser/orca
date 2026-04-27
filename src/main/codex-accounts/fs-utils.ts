@@ -17,7 +17,7 @@ export function writeFileAtomically(
     // Why: on Windows, Chromium's renderer initialization calls
     // SetNamedSecurityInfo on the userData folder with a Protected DACL
     // that propagates empty inherited ACEs to child directories, causing
-    // EPERM on all writes. Re-enable inheritance on the parent directory
+    // EPERM on all writes. Grant an explicit ACL on the parent directory
     // and retry once so the write succeeds even if Chromium reset the DACL
     // after our startup fix ran.
     if (isPermissionError(error) && process.platform === 'win32') {

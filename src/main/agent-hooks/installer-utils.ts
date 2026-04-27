@@ -93,8 +93,8 @@ export function writeManagedScript(scriptPath: string, content: string): void {
 
 // Why: on Windows, Chromium's renderer initialization can reset the DACL on
 // the userData directory (Protected DACL without OI+CI propagation), leaving
-// child directories like agent-hooks with an empty DACL. Re-enable inheritance
-// on EPERM and retry once.
+// child directories like agent-hooks with an empty DACL. Grant an explicit
+// directory ACL on EPERM and retry once.
 function writeScriptWithAclRetry(scriptPath: string, content: string): void {
   try {
     writeFileSync(scriptPath, content, 'utf-8')
