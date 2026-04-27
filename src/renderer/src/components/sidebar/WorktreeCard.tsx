@@ -13,7 +13,9 @@ import AgentStatusHover from './AgentStatusHover'
 import { cn } from '@/lib/utils'
 import { activateAndRevealWorktree } from '@/lib/worktree-activation'
 import { getWorktreeStatus, type WorktreeStatus } from '@/lib/worktree-status'
+import { isExplicitAgentStatusFresh } from '@/lib/agent-status'
 import { AGENT_DASHBOARD_ENABLED } from '../../../../shared/constants'
+import { AGENT_STATUS_STALE_AFTER_MS } from '../../../../shared/agent-status-types'
 import { getRepoKindLabel, isFolderRepo } from '../../../../shared/repo-kind'
 import type { Worktree, Repo, PRInfo, IssueInfo } from '../../../../shared/types'
 import {
@@ -143,18 +145,79 @@ const WorktreeCard = React.memo(function WorktreeCard({
 
   const isDeleting = deleteState?.isDeleting ?? false
 
-  // Derive status — the user-facing sidebar dot/spinner uses the title-
-  // heuristic path (`getWorktreeStatus`) regardless of whether the dashboard
-  // flag is on. Hook-reported explicit agent status is intentionally NOT
-  // consulted here: it drives the hover panel (AgentStatusHover) and the
-  // dashboard, but reusing it for the icon was confusing users because the
-  // spinner would flip on/off based on hook activity rather than on whether an
-  // agent TUI is visibly working. Keeping the visible icon on heuristics
-  // preserves the pre-dashboard behavior users already had calibrated
-  // expectations for.
+  // Why: the sidebar dot overlays the *stable* hook-reported states (blocked,
+  // waiting, done) onto the title-heuristic base. `working` remains on the
+  // heuristic because hook pings flip on/off mid-turn and users complained
+  // that the spinner flickered; the blocked/waiting/done states don't have
+  // that problem — they're terminal (done) or attention-needed (blocked/
+  // waiting) and persist until the user acts. Retained "done" snapshots are
+  // consulted too so the sky dot keeps glowing after the agent process exits,
+  // matching the dashboard's retention behavior.
+  //
+  // Priority (highest first): permission (blocked/waiting) > done > heuristic.
+  // permission wins over done because a newer blocked agent in the same
+  // worktree means the user needs to act now, not admire a previous
+  // completion.
+  // Why: collapse live hook entries to two booleans inside the selector so the
+  // snapshot is a stable scalar (useShallow compares element identity — an
+  // array of freshly-constructed {state,updatedAt} objects would never hit
+  // the cache and trip React's "getSnapshot should be cached" infinite-loop
+  // guard). Staleness is applied here too so the selector already reflects
+  // the 30-min TTL; agentStatusEpoch pulls in the tick that fires when a
+  // fresh entry crosses the stale boundary.
+  const { hasPermission, hasLiveDone } = useAppStore(
+    useShallow((s) => {
+      // Touch the epoch so this selector re-runs when the freshness scheduler
+      // ticks — otherwise a stale transition wouldn't flip the booleans until
+      // some unrelated store write happened to rerun us.
+      void s.agentStatusEpoch
+      const wtTabs = s.tabsByWorktree[worktree.id] ?? EMPTY_TABS
+      if (wtTabs.length === 0) {
+        return { hasPermission: false, hasLiveDone: false }
+      }
+      const tabIds = new Set(wtTabs.map((t) => t.id))
+      const now = Date.now()
+      let perm = false
+      let done = false
+      for (const [paneKey, entry] of Object.entries(s.agentStatusByPaneKey)) {
+        const sepIdx = paneKey.indexOf(':')
+        if (sepIdx <= 0) {
+          continue
+        }
+        const tabId = paneKey.slice(0, sepIdx)
+        if (!tabIds.has(tabId)) {
+          continue
+        }
+        if (!isExplicitAgentStatusFresh(entry, now, AGENT_STATUS_STALE_AFTER_MS)) {
+          continue
+        }
+        if (entry.state === 'blocked' || entry.state === 'waiting') {
+          perm = true
+        } else if (entry.state === 'done') {
+          done = true
+        }
+      }
+      return { hasPermission: perm, hasLiveDone: done }
+    })
+  )
+  const hasRetainedDone = useAppStore((s) => {
+    for (const ra of Object.values(s.retainedAgentsByPaneKey)) {
+      if (ra.worktreeId === worktree.id) {
+        return true
+      }
+    }
+    return false
+  })
+
   const status: WorktreeStatus = useMemo(() => {
+    if (hasPermission) {
+      return 'permission'
+    }
+    if (hasLiveDone || hasRetainedDone) {
+      return 'done'
+    }
     return getWorktreeStatus(tabs, browserTabs, runtimePaneTitlesForWorktree)
-  }, [tabs, browserTabs, runtimePaneTitlesForWorktree])
+  }, [tabs, browserTabs, runtimePaneTitlesForWorktree, hasPermission, hasLiveDone, hasRetainedDone])
 
   const showPR = cardProps.includes('pr')
   const showCI = cardProps.includes('ci')
