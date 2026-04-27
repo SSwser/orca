@@ -28,7 +28,7 @@
     "build:electron-vite": "node config/scripts/run-electron-vite-build.mjs",
     "build": "pnpm run typecheck && pnpm run build:relay && pnpm run build:electron-vite && pnpm run build:cli",
     "build:release": "pnpm run build:relay && pnpm run build:electron-vite && pnpm run build:cli",
-    "postinstall": "pnpm rebuild electron && electron-builder install-app-deps",
+    "postinstall": "pnpm rebuild electron && node scripts/rebuild-native-deps.mjs",
     "build:unpack": "pnpm run build && electron-builder --config config/electron-builder.config.cjs --dir",
     "build:win": "pnpm run build && electron-builder --config config/electron-builder.config.cjs --win",
     "build:icons": "bash resources/icon-source/generate.sh",

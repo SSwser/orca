@@ -4,6 +4,7 @@ differences and ensure account-scoped env handling stays identical. */
 import type { ProviderRateLimits, RateLimitWindow } from '../../shared/rate-limit-types'
 import { spawn } from 'node:child_process'
 import { resolveCodexCommand } from '../codex-cli/command'
+import { getSpawnArgsForWindows } from '../win32-utils'
 
 const RPC_TIMEOUT_MS = 10_000
 const PTY_TIMEOUT_MS = 15_000
@@ -86,13 +87,19 @@ async function fetchViaRpc(options?: FetchCodexRateLimitsOptions): Promise<Provi
     let rpcId = 0
 
     const codexCommand = resolveCodexCommand()
-    const child = spawn(codexCommand, ['-s', 'read-only', '-a', 'untrusted', 'app-server'], {
+    // Why: on Windows, resolveCodexCommand() may return a .cmd/.bat file.
+    // spawn() cannot execute batch scripts directly without shell:true, but
+    // shell:true with an args array triggers DEP0190 (args are concatenated,
+    // not escaped). Fix: detect batch scripts and route through cmd.exe /c.
+    const { spawnCmd, spawnArgs } = getSpawnArgsForWindows(codexCommand, [
+      '-s',
+      'read-only',
+      '-a',
+      'untrusted',
+      'app-server'
+    ])
+    const child = spawn(spawnCmd, spawnArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
-      // Why: on Windows, resolveCodexCommand() may return a .cmd/.bat file
-      // (e.g. codex.cmd from npm). Node's child_process.spawn cannot execute
-      // batch scripts directly — it needs cmd.exe as an intermediary. Setting
-      // shell: true on win32 avoids the EINVAL error this would otherwise cause.
-      shell: process.platform === 'win32',
       // Why: the selected Codex rate-limit account must only affect this fetch
       // subprocess. Never mutate process.env globally or other Codex features
       // would inherit the managed account unintentionally.
