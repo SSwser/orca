@@ -102,6 +102,12 @@ export function grantDirAcl(dirPath: string, options?: { recursive?: boolean }):
  *
  * Why /d: disables per-machine/user AutoRun registry commands so a background
  * spawn cannot inherit surprising side effects from the user's shell config.
+ *
+ * SAFETY: when the .cmd/.bat branch is taken, cmd.exe re-parses the combined
+ * command line, so callers MUST only pass trusted/literal args. An arg
+ * containing `&`, `|`, `^`, `<`, `>`, or unbalanced `"` can escape the
+ * intended command and execute arbitrary cmd.exe syntax. Do not feed
+ * user-supplied strings through this helper without first validating them.
  */
 export function getSpawnArgsForWindows(
   command: string,

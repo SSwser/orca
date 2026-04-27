@@ -4,7 +4,7 @@ differences and ensure account-scoped env handling stays identical. */
 import type { ProviderRateLimits, RateLimitWindow } from '../../shared/rate-limit-types'
 import { spawn } from 'node:child_process'
 import { resolveCodexCommand } from '../codex-cli/command'
-import { getSpawnArgsForWindows } from '../win32-utils'
+import { getCmdExePath, getSpawnArgsForWindows } from '../win32-utils'
 
 const RPC_TIMEOUT_MS = 10_000
 const PTY_TIMEOUT_MS = 15_000
@@ -307,9 +307,12 @@ async function fetchViaPty(options?: FetchCodexRateLimitsOptions): Promise<Provi
   // those need cmd.exe as an interpreter. resolveCodexCommand() may also fall
   // back to bare 'codex' when it can't locate the binary on disk, yet cmd.exe
   // can still find codex.cmd via PATHEXT. Always route through cmd.exe on win32.
+  // Why not getSpawnArgsForWindows: the PTY path must route through cmd.exe
+  // even for bare 'codex' (not just .cmd/.bat) to let PATHEXT resolution
+  // succeed under a minimal Electron PATH. /d matches the rest of the codebase.
   const isWin32 = process.platform === 'win32'
-  const spawnFile = isWin32 ? 'cmd.exe' : codexCommand
-  const spawnArgs = isWin32 ? ['/c', codexCommand] : []
+  const spawnFile = isWin32 ? getCmdExePath() : codexCommand
+  const spawnArgs = isWin32 ? ['/d', '/c', codexCommand] : []
 
   return new Promise<ProviderRateLimits>((resolve) => {
     let output = ''
