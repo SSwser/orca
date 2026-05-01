@@ -25,3 +25,26 @@ import { app } from 'electron'
 export function getGlobalAgentHooksDir(): string {
   return join(app.getPath('appData'), 'orca', 'agent-hooks')
 }
+
+// Why: endpoint.json is read by spawned hook scripts to find the running
+// agent-hook server; it must live at a single global path so dev and release
+// builds resolve to the same file.
+export function getAgentHookEndpointPath(): string {
+  return join(getGlobalAgentHooksDir(), 'endpoint.json')
+}
+
+// Why: runtime.json records the currently provisioned hook runtime version so
+// upgrades can detect stale installs across dev/release without scanning.
+export function getAgentHookMetadataPath(): string {
+  return join(getGlobalAgentHooksDir(), 'runtime.json')
+}
+
+// Why: the launcher script path is registered into global agent config files
+// (~/.claude/settings.json, ~/.cursor/hooks.json, etc.), so it must be a
+// stable, single global path; extension differs per OS shell convention.
+export function getAgentHookLauncherPath(): string {
+  return join(
+    getGlobalAgentHooksDir(),
+    process.platform === 'win32' ? 'launcher.cmd' : 'launcher.sh'
+  )
+}
