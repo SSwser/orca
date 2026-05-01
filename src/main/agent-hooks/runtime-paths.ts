@@ -1,50 +1,40 @@
-import { join } from 'path'
+import { basename, join } from 'path'
 import { app } from 'electron'
 
 /**
- * Stable cross-install directory for managed hook scripts and the agent-hook
- * server's endpoint file.
+ * Build-scoped directory for managed hook scripts and the agent-hook server's
+ * endpoint file.
  *
- * Why: hook script paths are written into *global* agent config files
- * (~/.claude/settings.json, ~/.cursor/hooks.json, etc.). If those paths vary
- * between dev and production builds — e.g. dev uses Electron's userData under
- * "Electron" and prod uses "orca" — dev installs permanently redirect global
- * configs to dev-only paths that production can no longer reach.
+ * Why: Orca dogfoods itself, so dev and packaged installs must not publish the
+ * same hook runtime. The rest of the app already isolates profiles through
+ * userData (`orca-dev` vs `orca` on Windows), and reusing that namespace here
+ * keeps hook launchers, endpoint discovery, and runtime metadata inside the
+ * same build boundary.
  *
- * `app.getPath('appData')` returns the OS app-data ROOT without an app-name
- * suffix:
- *   Windows: C:\Users\<user>\AppData\Roaming
- *   macOS:   ~/Library/Application Support
- *   Linux:   ~/.config
- *
- * Appending 'orca' produces the same stable path regardless of whether Electron
- * is running in dev mode (app name = "Electron") or as the packaged release
- * (app name = "orca"). Both the hook scripts and the endpoint file live here,
- * so a single global config entry always resolves correctly.
+ * We still anchor under `app.getPath('appData')` so the root lands in the OS
+ * config directory rather than inside a nested Electron implementation path,
+ * but the final app namespace comes from the active userData profile.
  */
-export function getGlobalAgentHooksDir(): string {
-  return join(app.getPath('appData'), 'orca', 'agent-hooks')
+export function getAgentHooksDir(): string {
+  return join(app.getPath('appData'), basename(app.getPath('userData')), 'agent-hooks')
 }
 
 // Why: endpoint.json is read by spawned hook scripts to find the running
-// agent-hook server; it must live at a single global path so dev and release
-// builds resolve to the same file.
+// agent-hook server; it must follow the active build namespace so dev and
+// packaged installs do not discover each other's endpoint.
 export function getAgentHookEndpointPath(): string {
-  return join(getGlobalAgentHooksDir(), 'endpoint.json')
+  return join(getAgentHooksDir(), 'endpoint.json')
 }
 
-// Why: runtime.json records the currently provisioned hook runtime version so
-// upgrades can detect stale installs across dev/release without scanning.
+// Why: runtime.json records the currently provisioned hook runtime version, so
+// it must stay inside the same build-scoped root as the managed scripts.
 export function getAgentHookMetadataPath(): string {
-  return join(getGlobalAgentHooksDir(), 'runtime.json')
+  return join(getAgentHooksDir(), 'runtime.json')
 }
 
-// Why: the launcher script path is registered into global agent config files
-// (~/.claude/settings.json, ~/.cursor/hooks.json, etc.), so it must be a
-// stable, single global path; extension differs per OS shell convention.
+// Why: the launcher script path is registered into global agent config files,
+// but that registration should still point at the active build's runtime so a
+// dev install cannot overwrite the packaged launch target.
 export function getAgentHookLauncherPath(): string {
-  return join(
-    getGlobalAgentHooksDir(),
-    process.platform === 'win32' ? 'launcher.cmd' : 'launcher.sh'
-  )
+  return join(getAgentHooksDir(), process.platform === 'win32' ? 'launcher.cmd' : 'launcher.sh')
 }

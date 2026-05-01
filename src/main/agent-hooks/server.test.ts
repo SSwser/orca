@@ -860,7 +860,7 @@ describe('Endpoint file lifecycle', () => {
     rmSync(runtimeDir, { recursive: true, force: true })
   })
 
-  it('publishes endpoint state under the global runtime root', async () => {
+  it('publishes endpoint state under the active runtime root', async () => {
     const server = new AgentHookServer()
     await server.start({ env: 'development', runtimeDir })
     try {
@@ -893,7 +893,7 @@ describe('Endpoint file lifecycle', () => {
 
   it('buildPtyEnv() returns {}', () => {
     // Why: Task 4 removes PTY env transport. Launchers now read endpoint.json
-    // from the global runtime root.
+    // from the active runtime root.
     const server = new AgentHookServer()
     expect(server.buildPtyEnv()).toEqual({})
   })

@@ -10,9 +10,6 @@ vi.mock('electron', () => ({
   }
 }))
 
-// Why: path.join on Windows uses backslash separators while the assertions
-// below describe the intended logical layout with forward slashes. Normalize
-// before comparing so the contract holds on every platform.
 function normalize(value: string): string {
   return value.replace(/\\/g, '/')
 }
@@ -24,7 +21,7 @@ describe('agent hook runtime paths', () => {
         return 'C:/Users/alice/AppData/Roaming'
       }
       if (name === 'userData') {
-        return 'C:/Users/alice/AppData/Roaming/Orca-dev'
+        return 'C:/Users/alice/AppData/Roaming/orca'
       }
       throw new Error(`unexpected path key: ${name}`)
     })
@@ -34,30 +31,67 @@ describe('agent hook runtime paths', () => {
     vi.restoreAllMocks()
   })
 
-  it('derives the global runtime root from appData rather than userData', async () => {
+  it('uses the packaged app namespace by default', async () => {
     const paths = await import('./runtime-paths')
 
-    expect(normalize(paths.getGlobalAgentHooksDir())).toBe(
+    expect(normalize(paths.getAgentHooksDir())).toBe(
       'C:/Users/alice/AppData/Roaming/orca/agent-hooks'
     )
-    expect(normalize(paths.getGlobalAgentHooksDir())).not.toContain('Orca-dev')
   })
 
-  it('returns stable endpoint and metadata paths under the global runtime root', async () => {
+  it('follows the dev userData namespace for dev builds', async () => {
+    appPathMocks.getPath.mockImplementation((name) => {
+      if (name === 'appData') {
+        return 'C:/Users/alice/AppData/Roaming'
+      }
+      if (name === 'userData') {
+        return 'C:/Users/alice/AppData/Roaming/orca-dev'
+      }
+      throw new Error(`unexpected path key: ${name}`)
+    })
+
+    const paths = await import('./runtime-paths')
+
+    expect(normalize(paths.getAgentHooksDir())).toBe(
+      'C:/Users/alice/AppData/Roaming/orca-dev/agent-hooks'
+    )
+  })
+
+  it('returns endpoint and metadata paths under the active runtime root', async () => {
+    appPathMocks.getPath.mockImplementation((name) => {
+      if (name === 'appData') {
+        return 'C:/Users/alice/AppData/Roaming'
+      }
+      if (name === 'userData') {
+        return 'C:/Users/alice/AppData/Roaming/orca-dev'
+      }
+      throw new Error(`unexpected path key: ${name}`)
+    })
+
     const paths = await import('./runtime-paths')
 
     expect(normalize(paths.getAgentHookEndpointPath())).toBe(
-      'C:/Users/alice/AppData/Roaming/orca/agent-hooks/endpoint.json'
+      'C:/Users/alice/AppData/Roaming/orca-dev/agent-hooks/endpoint.json'
     )
     expect(normalize(paths.getAgentHookMetadataPath())).toBe(
-      'C:/Users/alice/AppData/Roaming/orca/agent-hooks/runtime.json'
+      'C:/Users/alice/AppData/Roaming/orca-dev/agent-hooks/runtime.json'
     )
   })
 
-  it('returns a platform-appropriate launcher path under the global runtime root', async () => {
+  it('returns a platform-appropriate launcher path under the active runtime root', async () => {
+    appPathMocks.getPath.mockImplementation((name) => {
+      if (name === 'appData') {
+        return 'C:/Users/alice/AppData/Roaming'
+      }
+      if (name === 'userData') {
+        return 'C:/Users/alice/AppData/Roaming/orca-dev'
+      }
+      throw new Error(`unexpected path key: ${name}`)
+    })
+
     const paths = await import('./runtime-paths')
     const launcher = normalize(paths.getAgentHookLauncherPath())
     const expectedFile = process.platform === 'win32' ? 'launcher.cmd' : 'launcher.sh'
-    expect(launcher).toBe(`C:/Users/alice/AppData/Roaming/orca/agent-hooks/${expectedFile}`)
+    expect(launcher).toBe(`C:/Users/alice/AppData/Roaming/orca-dev/agent-hooks/${expectedFile}`)
   })
 })

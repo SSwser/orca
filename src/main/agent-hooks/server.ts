@@ -19,7 +19,7 @@ import {
   type ParsedAgentStatusPayload
 } from '../../shared/agent-status-types'
 import { ORCA_HOOK_PROTOCOL_VERSION } from '../../shared/agent-hook-types'
-import { getGlobalAgentHooksDir } from './runtime-paths'
+import { getAgentHooksDir } from './runtime-paths'
 
 // Why: Pi is intentionally absent. Pi has no shell-command hook surface —
 // its extensibility is an in-process TypeScript extension API (pi.on(...)
@@ -1097,9 +1097,9 @@ export class AgentHookServer {
     if (options?.env) {
       this.env = options.env
     }
-    // Why: lazy-load getGlobalAgentHooksDir() so tests can override via
-    // runtimeDir without triggering an electron import at module load.
-    this.runtimeDir = options?.runtimeDir ?? getGlobalAgentHooksDir()
+    // Why: lazy-load getAgentHooksDir() so tests can override via runtimeDir
+    // without triggering an electron import at module load.
+    this.runtimeDir = options?.runtimeDir ?? getAgentHooksDir()
     this.endpointFilePathCache = join(this.runtimeDir, 'endpoint.json')
     this.metadataFilePathCache = join(this.runtimeDir, 'runtime.json')
     this.token = randomUUID()
@@ -1235,7 +1235,7 @@ export class AgentHookServer {
 
   buildPtyEnv(): Record<string, string> {
     // Why: Task 4 removes PTY env transport. Launchers now read endpoint.json
-    // from the global runtime root. Hook services that still source this env
+    // from the active runtime root. Hook services that still source this env
     // will be broken until Task 6 rewrites them.
     return {}
   }
