@@ -2,518 +2,362 @@
 
 ## Background
 
-The current implementation exposes three coupled classes of problems:
+This branch addresses one cross-layer problem with two visible symptoms:
 
-1. Managed hook commands are generated independently by agent-specific services:
-   - `src/main/claude/hook-service.ts`
-   - `src/main/cursor/hook-service.ts`
-   - `src/main/codex/hook-service.ts`
-   - `src/main/gemini/hook-service.ts`
+1. Managed hook execution had too many owners.
+   - agent-specific services each carried parts of command rendering and managed-entry behavior;
+   - launcher registration, cleanup, endpoint publication, and runtime discovery were drifting apart;
+   - Windows compatibility depended on repeated command-shape logic spread across multiple files.
 
-   Each file currently carries part of the responsibility for platform command rendering, path formatting, and shell compatibility. This makes Windows behavior dependent on repeated string-construction logic spread across business-layer files.
+2. PTY startup and hook transport had mixed responsibilities.
+   - PTY environment shaping and hook runtime discovery were partially coupled;
+   - some layers still behaved as if transport state might need to flow through PTY env;
+   - provider-side repair logic made ownership harder to reason about.
 
-2. PTY environment semantics are not singular:
-   - caller-provided environment overrides and the host's full environment are mixed across layers;
-   - daemon and local PTY paths do not resolve environment state in the same way;
-   - host augmentations such as dev-mode injections, PATH prepends, and attribution shims can run against partial environment state.
+A design mistake also emerged during the work: moving managed hook runtime state into one shared cross-build root would violate Orca's dogfood model. Orca is used to develop Orca, so dev and packaged installs must not silently share mutable runtime state.
 
-3. Hook configuration scope and runtime scope are misaligned:
-   - hook configuration is global;
-   - hook scripts, endpoint files, and runtime transport state are currently tied to build-specific `userData` directories.
-
-   This allows dev and release builds to share configuration while pointing at different runtime roots, producing stale paths, invalid hook references, and cross-build contamination.
-
-This design treats the above as one system problem rather than three isolated defects.
+This spec records the corrected design direction that matches the current implementation on this branch.
 
 ## Goals
 
 ### Primary goals
 
-1. Establish a single platform execution contract for all managed hooks.
-2. Establish a single environment resolution contract for PTY spawn.
-3. Establish a single global runtime scope contract for managed hook infrastructure.
-4. Eliminate recurring compatibility failures caused by shell differences, path-format differences, and dev/release runtime divergence.
-5. Concentrate platform compatibility rules inside shared infrastructure rather than duplicating them across agent-specific services.
+1. Establish one shared launcher contract for managed hooks across Claude, Codex, Cursor, and Gemini.
+2. Publish hook runtime state through one shared runtime-path layer.
+3. Keep managed hook runtime state isolated by the active build/runtime namespace.
+4. Remove hook transport dependence on PTY environment variables.
+5. Resolve PTY spawn environment in main before provider-specific spawn paths run.
+6. Centralize platform-specific hook execution behavior in shared infrastructure rather than agent-specific business services.
 
 ### Non-goals
 
-1. Preserve the current per-build runtime directory model.
-2. Retain long-term compatibility paths for legacy command-string shapes.
-3. Continue using a mixed transport model where some hook transport state flows via PTY env and some via endpoint files.
-4. Leave platform command rendering under ownership of agent-specific hook services.
+1. Introduce a single global runtime root shared by dev and packaged installs.
+2. Preserve long-term fallback for obsolete managed command shapes.
+3. Keep dual transport models where hook coordinates may come from either runtime files or PTY env.
+4. Re-expand agent-specific hook services to own platform quoting, shell selection, or launcher rendering.
 
 ## Design principles
 
-1. **Single source of truth**
-   - platform command rendering has one owner;
-   - PTY full-environment resolution has one owner;
-   - managed hook runtime root has one owner.
+1. **Dogfood-safe isolation**
+   - dev and packaged Orca installs must not publish runtime files into the same mutable directory;
+   - runtime files must follow the active `userData` namespace (`orca` vs `orca-dev` on Windows);
+   - global hook config may be shared, but the runtime state it points at must reflect the currently active build.
 
-2. **Scope alignment**
-   - global configuration must point to a global runtime;
-   - terminal-local state must stay in PTY env;
-   - hook transport discovery must not depend on PTY env.
+2. **Single owner per concern**
+   - runtime paths come from `src/main/agent-hooks/runtime-paths.ts`;
+   - managed hook registration comes from the shared launcher contract;
+   - endpoint publication comes from the hook server;
+   - PTY spawn env is resolved in main before local or daemon providers consume it.
 
-3. **Layer ownership**
-   - hook-service registers hooks;
-   - launcher executes hooks;
-   - hook server publishes endpoint state;
-   - PTY layer supplies terminal context;
-   - provider/subprocess layers consume already-resolved full env.
+3. **Launcher-driven discovery**
+   - launchers discover endpoint state from runtime files on disk;
+   - hook transport must not depend on PTY env injection;
+   - business services should register the launcher contract, not reconstruct transport details.
 
-4. **Platform isolation**
-   - platform-specific shell and path behavior must be centralized in shared launcher or rendering layers;
-   - business services must not directly handle Windows quoting, shell-safe path normalization, or launcher selection.
+4. **Platform logic belongs in shared infrastructure**
+   - Windows and POSIX command behavior must be centralized;
+   - agent services should not independently own shell quoting or command-shape rendering.
 
 ## Recommended architecture
 
-The target architecture introduces four aligned building blocks:
+The branch architecture is organized around four aligned building blocks:
 
-1. A **global managed hook runtime root**
-2. A **stable launcher-only hook registration model**
-3. **Endpoint self-discovery** by launchers
-4. A **single PTY environment resolution pipeline**
+1. a **build-scoped managed hook runtime root**
+2. a **shared launcher registration contract**
+3. **endpoint self-discovery from runtime files**
+4. a **single PTY spawn-environment resolution pipeline in main**
 
 ### High-level structure
 
 #### Business layer
 
-Agent-specific services remain responsible only for:
-- config file locations;
-- agent event lists;
-- config schema mapping;
-- install/remove/status lifecycle.
+Agent-specific services remain responsible for:
+- locating each tool's config files;
+- mapping Orca events into each config schema;
+- install/remove/status lifecycle;
+- using the shared launcher registration contract.
 
-They no longer own platform command rendering.
+They do not own runtime-root policy or PTY transport policy.
 
-#### Platform execution layer
+#### Shared launcher layer
 
-A managed hook launcher becomes the only component responsible for:
-- launcher entrypoint behavior;
-- endpoint self-discovery;
-- platform-specific command execution details;
-- dispatching hook invocations toward the active runtime.
+The shared launcher boundary owns:
+- the managed command shape written into agent configs;
+- platform-specific launcher selection;
+- endpoint self-discovery from runtime files;
+- dispatch toward the active hook server.
 
 #### Runtime publication layer
 
-The hook server is responsible for:
+The hook server owns:
 - starting the server;
-- writing endpoint files;
-- publishing runtime metadata atomically.
+- publishing endpoint state;
+- publishing runtime metadata;
+- doing so under the active runtime root.
 
-#### Terminal environment layer
+#### PTY environment layer
 
-A dedicated PTY environment resolver is responsible for:
-- combining ambient full environment with caller overrides;
+Main-process PTY startup owns:
+- combining baseline environment and caller overrides;
 - applying deletions;
 - applying host augmentations;
-- returning a fully resolved spawn-ready env.
+- passing a fully resolved env into local or daemon provider paths.
 
 ## Runtime scope design
 
-### Global runtime root
+### Build-scoped runtime root
 
-Introduce a shared path module under `src/main/agent-hooks/runtime-paths.ts`.
+`src/main/agent-hooks/runtime-paths.ts` is the single source of truth for managed hook runtime paths.
 
-This module must define:
-- global runtime root;
+It defines:
+- runtime root;
 - launcher path;
 - endpoint file path;
-- runtime metadata file path;
-- any agent-specific generated script paths that remain necessary during migration.
+- runtime metadata path.
+
+The active runtime root must be derived from the current `userData` namespace, not from a hard-coded shared `appData/orca` directory.
 
 ### Runtime root selection policy
 
-The global runtime root must be chosen by one explicit policy:
+The runtime root must follow these rules:
 
-1. it is user-scoped rather than build-scoped;
-2. it is independent of Electron `userData`;
-3. dev and release builds resolve exactly the same root;
-4. the root is derived from the same OS-level roaming/application-data base used for global hook configuration;
-5. all hook-runtime consumers obtain paths only through `runtime-paths.ts`.
+1. it is user-scoped and build-scoped;
+2. it remains anchored under the OS app-data base;
+3. the final namespace comes from the active `userData` directory name;
+4. dev and packaged installs therefore publish into different runtime roots;
+5. all managed hook runtime consumers obtain paths only through `runtime-paths.ts`.
 
-In the current repository, `getGlobalAgentHooksDir()` already establishes the appropriate root under the user's app-data namespace. The migration extends that root from “shared script directory” into the single owner of launcher, endpoint, and metadata state.
+On Windows this means dev and packaged installs naturally separate into roots such as:
+- `%APPDATA%/orca-dev/agent-hooks`
+- `%APPDATA%/orca/agent-hooks`
+
+This preserves the repository's existing isolation contract instead of inventing a new shared root.
 
 ### Runtime ownership
 
-The running Orca instance owns the active runtime publication state.
+The currently running Orca instance owns publication inside its own runtime root.
 
-The last instance that successfully initializes the hook server becomes the active publisher of:
-- endpoint file contents;
-- current runtime metadata.
+That instance publishes:
+- `endpoint.json`
+- `runtime.json`
+- the launcher path registered for managed hooks
 
-This is not treated as cross-build interference. It is the defined ownership model for a global hook system.
+The important rule is not “one global publisher wins across all builds,” but “each build publishes state into its own isolated runtime boundary.”
 
 ### Runtime invariants
 
-1. Multi-instance startup must update endpoint state atomically.
-2. Launchers must always resolve the latest endpoint file rather than caching build-specific paths.
-3. Shutting down one build must not leave global configuration pointing at its private directories.
+1. Endpoint and metadata publication must be atomic enough that launchers do not observe half-written state.
+2. Launchers must resolve endpoint state from the active runtime root.
+3. Dev startup must not overwrite packaged runtime files, and packaged startup must not overwrite dev runtime files.
 
 ## Hook execution design
 
-### Stable launcher-only registration
+### Shared launcher-only registration
 
-Hook configuration must register a stable launcher command, not a build-specific script path.
+Managed hook installation should converge on one shared launcher contract across supported agents.
 
-Agent-specific services must no longer generate platform-aware command strings on their own. Their responsibility ends at selecting the appropriate launcher registration contract for their config schema.
+Agent-specific services should no longer each define their own long-term platform command policy. Their responsibility is to map their schema onto the shared launcher contract.
 
-### Registration contract vs rendering internals
+### Registration contract vs execution internals
 
-The shared execution boundary must be split into two explicit responsibilities:
+The shared boundary is intentionally split into two responsibilities:
 
-1. **Registration contract helper**
-   - returns the command shape that must be written into each agent's config schema;
-   - knows schema-facing differences such as plain string vs structured record;
-   - does not embed transport metadata;
-   - does not let agent services reimplement platform rendering.
+1. **Registration contract**
+   - returns the command form that must be written into each agent's config schema;
+   - hides schema-facing differences without reintroducing per-agent platform logic.
 
 2. **Launcher execution internals**
-   - perform endpoint self-discovery;
+   - locate runtime files;
+   - discover endpoint state;
    - validate runtime metadata;
-   - normalize platform-specific execution behavior;
-   - dispatch the hook call to the active server.
+   - dispatch hook calls toward the active hook server.
 
-This separation prevents business services from regaining ownership over quoting, path normalization, or interpreter selection while still allowing each config schema to be written correctly.
-
-### Single shared launcher shape
-
-All managed hook registrations must point to one shared launcher entrypoint shape.
-
-The launcher contract must satisfy:
-- one conceptual executable surface for all four agent integrations;
-- one shared argument model for passing agent and event identity;
-- one platform-specific renderer owned by the shared launcher layer;
-- no per-agent divergence in `.cmd` vs `.sh` command construction.
-
-Different agent schemas may still serialize that contract differently, but they must all map to the same launcher semantics.
+This keeps business services small while preventing launcher behavior from fragmenting again.
 
 ### Launcher responsibilities
 
 The launcher is responsible for:
 1. identifying the current agent/event context;
-2. locating the global runtime root;
-3. resolving endpoint data from the runtime root;
-4. reading runtime metadata;
-5. validating that the discovered runtime is current and structurally valid;
+2. locating the active runtime root;
+3. reading endpoint data from that root;
+4. reading runtime metadata from the same root;
+5. validating the discovered state;
 6. communicating with the active hook server;
-7. handling all platform-specific execution differences.
-
-### Platform boundary
-
-Windows-specific shell behavior and POSIX-specific shell behavior must exist only in this shared execution layer.
-
-Agent-specific hook services must no longer contain:
-- `.cmd` vs `.sh` selection logic;
-- shell-safe path conversion logic;
-- quoting logic;
-- direct launcher command rendering.
-
-### Agent service responsibilities after refactor
-
-The following files remain, but with narrower scope:
-- `src/main/claude/hook-service.ts`
-- `src/main/cursor/hook-service.ts`
-- `src/main/codex/hook-service.ts`
-- `src/main/gemini/hook-service.ts`
-
-They are responsible for:
-1. locating config files;
-2. mapping agent events into each config schema;
-3. install/remove/status lifecycle;
-4. registering the shared launcher command.
-
-They are not responsible for platform execution details.
+7. handling platform-specific execution differences.
 
 ## Hook transport design
 
 ### Endpoint self-discovery
 
-Launchers must discover transport coordinates from the global runtime root rather than from PTY environment variables.
+Launchers discover transport coordinates from runtime files rather than from PTY env variables.
 
 The launcher flow is:
 1. locate runtime root;
-2. read endpoint file from that root;
-3. read runtime metadata from the same root;
+2. read `endpoint.json`;
+3. read `runtime.json`;
 4. validate the published state;
 5. connect to the active runtime.
 
-### Runtime metadata and stale-state validation
+### Runtime metadata and validation
 
-Endpoint publication must include explicit metadata sufficient to reject stale or incompatible state.
+Runtime metadata must be sufficient for launchers to reject invalid or stale state.
 
-The metadata contract must include:
+The metadata contract should include fields such as:
 - runtime format version;
 - publisher process identity or equivalent instance marker;
 - publication timestamp;
-- transport kind;
-- endpoint file version or monotonic freshness marker.
+- transport kind.
 
-The launcher must treat endpoint discovery as successful only when:
-1. endpoint file exists;
-2. endpoint file is parseable;
-3. metadata file exists and is parseable;
-4. metadata version matches the launcher's supported contract;
-5. metadata freshness and endpoint payload are mutually consistent.
-
-This prevents a newly started build from consuming transport state published by an obsolete layout or half-written takeover.
-
-### Resulting transport model
-
-This removes hook transport dependence on:
-- endpoint path env vars;
-- port env vars;
-- token env vars;
-- stale PTY state left behind by previous terminal sessions.
+The launcher should treat discovery as successful only when endpoint and metadata state are both present and structurally valid.
 
 ### PTY env contents after refactor
 
-PTY env should retain only terminal-scoped identifiers such as:
+PTY env may still carry terminal-scoped identifiers such as:
 - `ORCA_PANE_KEY`
 - `ORCA_TAB_ID`
 - `ORCA_WORKTREE_ID`
 
-PTY env should no longer carry hook transport coordinates.
+PTY env should not carry hook transport coordinates.
 
 ## PTY environment design
 
 ### Explicit environment categories
 
-Introduce unambiguous categories:
-- **ambientEnv**: the host's complete baseline environment, typically derived from `process.env`;
-- **envOverrides**: caller-provided partial overrides;
-- **envToDelete**: explicit deletions or equivalent removal semantics.
+PTY startup should use explicit categories:
+- **ambientEnv**: the baseline host environment;
+- **envOverrides**: caller-provided overrides;
+- **envToDelete**: explicit removals.
 
-A single ambiguous `env` field must no longer carry multiple meanings.
+One ambiguous `env` field should not continue to carry multiple meanings.
 
-### Single environment resolution pipeline
+### Single resolution pipeline
 
-Introduce one authoritative environment resolver in the main process, for example:
-- `resolvePtySpawnEnv(...)`
-
-Its fixed order of operations must be:
-1. create a full baseline from ambientEnv;
+Main-process PTY startup should resolve one spawn-ready environment in a fixed order:
+1. start from ambientEnv;
 2. apply envOverrides;
 3. apply deletions;
 4. apply host augmentations;
-5. return the final spawn-ready environment.
+5. pass the final env to the local or daemon path.
 
-### PTY resolution constraints
+### Resolution constraints
 
-1. Host augmentations run only against a complete resolved environment.
+1. Host augmentations must run against a complete resolved environment.
 2. Local and daemon PTY paths must use the same resolution pipeline.
-3. Provider and subprocess layers must not merge `process.env` again.
-4. No helper may implicitly assume the caller supplied a complete env.
+3. Provider and subprocess layers must not repair missing host env by silently merging `process.env` again.
 
 ### Host augmentations
 
-The following behaviors remain valid, but must apply only after full resolution:
+The following remain valid, but only after full resolution:
 - dev-mode `ORCA_USER_DATA_PATH` injection;
 - dev CLI PATH prepend;
-- terminal attribution shim PATH prepend;
-- any additional tool-specific augmentation such as OpenCode, Codex, or Pi integration.
+- attribution/tooling PATH adjustments.
 
-These augmentations enhance a complete environment; they do not repair a partial one.
-
-## Provider and subprocess contract
-
-### Local provider
-
-`src/main/providers/local-pty-provider.ts` must satisfy:
-- input env is already complete and final;
-- it no longer performs `{ ...process.env, ...args.env }`-style merges;
-- it only handles shell selection, dimensions, and spawn behavior.
-
-### Daemon subprocess
-
-`src/main/daemon/pty-subprocess.ts` must satisfy:
-- the received env is already complete;
-- it no longer relies on inherited host state to compensate for upstream ambiguity;
-- it obeys the same environment contract as the local provider.
+These augmentations enhance a complete environment; they do not compensate for an ambiguous upstream contract.
 
 ## Managed entry migration and cleanup
 
-### Legacy managed entry cleanup strategy
+Installation should aggressively converge existing managed entries onto the shared launcher contract.
 
-Installation must aggressively converge existing global configs onto the new launcher contract.
-
-The cleanup contract must:
-1. identify prior managed entries by stable managed markers rather than exact command-string equality;
-2. normalize slash direction and path formatting before managed-entry matching;
-3. remove old build-specific script registrations during install;
+Cleanup should:
+1. identify prior managed entries by stable managed markers rather than exact string equality;
+2. normalize slash direction before matching;
+3. remove old managed script registrations during install;
 4. deduplicate multiple managed entries down to one current launcher registration;
 5. avoid deleting user-authored unmanaged entries.
 
-`createManagedCommandMatcher(...)` already provides the correct direction for path-based managed entry identification. The migration should extend that matcher strategy to cover prior script-based registrations and new launcher-based registrations under one normalization rule.
-
-This is the only migration accommodation required. The runtime does not retain a fallback execution path for obsolete command shapes.
+This branch preserves the migration direction of widening managed-entry cleanup, but it does not preserve old command shapes as a long-term parallel runtime model.
 
 ## Startup and lifecycle design
 
-`src/main/index.ts` must be reorganized to:
-1. initialize global runtime paths;
+Startup should follow this ownership order:
+1. resolve runtime paths;
 2. start the hook server;
-3. atomically publish endpoint state and runtime metadata;
-4. install or refresh launcher registration in agent configs;
-5. stop writing transport entrypoints into build-specific `userData/agent-hooks` paths.
+3. publish endpoint and metadata state under the active runtime root;
+4. install or refresh managed hook registrations.
 
 ### Lifecycle invariants
 
-1. Global hook config always points to a stable launcher.
-2. The launcher always resolves endpoint state from the global runtime root.
-3. The current Orca instance publishes the active endpoint state.
-4. Dev/release switching does not require rewriting config to different private runtime locations.
+1. Managed hook config points at the shared launcher contract.
+2. The launcher resolves endpoint state from the active runtime root.
+3. Runtime publication stays inside the active build's isolated namespace.
+4. Dev/release switching must not redirect runtime publication into each other's directories.
 
 ## Failure handling
 
 ### Fail-open behavior
 
 If hook runtime initialization fails:
-- the main app must still start;
-- status reporting must remain explicit;
-- partially invalid runtime state must not be written as the active global configuration.
-
-### Atomic updates
-
-The following must be updated atomically:
-- endpoint file;
-- runtime metadata file;
-- hook config files, where current infrastructure allows.
-
-This prevents launchers from observing half-written state during startup or multi-instance takeover.
+- the main app should still start;
+- status reporting should remain explicit;
+- partially invalid runtime state must not be published as healthy state.
 
 ### Invalid runtime detection
 
-The launcher must explicitly detect and fail on:
+The launcher should explicitly fail on:
 - missing endpoint file;
 - invalid endpoint file format;
 - missing metadata file;
 - invalid metadata file format;
-- runtime metadata mismatch;
+- metadata mismatch;
 - unreachable hook server.
 
-It must not recover via PTY env-based transport fallback.
+It should not recover by falling back to PTY-env-based transport coordinates.
 
 ## Testing strategy
 
 ### Shared contract tests
 
-Add focused tests for:
+Add or maintain focused tests for:
 
 #### Runtime paths
-- dev and release produce the same runtime root;
-- launcher, endpoint, and metadata paths are stable and predictable;
-- the chosen root remains independent of `userData`.
+- packaged and dev builds resolve different runtime roots based on the active `userData` namespace;
+- launcher, endpoint, and metadata paths stay under that active runtime root;
+- runtime paths stay anchored under the OS app-data base rather than nested Electron implementation paths.
 
 #### Launcher registration contract
 - platform registration rendering is tested once at the shared launcher-registration layer;
-- agent-specific services only verify schema mapping to the shared launcher contract;
-- Windows command contracts and POSIX command contracts are explicit.
+- agent-specific services verify schema mapping to the shared launcher contract;
+- managed-entry cleanup covers both legacy script registrations and launcher registrations.
 
 #### Endpoint self-discovery
-- a launcher can locate endpoint state from runtime root alone;
+- launchers can locate endpoint state from runtime files alone;
 - no PTY env transport variables are required;
-- stale metadata is rejected deterministically.
+- invalid metadata is rejected deterministically.
 
 ### PTY environment contract tests
 
-Extend `src/main/ipc/pty.test.ts` to verify:
+Extend PTY coverage to verify:
 1. identical ambientEnv + overrides yield equivalent local/daemon results;
 2. dev augmentations occur only after full resolution;
-3. PATH prepends use resolved full PATH rather than partial caller state;
-4. helper functions do not mutate input objects;
-5. provider/subprocess layers no longer merge `process.env`.
+3. PATH prepends preserve the resolved baseline PATH;
+4. helper functions do not mutate inputs;
+5. provider/subprocess layers do not re-merge host env.
 
 ### Hook service tests
 
 Agent service tests should validate:
-1. registration of the shared launcher command;
+1. registration of the shared launcher contract;
 2. correct schema output per agent;
 3. cleanup of old managed entries;
-4. absence of build-specific runtime path dependence.
+4. absence of runtime-path policy duplicated in business services.
 
-They should not retest platform execution details.
+They should not retest shared launcher internals.
 
-### Black-box regression tests
+### Manual Windows verification
 
-Add higher-level regression coverage for:
-1. shell/path boundary behavior on Windows;
-2. dev/release switching while launchers continue to resolve the active endpoint;
-3. stale PTY state not affecting hook transport;
-4. multi-instance handoff preserving active endpoint correctness.
+Manual verification remains important for this design because the risk crosses Electron path resolution, launcher execution, and real Windows runtime directories.
 
-## TDD implementation strategy
-
-Implementation should proceed test-first in this order:
-1. runtime path contract tests;
-2. launcher registration/rendering contract tests;
-3. endpoint self-discovery and stale-state validation tests;
-4. PTY full-environment resolution tests;
-5. service migration to the shared contracts.
-
-### TDD rule
-
-Shared boundaries must be specified in failing tests before business-layer callers are migrated. This keeps the refactor driven by explicit contracts instead of incremental behavioral drift.
-
-## Migration strategy
-
-This migration should directly converge on the target architecture rather than preserving the existing split-scope model.
-
-### Suggested sequence
-
-1. Extend `runtime-paths.ts` into the single source of runtime root, launcher, endpoint, and metadata paths.
-2. Introduce the shared launcher registration contract and shared launcher execution shape.
-3. Move hook server endpoint and metadata publication to the global runtime root.
-4. Update all four hook services to register the shared launcher.
-5. Remove PTY env transport injection for hook transport data.
-6. Introduce the full PTY environment resolver.
-7. Remove provider/subprocess-side `process.env` merges.
-8. Delete obsolete comments and dual-semantics logic.
-
-### Cutover criteria
-
-After migration:
-1. hook config no longer references build-specific `userData` runtime paths;
-2. hook transport no longer depends on PTY env;
-3. local and daemon PTY paths obey the same environment contract;
-4. agent services no longer own platform command rendering;
-5. platform compatibility rules live only in shared execution and env-resolution layers.
-
-## Impacted files
-
-### Core
-- `src/main/index.ts`
-- `src/main/agent-hooks/server.ts`
-- `src/main/agent-hooks/runtime-paths.ts`
-- launcher contract / execution modules under `src/main/agent-hooks/`
-- `src/main/ipc/pty.ts`
-- `src/main/providers/local-pty-provider.ts`
-- `src/main/daemon/pty-subprocess.ts`
-
-### Agent services
-- `src/main/claude/hook-service.ts`
-- `src/main/cursor/hook-service.ts`
-- `src/main/codex/hook-service.ts`
-- `src/main/gemini/hook-service.ts`
-
-### Renderer and shared types
-- `src/preload/index.ts`
-- `src/renderer/src/components/terminal-pane/pty-connection.ts`
-- PTY spawn shared type definitions in `src/main/providers/types.ts`
-
-### Tests
-- `src/main/ipc/pty.test.ts`
-- `src/main/agent-hooks/server.test.ts`
-- `src/main/agent-hooks/installer-utils.test.ts`
-- hook-service-related tests
-- new launcher/runtime-paths/endpoint self-discovery tests
+The key checks are:
+1. clearing `orca-dev` and launching dev recreates runtime state under `orca-dev`;
+2. dev launch does not republish runtime state into packaged `orca`;
+3. managed hooks continue to execute after PTY transport decoupling.
 
 ## Success criteria
 
-This design is considered satisfied when all of the following are true:
-1. Windows hook execution no longer depends on agent-specific services constructing platform command strings;
-2. dev/release switching does not cause global hook config to reference invalid runtime paths;
-3. PTY env semantics are identical across local and daemon paths;
-4. hook transport no longer depends on PTY env;
-5. platform compatibility rules are concentrated in shared execution and env-resolution layers;
-6. regression coverage for this class of issues lives at shared contract boundaries rather than being scattered across business services.
+This design is satisfied when all of the following are true:
+1. managed hook runtime state follows the active build/runtime namespace instead of a shared cross-build root;
+2. managed hooks across supported agents register through one shared launcher contract;
+3. hook transport no longer depends on PTY env;
+4. PTY local and daemon paths obey the same environment-resolution contract;
+5. provider-side env repair no longer hides ownership ambiguity;
+6. Windows dev/package switching no longer corrupts managed hook runtime state.
