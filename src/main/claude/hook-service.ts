@@ -1,15 +1,15 @@
 import { homedir } from 'os'
 import { join } from 'path'
-import { getGlobalAgentHooksDir } from '../agent-hooks/runtime-paths'
 import type { AgentHookInstallState, AgentHookInstallStatus } from '../../shared/agent-hook-types'
 import {
   createManagedCommandMatcher,
   readHooksJson,
   removeManagedCommands,
   writeHooksJson,
-  writeManagedScript,
   type HookDefinition
 } from '../agent-hooks/installer-utils'
+import { ensureLauncherScript } from '../agent-hooks/launcher-script'
+import { renderManagedHookLauncherCommand } from '../agent-hooks/launcher-registration'
 
 const CLAUDE_EVENTS = [
   { eventName: 'UserPromptSubmit', definition: { hooks: [{ type: 'command', command: '' }] } },
@@ -39,100 +39,9 @@ function getConfigPath(): string {
   return join(homedir(), '.claude', 'settings.json')
 }
 
-function getManagedScriptFileName(): string {
-  return process.platform === 'win32' ? 'claude-hook.cmd' : 'claude-hook.sh'
-}
-
-function getManagedScriptPath(): string {
-  return join(getGlobalAgentHooksDir(), getManagedScriptFileName())
-}
-
-function getManagedCommand(scriptPath: string): string {
-  if (process.platform === 'win32') {
-    const script = scriptPath.replace(/\\/g, '/')
-    // Why: hooks run via bash (Git Bash / MSYS2) on Windows. MSYS2 applies
-    // automatic POSIX-to-Windows path conversion when spawning Windows PE
-    // files: single-letter absolute paths like /c and /d are converted to
-    // drive letters (C:\ and D:\) before cmd.exe ever sees them. This strips
-    // cmd.exe's own /c switch, leaving it in interactive mode where it reads
-    // the agent's JSON payload from stdin and tries to execute it as shell
-    // commands — producing garbled errors. Setting MSYS_NO_PATHCONV=1 inside
-    // a bash subshell disables this conversion so cmd.exe receives /d and /c
-    // intact. The outer () isolates the export so it does not pollute the
-    // caller's environment.
-    return `(export MSYS_NO_PATHCONV=1; exec cmd.exe /d /c "${script}")`
-  }
-  return `/bin/sh "${scriptPath}"`
-}
-
-function getManagedScript(): string {
-  if (process.platform === 'win32') {
-    return [
-      '@echo off',
-      'setlocal',
-      // Why: the endpoint file holds the *live* port/token for this Orca
-      // install. A PTY that survived an Orca restart has stale PORT/TOKEN
-      // baked into its env from the old instance — loading `endpoint.cmd`
-      // (`set KEY=VALUE` lines) via `call` refreshes them so the hook
-      // reaches the current server. Falls through to PTY env if the file
-      // is missing (first run / pre-endpoint-file / running outside Orca).
-      'if defined ORCA_AGENT_HOOK_ENDPOINT if exist "%ORCA_AGENT_HOOK_ENDPOINT%" call "%ORCA_AGENT_HOOK_ENDPOINT%" 2>nul',
-      'if "%ORCA_AGENT_HOOK_PORT%"=="" exit /b 0',
-      'if "%ORCA_AGENT_HOOK_TOKEN%"=="" exit /b 0',
-      'if "%ORCA_PANE_KEY%"=="" exit /b 0',
-      `powershell -NoProfile -ExecutionPolicy Bypass -Command "$inputData=[Console]::In.ReadToEnd(); if ([string]::IsNullOrWhiteSpace($inputData)) { exit 0 }; try { $body=@{ paneKey=$env:ORCA_PANE_KEY; tabId=$env:ORCA_TAB_ID; worktreeId=$env:ORCA_WORKTREE_ID; env=$env:ORCA_AGENT_HOOK_ENV; version=$env:ORCA_AGENT_HOOK_VERSION; payload=($inputData | ConvertFrom-Json) } | ConvertTo-Json -Depth 100; Invoke-WebRequest -UseBasicParsing -Method Post -Uri ('http://127.0.0.1:' + $env:ORCA_AGENT_HOOK_PORT + '/hook/claude') -Headers @{ 'Content-Type'='application/json'; 'X-Orca-Agent-Hook-Token'=$env:ORCA_AGENT_HOOK_TOKEN } -Body $body | Out-Null } catch {}"`,
-      'exit /b 0',
-      ''
-    ].join('\r\n')
-  }
-
-  return [
-    '#!/bin/sh',
-    // Why: the endpoint file holds the *live* port/token for this Orca
-    // install. PTYs that survive an Orca restart have stale PORT/TOKEN
-    // baked into their env from the old instance — sourcing the file here
-    // lets us reach the new server. Falls back to PTY env if the file is
-    // missing (first-run / pre-endpoint-file scripts / running outside Orca).
-    // Why: suppress stderr on the `.` builtin. A TOCTOU race (endpoint unlinked
-    // between the `[ -r ]` test and the source) or a malformed line (e.g. CRLF
-    // bled in from a cross-platform userData copy) would otherwise print a
-    // parse error that agent transcripts could surface. Stale coords → dead
-    // port → silent-fail is the documented fail-open path anyway — the env-var
-    // guards below handle the empty PORT/TOKEN case — so swallowing the noise
-    // here is strictly better than leaking shell errors into the hook output.
-    // `|| :` defends against an eventual `set -e` in an outer script context
-    // (not present today) aborting the hook on a parse error.
-    'if [ -n "$ORCA_AGENT_HOOK_ENDPOINT" ] && [ -r "$ORCA_AGENT_HOOK_ENDPOINT" ]; then',
-    '  . "$ORCA_AGENT_HOOK_ENDPOINT" 2>/dev/null || :',
-    'fi',
-    'if [ -z "$ORCA_AGENT_HOOK_PORT" ] || [ -z "$ORCA_AGENT_HOOK_TOKEN" ] || [ -z "$ORCA_PANE_KEY" ]; then',
-    '  exit 0',
-    'fi',
-    'payload=$(cat)',
-    'if [ -z "$payload" ]; then',
-    '  exit 0',
-    'fi',
-    // Why: worktreeId embeds a filesystem path, so hand-building JSON in POSIX
-    // shell is not safe once a path contains quotes or newlines. Post the raw
-    // hook payload plus metadata as form fields and let the receiver parse it.
-    'curl -sS -X POST "http://127.0.0.1:${ORCA_AGENT_HOOK_PORT}/hook/claude" \\',
-    '  -H "Content-Type: application/x-www-form-urlencoded" \\',
-    '  -H "X-Orca-Agent-Hook-Token: ${ORCA_AGENT_HOOK_TOKEN}" \\',
-    '  --data-urlencode "paneKey=${ORCA_PANE_KEY}" \\',
-    '  --data-urlencode "tabId=${ORCA_TAB_ID}" \\',
-    '  --data-urlencode "worktreeId=${ORCA_WORKTREE_ID}" \\',
-    '  --data-urlencode "env=${ORCA_AGENT_HOOK_ENV}" \\',
-    '  --data-urlencode "version=${ORCA_AGENT_HOOK_VERSION}" \\',
-    '  --data-urlencode "payload=${payload}" >/dev/null 2>&1 || true',
-    'exit 0',
-    ''
-  ].join('\n')
-}
-
 export class ClaudeHookService {
   getStatus(): AgentHookInstallStatus {
     const configPath = getConfigPath()
-    const scriptPath = getManagedScriptPath()
     const config = readHooksJson(configPath)
     if (!config) {
       return {
@@ -148,7 +57,7 @@ export class ClaudeHookService {
     // sidebar surfaces a degraded install rather than a false-positive
     // `installed`. Each CLAUDE_EVENTS entry must contain the managed command for
     // the integration to function end-to-end.
-    const command = getManagedCommand(scriptPath)
+    const command = renderManagedHookLauncherCommand('claude')
     const missing: string[] = []
     let presentCount = 0
     for (const event of CLAUDE_EVENTS) {
@@ -182,7 +91,6 @@ export class ClaudeHookService {
 
   install(): AgentHookInstallStatus {
     const configPath = getConfigPath()
-    const scriptPath = getManagedScriptPath()
     const config = readHooksJson(configPath)
     if (!config) {
       return {
@@ -194,14 +102,21 @@ export class ClaudeHookService {
       }
     }
 
-    const command = getManagedCommand(scriptPath)
+    ensureLauncherScript()
+    const command = renderManagedHookLauncherCommand('claude')
     const nextHooks = { ...config.hooks }
 
     // Why: match by script filename (not exact command string) so a fresh
-    // install sweeps stale entries left by older builds or a different
-    // Electron userData path (dev vs. prod). Without this, repeated installs
-    // accumulate duplicate hook entries pointing at defunct scripts.
-    const isManagedCommand = createManagedCommandMatcher(getManagedScriptFileName())
+    // install sweeps stale entries left by older builds, a different Electron
+    // userData path (dev vs. prod), or the legacy per-agent script naming.
+    // Without this, repeated installs accumulate duplicate hook entries
+    // pointing at defunct scripts.
+    const isManagedCommand = createManagedCommandMatcher([
+      'claude-hook.sh',
+      'claude-hook.cmd',
+      'launcher.sh',
+      'launcher.cmd'
+    ])
 
     for (const event of CLAUDE_EVENTS) {
       const current = Array.isArray(nextHooks[event.eventName]) ? nextHooks[event.eventName] : []
@@ -214,7 +129,6 @@ export class ClaudeHookService {
     }
 
     config.hooks = nextHooks
-    writeManagedScript(scriptPath, getManagedScript())
     writeHooksJson(configPath, config)
     return this.getStatus()
   }
@@ -234,8 +148,14 @@ export class ClaudeHookService {
 
     const nextHooks = { ...config.hooks }
     // Why: same broad matcher as install(), so remove() also cleans up stale
-    // entries from older builds even if the current scriptPath has moved.
-    const isManagedCommand = createManagedCommandMatcher(getManagedScriptFileName())
+    // entries from older builds even if the current scriptPath has moved, and
+    // sweeps both legacy per-agent scripts and the new shared launcher.
+    const isManagedCommand = createManagedCommandMatcher([
+      'claude-hook.sh',
+      'claude-hook.cmd',
+      'launcher.sh',
+      'launcher.cmd'
+    ])
     for (const [eventName, definitions] of Object.entries(nextHooks)) {
       // Why: a malformed settings.json entry (non-array value for an event
       // name) would make removeManagedCommands throw via definitions.flatMap.

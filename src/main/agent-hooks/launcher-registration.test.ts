@@ -5,29 +5,42 @@ vi.mock('./runtime-paths', () => ({
 }))
 
 describe('launcher registration contract', () => {
-  it('renders one Windows launcher command shape for all agents', async () => {
+  it('renders Windows launcher command with agent argument', async () => {
     vi.stubGlobal('process', { ...process, platform: 'win32' })
     try {
       vi.resetModules()
       const { renderManagedHookLauncherCommand } = await import('./launcher-registration')
 
-      expect(renderManagedHookLauncherCommand()).toBe(
-        'C:/Users/alice/AppData/Roaming/orca/agent-hooks/launcher.cmd'
+      expect(renderManagedHookLauncherCommand('claude')).toBe(
+        '"C:/Users/alice/AppData/Roaming/orca/agent-hooks/launcher.cmd" claude'
       )
     } finally {
       vi.unstubAllGlobals()
     }
   })
 
-  it('renders one POSIX launcher command shape for all agents', async () => {
+  it('renders POSIX launcher command with agent argument', async () => {
     vi.stubGlobal('process', { ...process, platform: 'linux' })
     try {
       vi.resetModules()
       const { renderManagedHookLauncherCommand } = await import('./launcher-registration')
 
-      expect(renderManagedHookLauncherCommand()).toBe(
-        '/bin/sh "C:/Users/alice/AppData/Roaming/orca/agent-hooks/launcher.cmd"'
+      expect(renderManagedHookLauncherCommand('cursor')).toBe(
+        '/bin/sh "C:/Users/alice/AppData/Roaming/orca/agent-hooks/launcher.cmd" cursor'
       )
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('quotes launcher path on Windows to handle spaces', async () => {
+    vi.stubGlobal('process', { ...process, platform: 'win32' })
+    try {
+      vi.resetModules()
+      const { renderManagedHookLauncherCommand } = await import('./launcher-registration')
+
+      expect(renderManagedHookLauncherCommand('codex')).toContain('"C:/Users/alice/')
+      expect(renderManagedHookLauncherCommand('codex')).toContain('/launcher.cmd" codex')
     } finally {
       vi.unstubAllGlobals()
     }
