@@ -359,7 +359,9 @@ describe('registerPtyHandlers', () => {
       expect(env.ORCA_GH_ISSUE_FOOTER).toBe('Made with [Orca](https://github.com/stablyai/orca) 🐋')
       // Why: PATH separators are platform-dependent (: on POSIX, ; on Windows).
       // Check for backslash-normalized path on all platforms.
-      expect(env.PATH).toMatch(/[\\\/]tmp[\\\/]orca-user-data[\\\/]orca-terminal-attribution[\\\/]posix/)
+      expect(env.PATH).toMatch(
+        /[\\/]tmp[\\/]orca-user-data[\\/]orca-terminal-attribution[\\/]posix/
+      )
     })
 
     it('skips git/gh attribution shims when attribution is disabled', async () => {
@@ -371,7 +373,9 @@ describe('registerPtyHandlers', () => {
       expect(env.ORCA_GIT_COMMIT_TRAILER).toBeUndefined()
       expect(env.ORCA_GH_PR_FOOTER).toBeUndefined()
       expect(env.ORCA_GH_ISSUE_FOOTER).toBeUndefined()
-      expect(env.PATH ?? '').not.toMatch(/[\\\/]tmp[\\\/]orca-user-data[\\\/]orca-terminal-attribution[\\\/]posix/)
+      expect(env.PATH ?? '').not.toMatch(
+        /[\\/]tmp[\\/]orca-user-data[\\/]orca-terminal-attribution[\\/]posix/
+      )
     })
 
     it('prepends git/gh attribution shims for daemon-backed local PTYs', async () => {
@@ -402,7 +406,9 @@ describe('registerPtyHandlers', () => {
       expect(env.ORCA_ENABLE_GIT_ATTRIBUTION).toBe('1')
       // Why: PATH separators are platform-dependent (: on POSIX, ; on Windows).
       // Check for backslash-normalized path on all platforms.
-      expect(env.PATH).toMatch(/[\\\/]tmp[\\\/]orca-user-data[\\\/]orca-terminal-attribution[\\\/]posix/)
+      expect(env.PATH).toMatch(
+        /[\\/]tmp[\\/]orca-user-data[\\/]orca-terminal-attribution[\\/]posix/
+      )
     })
 
     it('leaves ambient CODEX_HOME untouched when system default is selected', async () => {
@@ -531,7 +537,9 @@ describe('registerPtyHandlers', () => {
           enableGitHubAttribution: true
         }))
         expect(env.ORCA_ENABLE_GIT_ATTRIBUTION).toBe('1')
-        expect(env.PATH).toMatch(/[\\\/]tmp[\\\/]orca-user-data[\\\/]orca-terminal-attribution[\\\/]posix/)
+        expect(env.PATH).toMatch(
+          /[\\/]tmp[\\/]orca-user-data[\\/]orca-terminal-attribution[\\/]posix/
+        )
       })
 
       it('injects dev-mode ORCA_USER_DATA_PATH + dev CLI PATH on the daemon path', async () => {
@@ -544,7 +552,7 @@ describe('registerPtyHandlers', () => {
         try {
           const env = await daemonSpawnAndGetEnv({ PATH: '/usr/bin' })
           expect(env.ORCA_USER_DATA_PATH).toBe('/tmp/orca-user-data')
-          expect(env.PATH).toMatch(/[\\\/]tmp[\\\/]orca-user-data[\\\/]cli[\\\/]bin/)
+          expect(env.PATH).toMatch(/[\\/]tmp[\\/]orca-user-data[\\/]cli[\\/]bin/)
         } finally {
           mockedApp.isPackaged = prev
         }
@@ -568,7 +576,7 @@ describe('registerPtyHandlers', () => {
         process.env.PATH = '/windows/system32;/git/usr/bin'
         try {
           const env = await daemonSpawnAndGetEnv({})
-          expect(env.PATH).toMatch(/[\\\/]tmp[\\\/]orca-user-data[\\\/]cli[\\\/]bin/)
+          expect(env.PATH).toMatch(/[\\/]tmp[\\/]orca-user-data[\\/]cli[\\/]bin/)
           expect(env.PATH).toContain('/windows/system32')
           expect(env.PATH).toContain('/git/usr/bin')
         } finally {
@@ -652,7 +660,9 @@ describe('registerPtyHandlers', () => {
           enableGitHubAttribution: false
         }))
         expect(env.ORCA_ENABLE_GIT_ATTRIBUTION).toBeUndefined()
-        expect(env.PATH ?? '').not.toMatch(/[\\\/]tmp[\\\/]orca-user-data[\\\/]orca-terminal-attribution[\\\/]posix/)
+        expect(env.PATH ?? '').not.toMatch(
+          /[\\/]tmp[\\/]orca-user-data[\\/]orca-terminal-attribution[\\/]posix/
+        )
       })
 
       it('does not mutate the caller-provided args.env on the daemon path', async () => {
@@ -1152,6 +1162,11 @@ describe('registerPtyHandlers', () => {
   })
 
   it('does not write the startup command before the shell-ready marker arrives', async () => {
+    // Why: shell-ready startup command writing only runs on POSIX (Windows uses
+    // a separate code path with CR submission), so this test must execute on a
+    // POSIX platform regardless of the host OS.
+    const originalPlatform = process.platform
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'darwin' })
     vi.useFakeTimers()
     const mockProc = createMockProc()
     spawnMock.mockReturnValue(mockProc.proc)
@@ -1177,10 +1192,14 @@ describe('registerPtyHandlers', () => {
       expect(mockProc.proc.write).toHaveBeenCalledWith('claude\n')
     } finally {
       vi.useRealTimers()
+      Object.defineProperty(process, 'platform', { configurable: true, value: originalPlatform })
     }
   })
 
   it('falls back to a max wait when the shell emits no readiness output', async () => {
+    // Why: see prior test — POSIX-only shell-ready code path.
+    const originalPlatform = process.platform
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'darwin' })
     vi.useFakeTimers()
     const mockProc = createMockProc()
     spawnMock.mockReturnValue(mockProc.proc)
@@ -1200,10 +1219,15 @@ describe('registerPtyHandlers', () => {
       expect(mockProc.proc.write).toHaveBeenCalledWith('codex\n')
     } finally {
       vi.useRealTimers()
+      Object.defineProperty(process, 'platform', { configurable: true, value: originalPlatform })
     }
   })
 
   it('falls back to a system shell when SHELL points to a missing binary', async () => {
+    // Why: SHELL fallback only runs on the POSIX shell-resolution branch in
+    // LocalPtyProvider — Windows derives its shell from COMSPEC/getWindowsShell.
+    const originalPlatform = process.platform
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'darwin' })
     const originalShell = process.env.SHELL
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
@@ -1233,6 +1257,7 @@ describe('registerPtyHandlers', () => {
       )
     } finally {
       warnSpy.mockRestore()
+      Object.defineProperty(process, 'platform', { configurable: true, value: originalPlatform })
       if (originalShell === undefined) {
         delete process.env.SHELL
       } else {
@@ -1242,6 +1267,9 @@ describe('registerPtyHandlers', () => {
   })
 
   it('falls back when SHELL points to a non-executable binary', async () => {
+    // Why: see prior test — POSIX-only shell-resolution branch.
+    const originalPlatform = process.platform
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'darwin' })
     const originalShell = process.env.SHELL
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
@@ -1272,6 +1300,7 @@ describe('registerPtyHandlers', () => {
       )
     } finally {
       warnSpy.mockRestore()
+      Object.defineProperty(process, 'platform', { configurable: true, value: originalPlatform })
       if (originalShell === undefined) {
         delete process.env.SHELL
       } else {
@@ -1281,6 +1310,9 @@ describe('registerPtyHandlers', () => {
   })
 
   it('prefers args.env.SHELL and normalizes the child env after fallback', async () => {
+    // Why: see prior test — POSIX-only shell-resolution branch.
+    const originalPlatform = process.platform
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'darwin' })
     const originalShell = process.env.SHELL
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
@@ -1292,11 +1324,14 @@ describe('registerPtyHandlers', () => {
       process.env.SHELL = '/bin/bash'
 
       registerPtyHandlers(mainWindow as never)
+      // Why: after the f9033e9a/87cebaed refactor, renderer-supplied env arrives
+      // as `ambientEnv` (not `env`). The local provider reads SHELL from
+      // `args.ambientEnv?.SHELL` to honor a per-spawn override.
       await handlers.get('pty:spawn')!(null, {
         cols: 80,
         rows: 24,
         cwd: '/tmp',
-        env: { SHELL: '/opt/homebrew/bin/bash' }
+        ambientEnv: { SHELL: '/opt/homebrew/bin/bash' }
       })
 
       expect(spawnMock).toHaveBeenCalledTimes(1)
@@ -1313,6 +1348,7 @@ describe('registerPtyHandlers', () => {
       )
     } finally {
       warnSpy.mockRestore()
+      Object.defineProperty(process, 'platform', { configurable: true, value: originalPlatform })
       if (originalShell === undefined) {
         delete process.env.SHELL
       } else {
