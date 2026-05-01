@@ -540,6 +540,41 @@ describe('registerPtyHandlers', () => {
         }
       })
 
+      it('falls back to inherited PATH before prepending the dev CLI bin on the Windows daemon path', async () => {
+        // Why: the daemon receives only args.env over IPC, so a blank args.env
+        // must still keep the inherited Windows PATH. Without this fallback the
+        // dev CLI bin became the entire PATH, and Git Bash could no longer find
+        // cmd.exe to launch the global hook .cmd wrappers.
+        const { app } = await import('electron')
+        const mockedApp = app as unknown as { isPackaged: boolean }
+        const prevPackaged = mockedApp.isPackaged
+        const prevPlatform = process.platform
+        const prevPath = process.env.PATH
+        mockedApp.isPackaged = false
+        Object.defineProperty(process, 'platform', {
+          configurable: true,
+          value: 'win32'
+        })
+        process.env.PATH = '/windows/system32;/git/usr/bin'
+        try {
+          const env = await daemonSpawnAndGetEnv({})
+          expect(env.PATH).toContain('/tmp/orca-user-data/cli/bin')
+          expect(env.PATH).toContain('/windows/system32')
+          expect(env.PATH).toContain('/git/usr/bin')
+        } finally {
+          mockedApp.isPackaged = prevPackaged
+          Object.defineProperty(process, 'platform', {
+            configurable: true,
+            value: prevPlatform
+          })
+          if (prevPath === undefined) {
+            delete process.env.PATH
+          } else {
+            process.env.PATH = prevPath
+          }
+        }
+      })
+
       it('passes the minted sessionId through to provider.spawn so the Pi overlay is keyed on a stable id', async () => {
         const daemonSpawn = setupDaemonAdapter()
         handlers.clear()

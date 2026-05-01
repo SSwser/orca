@@ -1,6 +1,6 @@
 import { homedir } from 'os'
 import { join } from 'path'
-import { app } from 'electron'
+import { getGlobalAgentHooksDir } from '../agent-hooks/runtime-paths'
 import type { AgentHookInstallState, AgentHookInstallStatus } from '../../shared/agent-hook-types'
 import {
   createManagedCommandMatcher,
@@ -35,11 +35,19 @@ function getManagedScriptFileName(): string {
 }
 
 function getManagedScriptPath(): string {
-  return join(app.getPath('userData'), 'agent-hooks', getManagedScriptFileName())
+  return join(getGlobalAgentHooksDir(), getManagedScriptFileName())
 }
 
 function getManagedCommand(scriptPath: string): string {
-  return process.platform === 'win32' ? scriptPath : `/bin/sh "${scriptPath}"`
+  if (process.platform === 'win32') {
+    const script = scriptPath.replace(/\\/g, '/')
+    // Why: see claude/hook-service.ts getManagedCommand for the full rationale.
+    // MSYS2 converts /c and /d to drive letter paths when bash spawns cmd.exe,
+    // stripping cmd.exe's own switches. MSYS_NO_PATHCONV=1 in a subshell
+    // prevents this conversion without polluting the caller's environment.
+    return `(export MSYS_NO_PATHCONV=1; exec cmd.exe /d /c "${script}")`
+  }
+  return `/bin/sh "${scriptPath}"`
 }
 
 function getManagedScript(): string {

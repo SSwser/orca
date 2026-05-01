@@ -177,11 +177,16 @@ export function buildPtyHostEnv(
   if (!opts.isPackaged) {
     baseEnv.ORCA_USER_DATA_PATH ??= opts.userDataPath
     const devCliBin = join(opts.userDataPath, 'cli', 'bin')
+    // Why: on the daemon path `baseEnv` is just the renderer-provided diff,
+    // not a full copy of process.env. Fall back to the daemon's inherited PATH
+    // before prepending the dev CLI bin so we don't silently drop cmd.exe /
+    // Git-for-Windows dirs that Windows hook launchers still rely on.
+    const inheritedPath = baseEnv.PATH ?? process.env.PATH
     // Why: avoid a trailing delimiter when PATH is empty — some shells
     // treat an empty segment as `.`, which would let commands resolve from
     // the current working directory (a foot-gun we don't want to create
     // for dev terminals).
-    baseEnv.PATH = baseEnv.PATH ? `${devCliBin}${delimiter}${baseEnv.PATH}` : devCliBin
+    baseEnv.PATH = inheritedPath ? `${devCliBin}${delimiter}${inheritedPath}` : devCliBin
   }
 
   // Why: GitHub attribution should only affect commands launched from
