@@ -141,4 +141,17 @@ describe('createManagedCommandMatcher', () => {
   it('does not match hooks for a different agent', () => {
     expect(match('/bin/sh "/path/agent-hooks/gemini-hook.sh"')).toBe(false)
   })
+
+  it('matches legacy script registrations and new launcher registrations', () => {
+    const match = createManagedCommandMatcher(['claude-hook.sh', 'launcher.sh'])
+
+    expect(match('C:/Users/alice/AppData/Roaming/orca/agent-hooks/claude-hook.sh')).toBe(true)
+    expect(match('C:/Users/alice/AppData/Roaming/orca/agent-hooks/launcher.sh')).toBe(true)
+  })
+
+  it('normalizes slash direction before matching launcher registrations', () => {
+    const match = createManagedCommandMatcher(['claude-hook.cmd', 'launcher.cmd'])
+
+    expect(match('C:\\Users\\alice\\AppData\\Roaming\\orca\\agent-hooks\\launcher.cmd')).toBe(true)
+  })
 })

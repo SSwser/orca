@@ -54,14 +54,18 @@ export function readHooksJson(configPath: string): HooksConfig | null {
 // (under any `agent-hooks/` directory) lets a fresh install sweep those
 // without touching unrelated user-authored hooks.
 export function createManagedCommandMatcher(
-  scriptFileName: string
+  scriptFileNames: string | string[]
 ): (command: string | undefined) => boolean {
-  const needle = `agent-hooks/${scriptFileName}`
+  const needles = (Array.isArray(scriptFileNames) ? scriptFileNames : [scriptFileNames]).map(
+    (fileName) => `agent-hooks/${fileName}`
+  )
+
   return (command) => {
     if (!command) {
       return false
     }
-    return command.replaceAll('\\', '/').includes(needle)
+    const normalized = command.replaceAll('\\', '/')
+    return needles.some((needle) => normalized.includes(needle))
   }
 }
 
