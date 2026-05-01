@@ -222,7 +222,7 @@ describe('createIpcPtyTransport', () => {
 
     const transport = createIpcPtyTransport({
       cwd: '/tmp/worktree',
-      env: { FOO: 'bar' },
+      ambientEnv: { FOO: 'bar' },
       command: 'echo hello'
     })
 

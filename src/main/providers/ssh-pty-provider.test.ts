@@ -54,7 +54,7 @@ describe('SshPtyProvider', () => {
         cols: 120,
         rows: 40,
         cwd: '/home/user',
-        env: { FOO: 'bar' }
+        ambientEnv: { FOO: 'bar' }
       })
 
       expect(mux.request).toHaveBeenCalledWith('pty.spawn', {

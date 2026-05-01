@@ -101,7 +101,7 @@ export class SshPtyProvider implements IPtyProvider {
       cols: opts.cols,
       rows: opts.rows,
       cwd: opts.cwd,
-      env: opts.env
+      env: opts.ambientEnv
     })
     return {
       ...(result as PtySpawnResult),

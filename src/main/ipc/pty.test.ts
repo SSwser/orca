@@ -90,6 +90,7 @@ vi.mock('../pi/titlebar-extension-service', () => ({
   }
 }))
 import { LocalPtyProvider } from '../providers/local-pty-provider'
+import type { PtySpawnOptions } from '../providers/types'
 import {
   registerPtyHandlers,
   registerSshPtyProvider,
@@ -431,7 +432,11 @@ describe('registerPtyHandlers', () => {
 
       function setupDaemonAdapter() {
         const daemonSpawn = vi.fn(
-          async (options: { env: Record<string, string>; sessionId?: string }) => ({
+          async (options: {
+            ambientEnv: Record<string, string>
+            envOverrides?: Record<string, string>
+            sessionId?: string
+          }) => ({
             id: options.sessionId ?? 'daemon-pty'
           })
         )

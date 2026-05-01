@@ -1072,11 +1072,6 @@ export class AgentHookServer {
   private runtimeDir: string | null = null
   private endpointFilePathCache: string | null = null
   private metadataFilePathCache: string | null = null
-  // Why: tracks whether writeEndpointFile() succeeded for the *current*
-  // start(). Without this flag, launchers reading stale JSON from a prior
-  // crashed instance would silently post to a dead server. Gating on successful
-  // write preserves fail-open semantics.
-  private endpointFileWritten = false
 
   setListener(listener: ((payload: AgentHookEventPayload) => void) | null): void {
     this.onAgentStatus = listener
@@ -1108,7 +1103,6 @@ export class AgentHookServer {
     this.endpointFilePathCache = join(this.runtimeDir, 'endpoint.json')
     this.metadataFilePathCache = join(this.runtimeDir, 'runtime.json')
     this.token = randomUUID()
-    this.endpointFileWritten = false
     this.server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
       if (req.method !== 'POST') {
         res.writeHead(404)
@@ -1217,7 +1211,6 @@ export class AgentHookServer {
     this.runtimeDir = null
     this.endpointFilePathCache = null
     this.metadataFilePathCache = null
-    this.endpointFileWritten = false
     // Why: drop all per-pane cache entries on shutdown so a subsequent start()
     // in the same process (e.g. during tests or a settings-driven restart)
     // does not inherit stale prompt/tool state from the previous run.
@@ -1276,10 +1269,6 @@ export class AgentHookServer {
     if (!this.runtimeDir || !this.endpointFilePathCache || !this.metadataFilePathCache) {
       return
     }
-    // Why: defensive reset — launchers must not see a stale `true` from a
-    // previous start() if this write fails before reaching the success
-    // assignment below.
-    this.endpointFileWritten = false
 
     // Why: unique-per-call tmp names (mirrors persistence.ts / installer-utils.ts);
     // prevents cross-process collision if two writers race on the same runtime dir.
@@ -1335,8 +1324,6 @@ export class AgentHookServer {
       // Why: write runtime.json second
       writeFileSync(tmpMetadataPath, JSON.stringify(runtimeData, null, 2), { mode: 0o600 })
       renameSync(tmpMetadataPath, this.metadataFilePathCache)
-
-      this.endpointFileWritten = true
     } catch (err) {
       console.error('[agent-hooks] failed to write runtime files:', err)
       // Why: fail-open — start() succeeds even if file write fails. Direct

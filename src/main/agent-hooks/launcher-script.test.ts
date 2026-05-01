@@ -60,7 +60,6 @@ describe('ensureLauncherScript', () => {
     const launcherPath = join(testDir, 'orca', 'agent-hooks', expectedName)
 
     const initialContent = readFileSync(launcherPath, 'utf-8')
-    const _initialMtime = require('fs').statSync(launcherPath).mtimeMs
 
     // Second call should be idempotent
     ensureLauncherScript()
