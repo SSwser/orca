@@ -1,6 +1,6 @@
 import { homedir } from 'os'
 import { join } from 'path'
-import { app } from 'electron'
+import { getGlobalAgentHooksDir } from '../agent-hooks/runtime-paths'
 import type { AgentHookInstallState, AgentHookInstallStatus } from '../../shared/agent-hook-types'
 import {
   createManagedCommandMatcher,
@@ -44,11 +44,25 @@ function getManagedScriptFileName(): string {
 }
 
 function getManagedScriptPath(): string {
-  return join(app.getPath('userData'), 'agent-hooks', getManagedScriptFileName())
+  return join(getGlobalAgentHooksDir(), getManagedScriptFileName())
 }
 
 function getManagedCommand(scriptPath: string): string {
-  return process.platform === 'win32' ? scriptPath : `/bin/sh "${scriptPath}"`
+  if (process.platform === 'win32') {
+    const script = scriptPath.replace(/\\/g, '/')
+    // Why: hooks run via bash (Git Bash / MSYS2) on Windows. MSYS2 applies
+    // automatic POSIX-to-Windows path conversion when spawning Windows PE
+    // files: single-letter absolute paths like /c and /d are converted to
+    // drive letters (C:\ and D:\) before cmd.exe ever sees them. This strips
+    // cmd.exe's own /c switch, leaving it in interactive mode where it reads
+    // the agent's JSON payload from stdin and tries to execute it as shell
+    // commands — producing garbled errors. Setting MSYS_NO_PATHCONV=1 inside
+    // a bash subshell disables this conversion so cmd.exe receives /d and /c
+    // intact. The outer () isolates the export so it does not pollute the
+    // caller's environment.
+    return `(export MSYS_NO_PATHCONV=1; exec cmd.exe /d /c "${script}")`
+  }
+  return `/bin/sh "${scriptPath}"`
 }
 
 function getManagedScript(): string {
