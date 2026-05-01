@@ -145,7 +145,8 @@ export function createAgentStatusOscProcessor(): (data: string) => ProcessedAgen
 export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTransport {
   const {
     cwd,
-    env,
+    ambientEnv,
+    envOverrides,
     command,
     connectionId,
     worktreeId,
@@ -348,7 +349,8 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
           cols: options.cols ?? 80,
           rows: options.rows ?? 24,
           cwd,
-          env,
+          ambientEnv,
+          envOverrides,
           command,
           ...(connectionId ? { connectionId } : {}),
           ...(options.sessionId ? { sessionId: options.sessionId } : {}),

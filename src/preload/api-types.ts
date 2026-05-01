@@ -353,7 +353,8 @@ export type PreloadApi = {
       cols: number
       rows: number
       cwd?: string
-      env?: Record<string, string>
+      ambientEnv?: Record<string, string>
+      envOverrides?: Record<string, string>
       command?: string
       connectionId?: string | null
       worktreeId?: string

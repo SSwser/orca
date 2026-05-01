@@ -16,7 +16,12 @@ export type PtySpawnOptions = {
   cols: number
   rows: number
   cwd?: string
-  env?: Record<string, string>
+  /** Renderer-captured base environment to use instead of main's process.env.
+   *  When omitted, providers may fall back to process.env (local path) or
+   *  inherited env (daemon path). */
+  ambientEnv?: Record<string, string>
+  /** Renderer-provided env overrides to merge on top of ambientEnv. */
+  envOverrides?: Record<string, string>
   envToDelete?: string[]
   command?: string
   /** Orca worktree identity. When present, the local provider scopes shell

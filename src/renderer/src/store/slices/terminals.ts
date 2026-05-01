@@ -80,19 +80,22 @@ export type TerminalSlice = {
   expandedPaneByTabId: Record<string, boolean>
   canExpandPaneByTabId: Record<string, boolean>
   terminalLayoutsByTabId: Record<string, TerminalLayoutSnapshot>
-  pendingStartupByTabId: Record<string, { command: string; env?: Record<string, string> }>
+  pendingStartupByTabId: Record<string, { command: string; envOverrides?: Record<string, string> }>
   /** Queued setup-split requests — when present, TerminalPane creates the
    *  initial pane clean, then splits (vertical or horizontal per user setting)
    *  and runs the command in the new pane so the main terminal stays
    *  immediately interactive. */
   pendingSetupSplitByTabId: Record<
     string,
-    { command: string; env?: Record<string, string>; direction: SetupSplitDirection }
+    { command: string; envOverrides?: Record<string, string>; direction: SetupSplitDirection }
   >
   /** Queued issue-command-split requests — similar to setup splits but triggered
    *  when an issue is linked during worktree creation and the repo's issue
    *  automation command is enabled. */
-  pendingIssueCommandSplitByTabId: Record<string, { command: string; env?: Record<string, string> }>
+  pendingIssueCommandSplitByTabId: Record<
+    string,
+    { command: string; envOverrides?: Record<string, string> }
+  >
   tabBarOrderByWorktree: Record<string, string[]>
   workspaceSessionReady: boolean
   pendingReconnectWorktreeIds: string[]
@@ -163,25 +166,33 @@ export type TerminalSlice = {
   setTabLayout: (tabId: string, layout: TerminalLayoutSnapshot | null) => void
   queueTabStartupCommand: (
     tabId: string,
-    startup: { command: string; env?: Record<string, string> }
+    startup: { command: string; envOverrides?: Record<string, string> }
   ) => void
   consumeTabStartupCommand: (
     tabId: string
-  ) => { command: string; env?: Record<string, string> } | null
+  ) => { command: string; envOverrides?: Record<string, string> } | null
   queueTabSetupSplit: (
     tabId: string,
-    startup: { command: string; env?: Record<string, string>; direction: SetupSplitDirection }
+    startup: {
+      command: string
+      envOverrides?: Record<string, string>
+      direction: SetupSplitDirection
+    }
   ) => void
   consumeTabSetupSplit: (
     tabId: string
-  ) => { command: string; env?: Record<string, string>; direction: SetupSplitDirection } | null
+  ) => {
+    command: string
+    envOverrides?: Record<string, string>
+    direction: SetupSplitDirection
+  } | null
   queueTabIssueCommandSplit: (
     tabId: string,
-    issueCommand: { command: string; env?: Record<string, string> }
+    issueCommand: { command: string; envOverrides?: Record<string, string> }
   ) => void
   consumeTabIssueCommandSplit: (
     tabId: string
-  ) => { command: string; env?: Record<string, string> } | null
+  ) => { command: string; envOverrides?: Record<string, string> } | null
   /** Per-pane timestamp (ms) when the prompt-cache countdown started (agent became idle).
    *  Keys are `${tabId}:${paneId}` composites so split-pane tabs can track each pane
    *  independently. null means no active timer for that pane. */

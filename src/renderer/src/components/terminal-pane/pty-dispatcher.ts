@@ -206,7 +206,8 @@ export type PtyTransport = {
 
 export type IpcPtyTransportOptions = {
   cwd?: string
-  env?: Record<string, string>
+  ambientEnv?: Record<string, string>
+  envOverrides?: Record<string, string>
   command?: string
   connectionId?: string | null
   /** Orca worktree identity for scoped shell history. */

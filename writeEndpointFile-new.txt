@@ -1,0 +1,110 @@
+  private writeEndpointFile(): void {
+    if (!this.runtimeDir || !this.endpointFilePathCache || !this.metadataFilePathCache) {
+      return
+    }
+    // Why: defensive reset — launchers must not see a stale `true` from a
+    // previous start() if this write fails before reaching the success
+    // assignment below.
+    this.endpointFileWritten = false
+
+    // Why: unique-per-call tmp names (mirrors persistence.ts / installer-utils.ts);
+    // prevents cross-process collision if two writers race on the same runtime dir.
+    const tmpEndpointPath = join(this.runtimeDir, `.endpoint-${process.pid}-${randomUUID()}.tmp`)
+    const tmpMetadataPath = join(this.runtimeDir, `.runtime-${process.pid}-${randomUUID()}.tmp`)
+
+    // Why: endpoint.json is { url, token } where url is http://127.0.0.1:<port>/hook
+    // (no trailing slash; launchers append /claude, /cursor, etc.). Include token
+    // so launchers can authenticate.
+    const endpointData = {
+      url: `http://127.0.0.1:${this.port}/hook`,
+      token: this.token
+    }
+
+    // Why: runtime.json records the hook runtime version, publish timestamp,
+    // publisher PID, and transport type. Launchers can use this to detect stale
+    // installs and decide whether to restart or reuse the current server.
+    const runtimeData = {
+      version: 1,
+      publishedAt: Date.now(),
+      endpointVersion: 1,
+      publisherPid: process.pid,
+      transport: 'http' as const
+    }
+
+    let tmpWritten = false
+    try {
+      // Why: mode 0o700 — owner-only so the runtime dir does not leak the
+      // existence of this Orca install (or the endpoint files) to other local
+      // users on a multi-user POSIX host. Default umask would otherwise leave
+      // the dir at 0o755 even though files inside are 0o600.
+      mkdirSync(this.runtimeDir, { recursive: true, mode: 0o700 })
+      if (process.platform !== 'win32') {
+        // Why: mkdirSync's `mode` only applies when the dir is newly created —
+        // a pre-existing runtime dir (from an earlier build or user intervention)
+        // keeps its original permissions. Re-chmod on every start() so the
+        // directory matches the 0o600 files inside it. POSIX only; chmod
+        // semantics differ on Windows and the filesystem-level ACL model makes
+        // this check meaningless there.
+        try {
+          chmodSync(this.runtimeDir, 0o700)
+        } catch {
+          // Why: best-effort — a chmod failure (exotic fs, read-only mount)
+          // must not block the file writes themselves.
+        }
+      }
+
+      // Why: write endpoint.json first
+      writeFileSync(tmpEndpointPath, JSON.stringify(endpointData, null, 2), { mode: 0o600 })
+      tmpWritten = true
+      renameSync(tmpEndpointPath, this.endpointFilePathCache)
+
+      // Why: write runtime.json second
+      writeFileSync(tmpMetadataPath, JSON.stringify(runtimeData, null, 2), { mode: 0o600 })
+      renameSync(tmpMetadataPath, this.metadataFilePathCache)
+
+      this.endpointFileWritten = true
+    } catch (err) {
+      console.error('[agent-hooks] failed to write runtime files:', err)
+      // Why: fail-open — start() succeeds even if file write fails. Direct
+      // fetch() calls to the running server still work.
+      if (tmpWritten) {
+        // Why: best-effort cleanup of tmp files if rename failed
+        try {
+          unlinkSync(tmpEndpointPath)
+        } catch {
+          // Why: ignore cleanup failures — fs might be read-only or tmp already gone
+        }
+        try {
+          unlinkSync(tmpMetadataPath)
+        } catch {
+          // Why: ignore cleanup failures
+        }
+      }
+    } finally {
+      // Why: sweep orphan tmp files from prior crashes/races
+      try {
+        const files = readdirSync(this.runtimeDir)
+        for (const file of files) {
+          if (file.startsWith('.endpoint-') || file.startsWith('.runtime-')) {
+            const path = join(this.runtimeDir, file)
+            try {
+              const stats = statSync(path)
+              const ageMs = Date.now() - stats.mtimeMs
+              // Why: 1 hour cutoff — a tmp file older than that is definitely
+              // orphaned (no atomic write takes an hour). Avoids deleting a
+              // concurrent writer's in-progress tmp.
+              if (ageMs > 3600_000) {
+                unlinkSync(path)
+              }
+            } catch {
+              // Why: ignore stat/unlink failures on individual tmp files
+            }
+          }
+        }
+      } catch {
+        // Why: ignore readdir failures — runtime dir might not exist yet or
+        // might have restrictive perms
+      }
+    }
+  }
+}

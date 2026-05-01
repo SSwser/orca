@@ -304,8 +304,7 @@ export function connectPanePty(
   // The key matches the `${tabId}:${paneId}` composite used for cacheTimerByKey.
   // ORCA_TAB_ID / ORCA_WORKTREE_ID are exposed separately so the receiver has
   // routing context without having to split paneKey back into its parts.
-  const paneEnv = {
-    ...paneStartup?.env,
+  const paneEnvOverrides = {
     ORCA_PANE_KEY: cacheKey,
     ORCA_TAB_ID: deps.tabId,
     ORCA_WORKTREE_ID: deps.worktreeId
@@ -323,7 +322,8 @@ export function connectPanePty(
 
   const transport = createIpcPtyTransport({
     cwd: deps.cwd,
-    env: paneEnv,
+    ambientEnv: paneStartup?.env,
+    envOverrides: paneEnvOverrides,
     command: paneStartup?.command,
     connectionId,
     worktreeId: deps.worktreeId,
