@@ -782,8 +782,13 @@ describe('registerPtyHandlers', () => {
           getDefaultShell: vi.fn(),
           getProfiles: vi.fn()
         } as never)
+        const runtime = {
+          setPtyController: vi.fn(),
+          createPreAllocatedTerminalHandle: vi.fn(() => 'term_ssh'),
+          registerPreAllocatedHandleForPty: vi.fn()
+        }
         handlers.clear()
-        registerPtyHandlers(mainWindow as never)
+        registerPtyHandlers(mainWindow as never, runtime as never)
         await handlers.get('pty:spawn')!(null, {
           cols: 80,
           rows: 24,
@@ -791,12 +796,13 @@ describe('registerPtyHandlers', () => {
           connectionId: 'ssh-1'
         })
         const opts = sshSpawn.mock.calls.at(-1)![0]
-        // Why: SSH spawns skip env resolution entirely — resolvedEnv is
-        // undefined, so ambientEnv is passed through without injections. The
-        // remote host's shell will initialize with its own environment.
-        expect(opts.ambientEnv).toBeUndefined()
+        // Why: SSH spawns skip env resolution (no host-local paths/tokens),
+        // but ambientEnv still gets injected with JUST the terminal handle —
+        // this lets remote agents self-identify in orchestration without
+        // leaking any Orca host loopback tokens or file paths to the SSH host.
+        expect(opts.ambientEnv).toEqual({ ORCA_TERMINAL_HANDLE: 'term_ssh' })
         expect(opts.envOverrides).toBeUndefined()
-        // Sanity: check that the build mocks weren't called (proving that
+        // Sanity: verify the build mocks weren't called (proving that full
         // env resolution was skipped for the SSH spawn path).
         expect(openCodeBuildPtyEnvMock).not.toHaveBeenCalled()
         expect(piBuildPtyEnvMock).not.toHaveBeenCalled()
@@ -882,13 +888,12 @@ describe('registerPtyHandlers', () => {
       cols: 80,
       rows: 24,
       connectionId: 'ssh-1',
-      env: { EXISTING: '1' }
+      ambientEnv: { EXISTING: '1' }
     })
 
     expect(spawn).toHaveBeenCalledWith(
       expect.objectContaining({
-        env: expect.objectContaining({
-          EXISTING: '1',
+        ambientEnv: expect.objectContaining({
           ORCA_TERMINAL_HANDLE: 'term_remote'
         })
       })

@@ -658,9 +658,17 @@ export function registerPtyHandlers(
         }
       }
 
-      const spawnEnv = preAllocatedHandle && resolvedEnv
-        ? { ...resolvedEnv, ORCA_TERMINAL_HANDLE: preAllocatedHandle }
-        : resolvedEnv
+      // Why: inject ORCA_TERMINAL_HANDLE for all spawns if a handle was allocated.
+      // For local/daemon spawns, resolvedEnv has the full host env (hook tokens,
+      // overlay paths, dev PATH). For SSH spawns, resolvedEnv is undefined (remote
+      // shell gets its own environment) but ORCA_TERMINAL_HANDLE still gets injected
+      // so remote agents can self-identify in orchestration messages.
+      const spawnEnv =
+        preAllocatedHandle && resolvedEnv
+          ? { ...resolvedEnv, ORCA_TERMINAL_HANDLE: preAllocatedHandle }
+          : preAllocatedHandle
+            ? { ORCA_TERMINAL_HANDLE: preAllocatedHandle }
+            : resolvedEnv
       const spawnOptions: PtySpawnOptions = {
         cols: args.cols,
         rows: args.rows,
