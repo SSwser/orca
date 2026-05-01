@@ -153,7 +153,7 @@ export class LocalPtyProvider implements IPtyProvider {
       effectiveCwd = resolved.effectiveCwd
       validationCwd = resolved.validationCwd
     } else {
-      shellPath = args.env?.SHELL || process.env.SHELL || '/bin/zsh'
+      shellPath = args.ambientEnv?.SHELL || process.env.SHELL || '/bin/zsh'
       shellArgs = ['-l']
       effectiveCwd = cwd
       validationCwd = cwd
@@ -162,9 +162,13 @@ export class LocalPtyProvider implements IPtyProvider {
     ensureNodePtySpawnHelperExecutable()
     validateWorkingDirectory(validationCwd)
 
+    // Why: the IPC layer now resolves the full env (via resolvePtySpawnEnv) before
+    // calling spawn, so the provider trusts the caller's already-resolved env.
+    // We only add terminal-shape defaults (TERM/COLORTERM/etc.) that are specific
+    // to the PTY's capabilities, not host-environment injections.
     const spawnEnv: Record<string, string> = {
-      ...process.env,
-      ...args.env,
+      ...(args.ambientEnv ?? {}),
+      ...(args.envOverrides ?? {}),
       TERM: 'xterm-256color',
       COLORTERM: 'truecolor',
       TERM_PROGRAM: 'Orca',

@@ -208,6 +208,39 @@ export function buildPtyHostEnv(
   return baseEnv
 }
 
+/**
+ * Resolves the COMPLETE env that a PTY should spawn with, before delegating
+ * to a provider. Replaces the older "providers also merge process.env"
+ * pattern so both local and daemon paths see the same starting env.
+ *
+ * Inputs are NOT mutated. Returns a new object.
+ */
+export function resolvePtySpawnEnv(opts: {
+  id: string
+  ambientEnv?: Record<string, string>
+  envOverrides?: Record<string, string>
+  envToDelete?: string[]
+  isPackaged: boolean
+  userDataPath: string
+  selectedCodexHomePath: string | null
+  githubAttributionEnabled: boolean
+}): Record<string, string> {
+  const baseEnv: Record<string, string> = {
+    ...(opts.ambientEnv ?? (process.env as Record<string, string>)),
+    ...(opts.envOverrides ?? {})
+  }
+  for (const key of opts.envToDelete ?? []) {
+    delete baseEnv[key]
+  }
+  // Reuse existing host augmentations (OpenCode/Pi/Codex/dev CLI/attribution).
+  return buildPtyHostEnv(opts.id, baseEnv, {
+    isPackaged: opts.isPackaged,
+    userDataPath: opts.userDataPath,
+    selectedCodexHomePath: opts.selectedCodexHomePath,
+    githubAttributionEnabled: opts.githubAttributionEnabled
+  })
+}
+
 function isClaudeLaunchCommand(command: string | undefined): boolean {
   if (!command) {
     return false
@@ -346,27 +379,17 @@ export function registerPtyHandlers(
   // Configure the local provider with app-specific hooks.
   // Why: only LocalPtyProvider has the configure() method — daemon-backed
   // providers handle subprocess spawning internally and don't need main-process
-  // hook injection. The hooks (buildSpawnEnv, onSpawned, etc.) only make sense
-  // when the PTY lives in the Electron main process.
+  // hook injection. The hooks (onSpawned, onExit, onData) run in the Electron
+  // main process for local PTYs.
+  //
+  // Note: buildSpawnEnv is NO LONGER configured here — all env resolution
+  // (including buildPtyHostEnv injection) now happens in the pty:spawn IPC
+  // handler via resolvePtySpawnEnv, so both local and daemon paths see the
+  // same starting env. The provider trusts the caller's already-resolved env.
   if (localProvider instanceof LocalPtyProvider) {
     localProvider.configure({
       isHistoryEnabled: () => getSettings?.()?.terminalScopeHistoryByWorktree ?? true,
       getWindowsShell: () => getSettings?.()?.terminalWindowsShell,
-      buildSpawnEnv: (id, baseEnv) => {
-        const env = buildPtyHostEnv(id, baseEnv, {
-          isPackaged: app.isPackaged,
-          userDataPath: app.getPath('userData'),
-          selectedCodexHomePath: getSelectedCodexHomePath?.() ?? null,
-          githubAttributionEnabled: getSettings?.()?.enableGitHubAttribution ?? false
-        })
-        // Why: agents need their own terminal handle at process start so they
-        // can self-identify in orchestration messages without an extra RPC.
-        const preAllocatedHandle = runtime?.preAllocateHandleForPty(id)
-        if (preAllocatedHandle) {
-          env.ORCA_TERMINAL_HANDLE = preAllocatedHandle
-        }
-        return env
-      },
       onSpawned: (id) => runtime?.onPtySpawned(id),
       onExit: (id, code) => {
         clearProviderPtyState(id)
@@ -512,7 +535,8 @@ export function registerPtyHandlers(
         cols: number
         rows: number
         cwd?: string
-        env?: Record<string, string>
+        ambientEnv?: Record<string, string>
+        envOverrides?: Record<string, string>
         command?: string
         connectionId?: string | null
         worktreeId?: string
@@ -529,25 +553,17 @@ export function registerPtyHandlers(
       if (isClaudeLaunch && isClaudeAuthSwitchInProgress()) {
         throw new Error('A Claude account switch is in progress. Try again after it finishes.')
       }
-      if (claudeAuth?.stripAuthEnv && hasClaudeAuthEnvConflict(args.env)) {
+      if (claudeAuth?.stripAuthEnv && hasClaudeAuthEnvConflict(args.envOverrides)) {
         throw new Error(
           'This Claude launch defines explicit Anthropic auth environment variables. Remove those overrides before using a managed Claude account.'
         )
       }
-      // Why: the daemon-backed provider replaces LocalPtyProvider and therefore
-      // never runs its buildSpawnEnv closure. We must assemble the same
-      // host-local env (OpenCode plugin, agent-hook server, Pi overlay, Codex
-      // home, dev CLI overrides, GitHub attribution shims) here so both spawn
-      // paths behave identically. buildPtyHostEnv is the shared helper that
-      // encapsulates the full set of injections and their order/guards.
-      //
-      // Safety: skip the entire injection when a remote (SSH) connection is in
-      // play. Every injection here is either host-loopback (the agent-hook
-      // server binds 127.0.0.1, so shipping its token to an SSH host would
-      // leak a loopback secret for no functional benefit) or a path on the
-      // local filesystem (OpenCode plugin dir, Pi overlay, Codex home, dev
-      // CLI bin, attribution shim dir) that would resolve to nothing — or
-      // something misleading — on the remote machine.
+      // Why: SSH spawns delegate env resolution to the remote host — Orca
+      // cannot inject loopback (agent-hooks, OpenCode, Pi) or host paths
+      // (Codex home, dev CLI bin, attribution shim dir) into a remote shell.
+      const isRemoteSpawn = !!args.connectionId
+      // Why: local PTYs (non-SSH, non-daemon) resolve env through the provider's
+      // buildSpawnEnv closure. Daemon and SSH paths need explicit resolution here.
       const isDaemonHostSpawn = !args.connectionId && !(provider instanceof LocalPtyProvider)
       // Why: Pi's PTY overlay is keyed on the id we pass down, and the daemon
       // path needs a stable id BEFORE provider.spawn so the overlay can be
@@ -569,67 +585,91 @@ export function registerPtyHandlers(
       const isMintedSessionId = args.sessionId === undefined && isDaemonHostSpawn
       const effectiveSessionId =
         args.sessionId ?? (isDaemonHostSpawn ? mintPtySessionId(args.worktreeId) : undefined)
-      const baseEnv = claudeAuth ? { ...args.env, ...claudeAuth.envPatch } : args.env
-      let env: Record<string, string> | undefined = baseEnv
-      const preAllocatedHandle =
-        runtime && !(provider instanceof LocalPtyProvider)
-          ? runtime.createPreAllocatedTerminalHandle()
-          : null
-      if (isDaemonHostSpawn) {
-        if (effectiveSessionId === undefined) {
-          // Should be unreachable: the expression above returns a string when
-          // isDaemonHostSpawn is true. Defense-in-depth in case future edits
-          // break this invariant.
-          throw new Error('Invariant violation: daemon spawn without sessionId')
+
+      // Why: mint a PTY id up front so both spawn paths can call resolvePtySpawnEnv
+      // with a stable id (needed for Pi overlay materialization). For daemon spawns
+      // this becomes the sessionId; for local spawns it's just used for env
+      // resolution and agent handle pre-allocation (local provider mints its own
+      // internal counter for the PTY id returned from spawn).
+      // Daemon's mintPtySessionId enforces the same id stability across restarts
+      // (see DaemonPtyAdapter.reconcileOnStartup for the recovery path).
+      const envResolutionId = effectiveSessionId ?? `local-${Date.now()}-${Math.random()}`
+
+      // Why: agents need their own terminal handle at process start so they can
+      // self-identify in orchestration messages without an extra RPC. For non-
+      // local providers (daemon, SSH), createPreAllocatedTerminalHandle mints a
+      // handle the daemon/SSH host can pass to the shell. For local providers,
+      // preAllocateHandleForPty keys the handle on the env resolution id (which
+      // will be looked up post-spawn via the returned PTY id).
+      let preAllocatedHandle: string | null = null
+      if (runtime) {
+        if (provider instanceof LocalPtyProvider) {
+          preAllocatedHandle = runtime.preAllocateHandleForPty(envResolutionId)
+        } else {
+          preAllocatedHandle = runtime.createPreAllocatedTerminalHandle()
         }
-        const sessionIdForEnv = effectiveSessionId
-        // Why: Pi overlay paths are derived from the session id; reject
-        // traversal sequences / path separators so a crafted IPC payload
-        // cannot escape the overlay root. If the renderer ever forwards a
-        // malicious sessionId or worktreeId the spawn is refused before any
-        // filesystem side-effects run.
-        if (!isSafePtySessionId(sessionIdForEnv, app.getPath('userData'))) {
+      }
+
+      // Why: resolve the full PTY spawn env up front (before delegating to the
+      // provider) so both local and daemon paths see the same starting env.
+      // SSH spawns skip env resolution — remote shells cannot run Orca's host-
+      // local injections (loopback agent-hooks, Pi overlays, Codex home, dev
+      // CLI PATH prepends, attribution shims).
+      let resolvedEnv: Record<string, string> | undefined
+      if (!isRemoteSpawn) {
+        // Why: Pi overlay paths are derived from the id; reject traversal
+        // sequences / path separators so a crafted IPC payload cannot escape
+        // the overlay root. For daemon spawns this is the sessionId; for local
+        // spawns it's a throwaway id (local provider doesn't use Pi overlays
+        // keyed on the id, but the guard is still needed for consistency).
+        if (effectiveSessionId !== undefined && !isSafePtySessionId(effectiveSessionId, app.getPath('userData'))) {
           throw new Error('Invalid PTY session id')
         }
-        // Why: clone before mutating so we don't leak injections back into
-        // args.env (which the renderer may reuse for other IPC calls).
-        env = { ...baseEnv }
+
+        const envPatch = claudeAuth?.envPatch ?? {}
+        const envToDelete = claudeAuth?.stripAuthEnv
+          ? [...CLAUDE_AUTH_ENV_VARS, 'ANTHROPIC_CUSTOM_HEADERS']
+          : []
+
         try {
-          buildPtyHostEnv(sessionIdForEnv, env, {
+          resolvedEnv = resolvePtySpawnEnv({
+            id: envResolutionId,
+            ambientEnv: args.ambientEnv,
+            envOverrides: { ...args.envOverrides, ...envPatch },
+            envToDelete,
             isPackaged: app.isPackaged,
             userDataPath: app.getPath('userData'),
             selectedCodexHomePath: getSelectedCodexHomePath?.() ?? null,
             githubAttributionEnabled: getSettings?.()?.enableGitHubAttribution ?? false
           })
         } catch (err) {
-          // Why: buildPtyHostEnv has filesystem side-effects (Pi overlay
-          // materialization). If it throws before we reach provider.spawn,
-          // clear per-PTY state so the next attempt starts clean.
+          // Why: resolvePtySpawnEnv (via buildPtyHostEnv) has filesystem side-
+          // effects (Pi overlay materialization). If it throws before we reach
+          // provider.spawn, clear per-PTY state so the next attempt starts clean.
           //
           // Only sweep state for ids we MINTED in this request — caller-
           // supplied ids may refer to existing PTYs whose overlay/hook state
           // must not be clobbered by a transient overlay-mkdir failure on a
           // retry/attach path.
-          if (isMintedSessionId) {
-            clearProviderPtyState(sessionIdForEnv)
+          if (isMintedSessionId && effectiveSessionId !== undefined) {
+            clearProviderPtyState(effectiveSessionId)
           }
           throw err
         }
       }
-      const spawnEnv = preAllocatedHandle
-        ? { ...env, ORCA_TERMINAL_HANDLE: preAllocatedHandle }
-        : env
-      const envToDelete = claudeAuth?.stripAuthEnv
-        ? [...CLAUDE_AUTH_ENV_VARS, 'ANTHROPIC_CUSTOM_HEADERS']
-        : undefined
+
+      const spawnEnv = preAllocatedHandle && resolvedEnv
+        ? { ...resolvedEnv, ORCA_TERMINAL_HANDLE: preAllocatedHandle }
+        : resolvedEnv
       const spawnOptions: PtySpawnOptions = {
         cols: args.cols,
         rows: args.rows,
         cwd: args.cwd,
-        env: spawnEnv
-      }
-      if (envToDelete) {
-        spawnOptions.envToDelete = envToDelete
+        // Why: resolved env is passed as ambientEnv to the provider (which no
+        // longer merges process.env). Local provider will add TERM/COLORTERM/
+        // LANG defaults, daemon subprocess will add the same via pty-subprocess.ts.
+        ambientEnv: spawnEnv,
+        envOverrides: undefined
       }
       if (args.command !== undefined) {
         spawnOptions.command = args.command
@@ -659,7 +699,7 @@ export function registerPtyHandlers(
       try {
         result = await provider.spawn(spawnOptions)
       } catch (err) {
-        // Why: when buildPtyHostEnv materialized a Pi overlay for this id
+        // Why: when resolvePtySpawnEnv materialized a Pi overlay for this id
         // but provider.spawn failed, the overlay would leak. Sweep per-PTY
         // state for the minted id so it isn't orphaned. Safe to call even
         // when no overlay was created (clearProviderPtyState is a no-op in
@@ -681,15 +721,15 @@ export function registerPtyHandlers(
       if (isClaudeLaunch) {
         markClaudePtySpawned(result.id)
       }
-      // Why: renderer sets ORCA_PANE_KEY in `args.env` for every pane-owned
+      // Why: renderer sets ORCA_PANE_KEY in `args.envOverrides` for every pane-owned
       // spawn (see pty-connection.ts). Recording the mapping here lets
       // clearProviderPtyState clear the agent-hooks server's per-paneKey
       // caches when the PTY exits.
-      // Why: args.env arrives as untrusted JSON over IPC — the static
+      // Why: args.envOverrides arrives as untrusted JSON over IPC — the static
       // Record<string, string> type is not actually enforced at the boundary.
       // Narrow to a bounded string so malformed or oversized values cannot
       // pollute ptyPaneKey or the downstream clearPaneState call.
-      const paneKey = args.env?.ORCA_PANE_KEY
+      const paneKey = args.envOverrides?.ORCA_PANE_KEY
       if (typeof paneKey === 'string' && paneKey.length > 0 && paneKey.length <= 256) {
         ptyPaneKey.set(result.id, paneKey)
         paneKeyPtyId.set(paneKey, result.id)

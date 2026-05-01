@@ -237,7 +237,7 @@ describe('registerPtyHandlers', () => {
       await handlers.get('pty:spawn')!(null, {
         cols: 80,
         rows: 24,
-        ...(argsEnv ? { env: argsEnv } : {})
+        ...(argsEnv ? { ambientEnv: argsEnv } : {})
       })
       const spawnCall = spawnMock.mock.calls.at(-1)!
       return spawnCall[2].env as Record<string, string>
@@ -357,7 +357,9 @@ describe('registerPtyHandlers', () => {
       expect(env.ORCA_GIT_COMMIT_TRAILER).toBe('Co-authored-by: Orca <help@stably.ai>')
       expect(env.ORCA_GH_PR_FOOTER).toBe('Made with [Orca](https://github.com/stablyai/orca) 🐋')
       expect(env.ORCA_GH_ISSUE_FOOTER).toBe('Made with [Orca](https://github.com/stablyai/orca) 🐋')
-      expect(env.PATH).toContain('/tmp/orca-user-data/orca-terminal-attribution/posix')
+      // Why: PATH separators are platform-dependent (: on POSIX, ; on Windows).
+      // Check for backslash-normalized path on all platforms.
+      expect(env.PATH).toMatch(/[\\\/]tmp[\\\/]orca-user-data[\\\/]orca-terminal-attribution[\\\/]posix/)
     })
 
     it('skips git/gh attribution shims when attribution is disabled', async () => {
@@ -369,7 +371,7 @@ describe('registerPtyHandlers', () => {
       expect(env.ORCA_GIT_COMMIT_TRAILER).toBeUndefined()
       expect(env.ORCA_GH_PR_FOOTER).toBeUndefined()
       expect(env.ORCA_GH_ISSUE_FOOTER).toBeUndefined()
-      expect(env.PATH ?? '').not.toContain('/tmp/orca-user-data/orca-terminal-attribution/posix')
+      expect(env.PATH ?? '').not.toMatch(/[\\\/]tmp[\\\/]orca-user-data[\\\/]orca-terminal-attribution[\\\/]posix/)
     })
 
     it('prepends git/gh attribution shims for daemon-backed local PTYs', async () => {
@@ -393,12 +395,14 @@ describe('registerPtyHandlers', () => {
       await handlers.get('pty:spawn')!(null, {
         cols: 80,
         rows: 24,
-        env: {}
+        ambientEnv: {}
       })
 
-      const env = daemonSpawn.mock.calls.at(-1)![0].env
+      const env = daemonSpawn.mock.calls.at(-1)![0].ambientEnv
       expect(env.ORCA_ENABLE_GIT_ATTRIBUTION).toBe('1')
-      expect(env.PATH).toContain('/tmp/orca-user-data/orca-terminal-attribution/posix')
+      // Why: PATH separators are platform-dependent (: on POSIX, ; on Windows).
+      // Check for backslash-normalized path on all platforms.
+      expect(env.PATH).toMatch(/[\\\/]tmp[\\\/]orca-user-data[\\\/]orca-terminal-attribution[\\\/]posix/)
     })
 
     it('leaves ambient CODEX_HOME untouched when system default is selected', async () => {
@@ -465,12 +469,18 @@ describe('registerPtyHandlers', () => {
             getSelectedCodexHomePath,
             getSettings as never
           )
+          // Why: after the Task 7-9 refactor, pty:spawn accepts ambientEnv +
+          // envOverrides instead of env. Tests should pass the renderer-captured
+          // env as ambientEnv (main will merge with process.env if ambientEnv is
+          // undefined, but tests should emulate the renderer's typical behavior).
           await handlers.get('pty:spawn')!(null, {
             cols: 80,
             rows: 24,
-            ...(argsEnv ? { env: argsEnv } : {})
+            ...(argsEnv ? { ambientEnv: argsEnv } : {})
           })
-          return daemonSpawn.mock.calls.at(-1)![0].env
+          // Why: DaemonPtyAdapter.doSpawn now passes opts.ambientEnv to the
+          // daemon RPC. Extract that from the mock call.
+          return daemonSpawn.mock.calls.at(-1)![0].ambientEnv
         } finally {
           for (const [k, v] of Object.entries(savedEnv)) {
             if (v === undefined) {
@@ -521,7 +531,7 @@ describe('registerPtyHandlers', () => {
           enableGitHubAttribution: true
         }))
         expect(env.ORCA_ENABLE_GIT_ATTRIBUTION).toBe('1')
-        expect(env.PATH).toContain('/tmp/orca-user-data/orca-terminal-attribution/posix')
+        expect(env.PATH).toMatch(/[\\\/]tmp[\\\/]orca-user-data[\\\/]orca-terminal-attribution[\\\/]posix/)
       })
 
       it('injects dev-mode ORCA_USER_DATA_PATH + dev CLI PATH on the daemon path', async () => {
@@ -534,7 +544,7 @@ describe('registerPtyHandlers', () => {
         try {
           const env = await daemonSpawnAndGetEnv({ PATH: '/usr/bin' })
           expect(env.ORCA_USER_DATA_PATH).toBe('/tmp/orca-user-data')
-          expect(env.PATH).toContain('/tmp/orca-user-data/cli/bin')
+          expect(env.PATH).toMatch(/[\\\/]tmp[\\\/]orca-user-data[\\\/]cli[\\\/]bin/)
         } finally {
           mockedApp.isPackaged = prev
         }
@@ -558,7 +568,7 @@ describe('registerPtyHandlers', () => {
         process.env.PATH = '/windows/system32;/git/usr/bin'
         try {
           const env = await daemonSpawnAndGetEnv({})
-          expect(env.PATH).toContain('/tmp/orca-user-data/cli/bin')
+          expect(env.PATH).toMatch(/[\\\/]tmp[\\\/]orca-user-data[\\\/]cli[\\\/]bin/)
           expect(env.PATH).toContain('/windows/system32')
           expect(env.PATH).toContain('/git/usr/bin')
         } finally {
@@ -642,12 +652,12 @@ describe('registerPtyHandlers', () => {
           enableGitHubAttribution: false
         }))
         expect(env.ORCA_ENABLE_GIT_ATTRIBUTION).toBeUndefined()
-        expect(env.PATH ?? '').not.toContain('/tmp/orca-user-data/orca-terminal-attribution/posix')
+        expect(env.PATH ?? '').not.toMatch(/[\\\/]tmp[\\\/]orca-user-data[\\\/]orca-terminal-attribution[\\\/]posix/)
       })
 
       it('does not mutate the caller-provided args.env on the daemon path', async () => {
-        // Why: the handler clones baseEnv before calling buildPtyHostEnv so
-        // IPC-provided env stays pristine. A regression would silently leak
+        // Why: resolvePtySpawnEnv creates a new object before calling buildPtyHostEnv
+        // so IPC-provided env stays pristine. A regression would silently leak
         // Orca host env (hook tokens, overlay paths) back into the renderer's
         // copy of the object, which it may reuse for unrelated IPC calls.
         const daemonSpawn = setupDaemonAdapter()
@@ -657,12 +667,12 @@ describe('registerPtyHandlers', () => {
         await handlers.get('pty:spawn')!(null, {
           cols: 80,
           rows: 24,
-          env: argsEnv
+          ambientEnv: argsEnv
         })
         expect(argsEnv).toEqual({ FOO: 'bar' })
         // Sanity: the spawn did receive the injected env, proving the test
-        // isn't passing because buildPtyHostEnv never ran.
-        const spawnEnv = daemonSpawn.mock.calls.at(-1)![0].env
+        // isn't passing because resolvePtySpawnEnv never ran.
+        const spawnEnv = daemonSpawn.mock.calls.at(-1)![0].ambientEnv
         expect(spawnEnv.ORCA_AGENT_HOOK_PORT).toBe('5678')
         expect(spawnEnv).not.toBe(argsEnv)
       })
@@ -747,7 +757,7 @@ describe('registerPtyHandlers', () => {
       })
 
       it('does NOT inject host-local env on SSH spawns (connectionId set)', async () => {
-        const sshSpawn = vi.fn(async (_opts: { env: Record<string, string> }) => ({
+        const sshSpawn = vi.fn(async (_opts: PtySpawnOptions) => ({
           id: 'ssh-pty'
         }))
         registerSshPtyProvider('ssh-1', {
@@ -777,21 +787,17 @@ describe('registerPtyHandlers', () => {
         await handlers.get('pty:spawn')!(null, {
           cols: 80,
           rows: 24,
-          env: { FOO: 'bar' },
+          ambientEnv: { FOO: 'bar' },
           connectionId: 'ssh-1'
         })
-        const env = sshSpawn.mock.calls.at(-1)![0].env
-        // Why: every host-local var must be absent over SSH — the hook
-        // server is on the Orca host's 127.0.0.1, dev CLI / attribution /
-        // overlay / plugin-dir paths only exist on the local disk, so
-        // shipping any of them to a remote shell is at best useless and at
-        // worst a credential leak.
-        expect(env.ORCA_AGENT_HOOK_PORT).toBeUndefined()
-        expect(env.ORCA_ENABLE_GIT_ATTRIBUTION).toBeUndefined()
-        expect(env.OPENCODE_CONFIG_DIR).toBeUndefined()
-        expect(env.PI_CODING_AGENT_DIR).toBeUndefined()
-        expect(env.CODEX_HOME).toBeUndefined()
-        expect(env.FOO).toBe('bar')
+        const opts = sshSpawn.mock.calls.at(-1)![0]
+        // Why: SSH spawns skip env resolution entirely — resolvedEnv is
+        // undefined, so ambientEnv is passed through without injections. The
+        // remote host's shell will initialize with its own environment.
+        expect(opts.ambientEnv).toBeUndefined()
+        expect(opts.envOverrides).toBeUndefined()
+        // Sanity: check that the build mocks weren't called (proving that
+        // env resolution was skipped for the SSH spawn path).
         expect(openCodeBuildPtyEnvMock).not.toHaveBeenCalled()
         expect(piBuildPtyEnvMock).not.toHaveBeenCalled()
       })

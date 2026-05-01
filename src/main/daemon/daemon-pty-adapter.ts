@@ -112,7 +112,11 @@ export class DaemonPtyAdapter implements IPtyProvider {
       cols: effectiveCols,
       rows: effectiveRows,
       cwd: effectiveCwd,
-      env: opts.env,
+      // Why: main already resolved the full env (via resolvePtySpawnEnv),
+      // so daemon-side types use ONE field (env) for the already-resolved env.
+      // Daemon subprocess will add terminal-shape defaults (TERM/COLORTERM/etc.)
+      // but won't merge process.env.
+      env: opts.ambientEnv,
       command: opts.command,
       // Why: without this, the daemon always spawns cmd.exe (COMSPEC) or
       // PowerShell as a fallback — regardless of which shell the renderer
@@ -120,7 +124,7 @@ export class DaemonPtyAdapter implements IPtyProvider {
       // the override makes the daemon path behave the same as the in-process
       // LocalPtyProvider.
       shellOverride: opts.shellOverride,
-      shellReadySupported: opts.command ? supportsPtyStartupBarrier(opts.env ?? {}) : false
+      shellReadySupported: opts.command ? supportsPtyStartupBarrier(opts.ambientEnv ?? {}) : false
     })
 
     if (effectiveCwd) {

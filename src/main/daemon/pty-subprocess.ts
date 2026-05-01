@@ -41,9 +41,13 @@ function getDefaultCwd(): string {
 
 export function createPtySubprocess(opts: PtySubprocessOptions): SubprocessHandle {
   const size = normalizePtySize(opts.cols, opts.rows)
+  // Why: the main process (via resolvePtySpawnEnv) already resolved the full
+  // env before delegating to the daemon adapter, so we trust the caller's
+  // already-resolved env. We only add terminal-shape defaults (TERM/COLORTERM/
+  // etc.) that are specific to the PTY's capabilities, not host-environment
+  // injections.
   const env: Record<string, string> = {
-    ...process.env,
-    ...opts.env,
+    ...(opts.env ?? {}),
     TERM: 'xterm-256color',
     COLORTERM: 'truecolor',
     TERM_PROGRAM: 'Orca',
