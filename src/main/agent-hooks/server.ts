@@ -1094,11 +1094,7 @@ export class AgentHookServer {
     }
   }
 
-  async start(options?: {
-    env?: string
-    userDataPath?: string
-    runtimeDir?: string
-  }): Promise<void> {
+  async start(options?: { env?: string; runtimeDir?: string }): Promise<void> {
     if (this.server) {
       return
     }
@@ -1106,10 +1102,8 @@ export class AgentHookServer {
     if (options?.env) {
       this.env = options.env
     }
-    // Why: userDataPath is accepted but ignored for backward compat with
-    // index.ts. Task 10 will remove it after rewiring the caller.
-    // Lazy-load getGlobalAgentHooksDir() so tests can override via runtimeDir
-    // without triggering electron import.
+    // Why: lazy-load getGlobalAgentHooksDir() so tests can override via
+    // runtimeDir without triggering an electron import at module load.
     this.runtimeDir = options?.runtimeDir ?? getGlobalAgentHooksDir()
     this.endpointFilePathCache = join(this.runtimeDir, 'endpoint.json')
     this.metadataFilePathCache = join(this.runtimeDir, 'runtime.json')

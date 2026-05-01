@@ -351,6 +351,24 @@ app.whenReady().then(async () => {
   starNag.registerIpcHandlers()
   runtime.setAgentBrowserBridge(new AgentBrowserBridge(browserManager))
   nativeTheme.themeSource = store.getSettings().theme ?? 'system'
+  // Why: start the hook server before installing managed hook scripts. The
+  // server publishes endpoint.json + runtime.json into the global runtime
+  // dir on start; the launcher scripts written during install resolve the
+  // current Orca port/token by reading endpoint.json at invocation time
+  // (not via PTY env). If the install loop ran first, registered launchers
+  // would point at a runtime dir whose endpoint file did not yet exist on
+  // first launch.
+  try {
+    await agentHookServer.start({
+      env: app.isPackaged ? 'production' : 'development'
+    })
+  } catch (error) {
+    // Why: Claude/Codex/Gemini/OpenCode/Cursor hook callbacks are sidebar
+    // enrichment only. Orca must still boot even if the local loopback
+    // receiver cannot bind on this launch.
+    console.error('[agent-hooks] Failed to start local hook server:', error)
+  }
+
   // Why: managed hook installation mutates user-global agent config.
   // Startup must fail open so a malformed local config never bricks Orca.
   // Claude/Codex/Gemini installs are gated behind the experimentalAgentDashboard
@@ -448,28 +466,6 @@ app.whenReady().then(async () => {
   setAppRuntimeFlags({
     agentDashboardEnabledAtStartup: agentDashboardEnabled
   })
-
-  // Why: the hook server runs unconditionally so cursor-agent panes can reach
-  // it. Claude/Codex/Gemini hook scripts stay uninstalled while the
-  // experimentalAgentDashboard setting is off, so only cursor events flow
-  // in by default. PTY spawn env reads ORCA_AGENT_HOOK_* from the live
-  // server state, so the server must start before the window opens —
-  // otherwise restored terminals race ahead without the env on first launch.
-  try {
-    await agentHookServer.start({
-      env: app.isPackaged ? 'production' : 'development',
-      // Why: passing the userData path lets the server write its endpoint
-      // file (PORT/TOKEN/ENV/VERSION) to a stable location. Hook scripts
-      // source that file at invocation time so they reach the current Orca
-      // even when the PTY's env was frozen under a prior instance.
-      userDataPath: app.getPath('userData')
-    })
-  } catch (error) {
-    // Why: Claude/Codex/Gemini/OpenCode/Cursor hook callbacks are sidebar
-    // enrichment only. Orca must still boot even if the local loopback
-    // receiver cannot bind on this launch.
-    console.error('[agent-hooks] Failed to start local hook server:', error)
-  }
 
   // Why: once the hook server is ready (or has already failed open), window
   // creation and runtime RPC startup are independent.
