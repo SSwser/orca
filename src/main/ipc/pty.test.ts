@@ -20,7 +20,8 @@ const {
   openCodeClearPtyMock,
   buildAgentHookEnvMock,
   piBuildPtyEnvMock,
-  piClearPtyMock
+  piClearPtyMock,
+  isPwshAvailableMock
 } = vi.hoisted(() => ({
   handleMock: vi.fn(),
   onMock: vi.fn(),
@@ -35,6 +36,7 @@ const {
   getPathMock: vi.fn(),
   spawnMock: vi.fn(),
   openCodeBuildPtyEnvMock: vi.fn(),
+  isPwshAvailableMock: vi.fn(),
   openCodeClearPtyMock: vi.fn(),
   buildAgentHookEnvMock: vi.fn(),
   piBuildPtyEnvMock: vi.fn(),
@@ -89,6 +91,10 @@ vi.mock('../pi/titlebar-extension-service', () => ({
     clearPty: piClearPtyMock
   }
 }))
+
+vi.mock('../pwsh', () => ({
+  isPwshAvailable: isPwshAvailableMock
+}))
 import { LocalPtyProvider } from '../providers/local-pty-provider'
 import {
   registerPtyHandlers,
@@ -135,6 +141,7 @@ describe('registerPtyHandlers', () => {
     buildAgentHookEnvMock.mockReset()
     piBuildPtyEnvMock.mockReset()
     piClearPtyMock.mockReset()
+    isPwshAvailableMock.mockReset()
     mainWindow.webContents.on.mockReset()
     mainWindow.webContents.send.mockReset()
 
@@ -159,6 +166,7 @@ describe('registerPtyHandlers', () => {
         ? '/tmp/orca-pi-agent-overlay'
         : '/tmp/orca-pi-agent-overlay'
     }))
+    isPwshAvailableMock.mockReturnValue(false)
     spawnMock.mockReturnValue({
       onData: vi.fn(() => makeDisposable()),
       onExit: vi.fn(() => makeDisposable()),
@@ -993,6 +1001,151 @@ describe('registerPtyHandlers', () => {
         ],
         expect.any(Object)
       )
+    })
+
+    it('spawns powershell.exe when PowerShell family keeps the inbox implementation', () => {
+      process.env.COMSPEC = 'C:\\Windows\\system32\\cmd.exe'
+
+      registerPtyHandlers(
+        mainWindow as never,
+        undefined,
+        undefined,
+        () =>
+          ({
+            terminalWindowsShell: 'powershell.exe',
+            terminalWindowsPowerShellImplementation: 'powershell.exe'
+          }) as never
+      )
+      handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
+
+      expect(spawnMock).toHaveBeenCalledWith(
+        'powershell.exe',
+        [
+          '-NoExit',
+          '-Command',
+          'try { . $PROFILE } catch {}; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8'
+        ],
+        expect.any(Object)
+      )
+    })
+
+    it('spawns pwsh.exe when PowerShell 7 is selected and available', () => {
+      process.env.COMSPEC = 'C:\\Windows\\system32\\cmd.exe'
+      isPwshAvailableMock.mockReturnValue(true)
+
+      registerPtyHandlers(
+        mainWindow as never,
+        undefined,
+        undefined,
+        () =>
+          ({
+            terminalWindowsShell: 'powershell.exe',
+            terminalWindowsPowerShellImplementation: 'pwsh.exe'
+          }) as never
+      )
+      handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
+
+      expect(spawnMock).toHaveBeenCalledWith(
+        'pwsh.exe',
+        [
+          '-NoExit',
+          '-Command',
+          'try { . $PROFILE } catch {}; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8'
+        ],
+        expect.any(Object)
+      )
+    })
+
+    it('falls back to powershell.exe when PowerShell 7 is selected but unavailable', () => {
+      process.env.COMSPEC = 'C:\\Windows\\system32\\cmd.exe'
+      isPwshAvailableMock.mockReturnValue(false)
+
+      registerPtyHandlers(
+        mainWindow as never,
+        undefined,
+        undefined,
+        () =>
+          ({
+            terminalWindowsShell: 'powershell.exe',
+            terminalWindowsPowerShellImplementation: 'pwsh.exe'
+          }) as never
+      )
+      handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
+
+      expect(spawnMock).toHaveBeenCalledWith(
+        'powershell.exe',
+        [
+          '-NoExit',
+          '-Command',
+          'try { . $PROFILE } catch {}; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8'
+        ],
+        expect.any(Object)
+      )
+    })
+
+    it('ignores the PowerShell implementation setting for cmd.exe', () => {
+      process.env.COMSPEC = 'C:\\Windows\\system32\\powershell.exe'
+      isPwshAvailableMock.mockReturnValue(true)
+
+      registerPtyHandlers(
+        mainWindow as never,
+        undefined,
+        undefined,
+        () =>
+          ({
+            terminalWindowsShell: 'cmd.exe',
+            terminalWindowsPowerShellImplementation: 'pwsh.exe'
+          }) as never
+      )
+      handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
+
+      expect(spawnMock).toHaveBeenCalledWith(
+        'cmd.exe',
+        ['/K', 'chcp 65001 > nul'],
+        expect.any(Object)
+      )
+    })
+
+    it('ignores the PowerShell implementation setting for wsl.exe', () => {
+      process.env.COMSPEC = 'C:\\Windows\\system32\\powershell.exe'
+      isPwshAvailableMock.mockReturnValue(true)
+
+      registerPtyHandlers(
+        mainWindow as never,
+        undefined,
+        undefined,
+        () =>
+          ({
+            terminalWindowsShell: 'wsl.exe',
+            terminalWindowsPowerShellImplementation: 'pwsh.exe'
+          }) as never
+      )
+      handlers.get('pty:spawn')!(null, { cols: 80, rows: 24 })
+
+      expect(spawnMock).toHaveBeenCalledWith('wsl.exe', expect.any(Array), expect.any(Object))
+    })
+
+    it('keeps shellOverride priority for one-off tabs', () => {
+      process.env.COMSPEC = 'C:\\Windows\\system32\\cmd.exe'
+      isPwshAvailableMock.mockReturnValue(false)
+
+      registerPtyHandlers(
+        mainWindow as never,
+        undefined,
+        undefined,
+        () =>
+          ({
+            terminalWindowsShell: 'powershell.exe',
+            terminalWindowsPowerShellImplementation: 'pwsh.exe'
+          }) as never
+      )
+      handlers.get('pty:spawn')!(null, {
+        cols: 80,
+        rows: 24,
+        shellOverride: 'wsl.exe'
+      })
+
+      expect(spawnMock).toHaveBeenCalledWith('wsl.exe', expect.any(Array), expect.any(Object))
     })
   })
 

@@ -242,8 +242,27 @@ export const TERMINAL_WINDOWS_SHELL_SEARCH_ENTRY: SettingsSearchEntry[] = [
   }
 ]
 
+export const TERMINAL_WINDOWS_POWERSHELL_IMPLEMENTATION_SEARCH_ENTRY: SettingsSearchEntry[] = [
+  {
+    title: 'PowerShell Version',
+    description:
+      'Choose whether the PowerShell shell option launches Windows PowerShell or PowerShell 7+ for new terminal panes.',
+    keywords: [
+      'terminal',
+      'windows',
+      'powershell',
+      'windows powershell',
+      'powershell 7',
+      'pwsh',
+      'version',
+      'advanced'
+    ]
+  }
+]
+
 export const TERMINAL_WINDOWS_SEARCH_ENTRIES: SettingsSearchEntry[] = [
   ...TERMINAL_WINDOWS_SHELL_SEARCH_ENTRY,
+  ...TERMINAL_WINDOWS_POWERSHELL_IMPLEMENTATION_SEARCH_ENTRY,
   {
     title: 'Right-click to paste',
     description:

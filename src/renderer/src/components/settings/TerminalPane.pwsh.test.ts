@@ -43,7 +43,7 @@ vi.mock('@/lib/keyboard-layout/detect-option-as-alt', () => ({
 
 vi.mock('@/components/terminal-pane/pane-helpers', () => ({
   isMacUserAgent: () => false,
-  isWindowsUserAgent: () => false
+  isWindowsUserAgent: () => true
 }))
 
 vi.mock('../ui/button', () => ({
@@ -123,15 +123,10 @@ vi.mock('@/lib/terminal-theme', () => ({
 }))
 
 const ghosttyMock = {
-  open: true,
-  preview: {
-    found: true,
-    configPath: '/path',
-    diff: { terminalFontSize: 14 },
-    unsupportedKeys: []
-  },
+  open: false,
+  preview: null,
   loading: false,
-  applied: true,
+  applied: false,
   applyError: null,
   handleClick: vi.fn(),
   handleApply: vi.fn(),
@@ -145,7 +140,7 @@ type ReactElementLike = {
   props: Record<string, unknown>
 }
 
-function extractText(node: unknown): string {
+function collectText(node: unknown): string {
   if (node == null) {
     return ''
   }
@@ -156,112 +151,64 @@ function extractText(node: unknown): string {
     return String(node)
   }
   if (Array.isArray(node)) {
-    return node.map(extractText).join('')
+    return node.map(collectText).join('')
   }
   const el = node as ReactElementLike
-  if (el.props?.children) {
-    return extractText(el.props.children)
-  }
-  return ''
+  return collectText(el.props?.children)
 }
 
-function findButtons(node: unknown): { text: string; onClick: (() => void) | undefined }[] {
-  const buttons: { text: string; onClick: (() => void) | undefined }[] = []
-
-  function traverse(n: unknown): void {
-    if (n == null) {
-      return
-    }
-    if (typeof n === 'string' || typeof n === 'number') {
-      return
-    }
-    if (Array.isArray(n)) {
-      n.forEach(traverse)
-      return
-    }
-    const el = n as ReactElementLike
-    const typeName = typeof el.type === 'function' ? el.type.name : String(el.type)
-    if (typeName === 'Button') {
-      const text = extractText(el.props.children)
-      buttons.push({ text, onClick: el.props.onClick as (() => void) | undefined })
-    }
-    if (el.props?.children) {
-      traverse(el.props.children)
-    }
-  }
-
-  traverse(node)
-  return buttons
-}
-
-function findGhosttyImportModal(node: unknown): ReactElementLike | null {
+function findAnchorByText(node: unknown, text: string): ReactElementLike | null {
   if (node == null) {
     return null
   }
   if (Array.isArray(node)) {
     for (const child of node) {
-      const found = findGhosttyImportModal(child)
+      const found = findAnchorByText(child, text)
       if (found) {
         return found
       }
     }
     return null
   }
+  if (typeof node === 'string' || typeof node === 'number') {
+    return null
+  }
   const el = node as ReactElementLike
   const typeName = typeof el.type === 'function' ? el.type.name : String(el.type)
-  if (typeName === 'GhosttyImportModal') {
+  if (typeName === 'a' && collectText(el.props.children).includes(text)) {
     return el
   }
-  if (el.props?.children) {
-    return findGhosttyImportModal(el.props.children)
-  }
-  return null
+  return findAnchorByText(el.props?.children, text)
 }
 
-describe('TerminalPane ghostty import wiring', () => {
+describe('TerminalPane PowerShell version setting', () => {
   beforeEach(() => {
     mockStateValues.length = 0
     resetMockState()
     vi.clearAllMocks()
   })
 
-  // Why: the Ghostty import trigger button lives on the section header in
-  // Settings.tsx (headerAction) — not inside TerminalPane. Keep this test
-  // around so a regression that moves the button back into the pane fails.
-  it('does not render an Import from Ghostty button inside the pane', () => {
+  it('shows the PowerShell 7+ download link when pwsh is unavailable', () => {
     const element = TerminalPane({
-      settings: {} as never,
+      settings: {
+        terminalScrollbackBytes: 10_000_000,
+        terminalWindowsShell: 'powershell.exe',
+        terminalWindowsPowerShellImplementation: 'powershell.exe',
+        terminalWordSeparator: ''
+      } as never,
       updateSettings: () => {},
       systemPrefersDark: true,
       terminalFontSuggestions: [],
       scrollbackMode: 'preset',
       setScrollbackMode: () => {},
-      ghostty: ghosttyMock
+      ghostty: ghosttyMock,
+      wslAvailable: false,
+      pwshAvailable: false
     })
 
-    const buttons = findButtons(element)
-    const importButton = buttons.find((b) => b.text === 'Import from Ghostty')
-    expect(importButton).toBeUndefined()
-  })
-
-  it('passes hook state to GhosttyImportModal', () => {
-    const element = TerminalPane({
-      settings: {} as never,
-      updateSettings: () => {},
-      systemPrefersDark: true,
-      terminalFontSuggestions: [],
-      scrollbackMode: 'preset',
-      setScrollbackMode: () => {},
-      ghostty: ghosttyMock
-    })
-
-    const modal = findGhosttyImportModal(element)
-    expect(modal).not.toBeNull()
-    expect(modal?.props.open).toBe(ghosttyMock.open)
-    expect(modal?.props.preview).toEqual(ghosttyMock.preview)
-    expect(modal?.props.loading).toBe(ghosttyMock.loading)
-    expect(modal?.props.applied).toBe(ghosttyMock.applied)
-    expect(modal?.props.onApply).toBe(ghosttyMock.handleApply)
-    expect(modal?.props.onOpenChange).toBe(ghosttyMock.handleOpenChange)
+    expect(collectText(element)).toContain('PowerShell 7+ offers a newer PowerShell experience')
+    const link = findAnchorByText(element, 'Download PowerShell 7+')
+    expect(link).not.toBeNull()
+    expect(link?.props.href).toBe('https://github.com/PowerShell/PowerShell/releases/latest')
   })
 })

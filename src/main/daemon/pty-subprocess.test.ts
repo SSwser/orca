@@ -1,11 +1,17 @@
-import { describe, expect, it, vi } from 'vitest'
+/* oxlint-disable max-lines -- Why: exercises full PTY subprocess surface (spawn setup, signal routing, data events, platform-specific shell configs, and Windows PowerShell implementations) with co-located test scenarios to prevent fixture drift. */
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { spawnMock } = vi.hoisted(() => ({
-  spawnMock: vi.fn()
+const { spawnMock, isPwshAvailableMock } = vi.hoisted(() => ({
+  spawnMock: vi.fn(),
+  isPwshAvailableMock: vi.fn()
 }))
 
 vi.mock('node-pty', () => ({
   spawn: spawnMock
+}))
+
+vi.mock('../pwsh', () => ({
+  isPwshAvailable: isPwshAvailableMock
 }))
 
 import { createPtySubprocess } from './pty-subprocess'
@@ -33,6 +39,11 @@ function mockPtyProcess(pid = 12345) {
 }
 
 describe('createPtySubprocess', () => {
+  beforeEach(() => {
+    spawnMock.mockReset()
+    isPwshAvailableMock.mockReset()
+    isPwshAvailableMock.mockReturnValue(false)
+  })
   it('spawns node-pty with correct options', () => {
     const proc = mockPtyProcess()
     spawnMock.mockReturnValue(proc)
@@ -260,6 +271,134 @@ describe('createPtySubprocess', () => {
       expect.any(String),
       expect.any(Array),
       expect.objectContaining({ cwd: 'D:\\Users\\orca' })
+    )
+  })
+
+  it('keeps powershell.exe when the inbox PowerShell implementation is selected on Windows', () => {
+    const proc = mockPtyProcess()
+    spawnMock.mockReturnValue(proc)
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')
+
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    isPwshAvailableMock.mockReturnValue(true)
+
+    try {
+      createPtySubprocess({
+        sessionId: 'test',
+        cols: 80,
+        rows: 24,
+        env: { COMSPEC: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' },
+        terminalWindowsPowerShellImplementation: 'powershell.exe'
+      })
+    } finally {
+      if (platform) {
+        Object.defineProperty(process, 'platform', platform)
+      }
+    }
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      'powershell.exe',
+      [
+        '-NoExit',
+        '-Command',
+        'try { . $PROFILE } catch {}; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8'
+      ],
+      expect.any(Object)
+    )
+  })
+
+  it('spawns pwsh.exe when PowerShell 7 is selected and available on Windows', () => {
+    const proc = mockPtyProcess()
+    spawnMock.mockReturnValue(proc)
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')
+
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    isPwshAvailableMock.mockReturnValue(true)
+
+    try {
+      createPtySubprocess({
+        sessionId: 'test',
+        cols: 80,
+        rows: 24,
+        env: { COMSPEC: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' },
+        terminalWindowsPowerShellImplementation: 'pwsh.exe'
+      })
+    } finally {
+      if (platform) {
+        Object.defineProperty(process, 'platform', platform)
+      }
+    }
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      'pwsh.exe',
+      [
+        '-NoExit',
+        '-Command',
+        'try { . $PROFILE } catch {}; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8'
+      ],
+      expect.any(Object)
+    )
+  })
+
+  it('falls back to powershell.exe when PowerShell 7 is selected but unavailable on Windows', () => {
+    const proc = mockPtyProcess()
+    spawnMock.mockReturnValue(proc)
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')
+
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    isPwshAvailableMock.mockReturnValue(false)
+
+    try {
+      createPtySubprocess({
+        sessionId: 'test',
+        cols: 80,
+        rows: 24,
+        env: { COMSPEC: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' },
+        terminalWindowsPowerShellImplementation: 'pwsh.exe'
+      })
+    } finally {
+      if (platform) {
+        Object.defineProperty(process, 'platform', platform)
+      }
+    }
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      'powershell.exe',
+      [
+        '-NoExit',
+        '-Command',
+        'try { . $PROFILE } catch {}; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8'
+      ],
+      expect.any(Object)
+    )
+  })
+
+  it('ignores the PowerShell implementation setting for cmd.exe on Windows', () => {
+    const proc = mockPtyProcess()
+    spawnMock.mockReturnValue(proc)
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')
+
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    isPwshAvailableMock.mockReturnValue(true)
+
+    try {
+      createPtySubprocess({
+        sessionId: 'test',
+        cols: 80,
+        rows: 24,
+        shellOverride: 'cmd.exe',
+        terminalWindowsPowerShellImplementation: 'pwsh.exe'
+      })
+    } finally {
+      if (platform) {
+        Object.defineProperty(process, 'platform', platform)
+      }
+    }
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      'cmd.exe',
+      ['/K', 'chcp 65001 > nul'],
+      expect.any(Object)
     )
   })
 })

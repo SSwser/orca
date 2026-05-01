@@ -68,6 +68,11 @@ export type CreateOrAttachRequest = {
      *  instead of defaulting to COMSPEC (which is always cmd.exe on Windows)
      *  or the hard-coded powershell.exe fallback. */
     shellOverride?: string
+    /** Why: the UI keeps PowerShell as one shell family, but the runtime may
+     *  need to substitute pwsh.exe for powershell.exe when the user selected
+     *  PowerShell 7+. Forward the persisted implementation choice so the daemon
+     *  PTY path resolves the same effective executable as LocalPtyProvider. */
+    terminalWindowsPowerShellImplementation?: 'powershell.exe' | 'pwsh.exe'
     shellReadySupported?: boolean
   }
 }

@@ -194,6 +194,10 @@ const api = {
     isAvailable: (): Promise<boolean> => ipcRenderer.invoke('wsl:isAvailable')
   },
 
+  pwsh: {
+    isAvailable: (): Promise<boolean> => ipcRenderer.invoke('pwsh:isAvailable')
+  },
+
   repos: {
     list: (): Promise<unknown[]> => ipcRenderer.invoke('repos:list'),
 

@@ -42,6 +42,7 @@ import {
   TERMINAL_SETUP_SCRIPT_SEARCH_ENTRIES,
   TERMINAL_TYPOGRAPHY_SEARCH_ENTRIES,
   TERMINAL_WINDOW_SEARCH_ENTRIES,
+  TERMINAL_WINDOWS_POWERSHELL_IMPLEMENTATION_SEARCH_ENTRY,
   TERMINAL_WINDOWS_SHELL_SEARCH_ENTRY
 } from './terminal-search'
 import { useDetectedOptionAsAlt } from '@/lib/keyboard-layout/use-effective-mac-option-as-alt'
@@ -64,6 +65,8 @@ type TerminalPaneProps = {
   ghostty: UseGhosttyImportReturn
   /** Whether WSL is installed on this Windows machine. */
   wslAvailable?: boolean
+  /** Whether PowerShell 7+ (pwsh.exe) is installed on this Windows machine. */
+  pwshAvailable?: boolean
 }
 
 export function TerminalPane({
@@ -74,7 +77,8 @@ export function TerminalPane({
   scrollbackMode,
   setScrollbackMode,
   ghostty,
-  wslAvailable
+  wslAvailable,
+  pwshAvailable
 }: TerminalPaneProps): React.JSX.Element {
   const searchQuery = useAppStore((state) => state.settingsSearchQuery)
   const isWindows = isWindowsUserAgent()
@@ -105,6 +109,10 @@ export function TerminalPane({
   )
   const scrollbackToggleValue =
     scrollbackMode === 'custom' ? 'custom' : isPreset ? `${scrollbackMb}` : 'custom'
+  const windowsShell = settings.terminalWindowsShell ?? 'powershell.exe'
+  const powerShellImplementation =
+    settings.terminalWindowsPowerShellImplementation ?? 'powershell.exe'
+  const showWindowsPowerShellImplementation = isWindows && windowsShell === 'powershell.exe'
 
   const visibleSections = [
     isWindows && matchesSettingsSearch(searchQuery, TERMINAL_WINDOWS_SHELL_SEARCH_ENTRY) ? (
@@ -134,7 +142,7 @@ export function TerminalPane({
                 key={value}
                 onClick={() => updateSettings({ terminalWindowsShell: value })}
                 className={`rounded-sm px-3 py-1 text-sm transition-colors ${
-                  (settings.terminalWindowsShell ?? 'powershell.exe') === value
+                  windowsShell === value
                     ? 'bg-accent font-medium text-accent-foreground'
                     : 'text-muted-foreground hover:text-foreground'
                 }`}
@@ -728,6 +736,11 @@ export function TerminalPane({
       </section>
     ) : null,
     matchesSettingsSearch(searchQuery, TERMINAL_ADVANCED_SEARCH_ENTRIES) ||
+    (showWindowsPowerShellImplementation &&
+      matchesSettingsSearch(
+        searchQuery,
+        TERMINAL_WINDOWS_POWERSHELL_IMPLEMENTATION_SEARCH_ENTRY
+      )) ||
     (isMac && matchesSettingsSearch(searchQuery, TERMINAL_MAC_OPTION_SEARCH_ENTRIES)) ? (
       <section key="advanced" className="space-y-4">
         <div className="space-y-1">
@@ -819,6 +832,74 @@ export function TerminalPane({
             Characters treated as word boundaries for double-click selection.
           </p>
         </SearchableSetting>
+        {showWindowsPowerShellImplementation &&
+        matchesSettingsSearch(
+          searchQuery,
+          TERMINAL_WINDOWS_POWERSHELL_IMPLEMENTATION_SEARCH_ENTRY
+        ) ? (
+          <SearchableSetting
+            title="PowerShell Version"
+            description="Choose whether the PowerShell shell option launches Windows PowerShell or PowerShell 7+ for new terminal panes."
+            keywords={[
+              'terminal',
+              'windows',
+              'powershell',
+              'pwsh',
+              'powershell 7',
+              'windows powershell',
+              'version',
+              'advanced'
+            ]}
+            className="space-y-2"
+          >
+            <Label>PowerShell Version</Label>
+            <div className="flex w-fit gap-1 rounded-md border border-border/50 p-1">
+              {[
+                { label: 'Windows PowerShell', value: 'powershell.exe' },
+                { label: 'PowerShell 7+', value: 'pwsh.exe', disabled: !pwshAvailable }
+              ].map(({ label, value, disabled }) => (
+                <button
+                  key={value}
+                  onClick={() => {
+                    if (disabled) {
+                      return
+                    }
+                    updateSettings({
+                      terminalWindowsPowerShellImplementation: value as
+                        | 'powershell.exe'
+                        | 'pwsh.exe'
+                    })
+                  }}
+                  aria-disabled={disabled ? 'true' : undefined}
+                  className={`rounded-sm px-3 py-1 text-sm transition-colors ${
+                    powerShellImplementation === value
+                      ? 'bg-accent font-medium text-accent-foreground'
+                      : disabled
+                        ? 'cursor-not-allowed text-muted-foreground/50'
+                        : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {!pwshAvailable ? (
+              <p className="text-xs text-muted-foreground">
+                PowerShell 7+ offers a newer PowerShell experience and requires a separate
+                installation.{' '}
+                <a
+                  href="https://github.com/PowerShell/PowerShell/releases/latest"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline hover:text-foreground"
+                >
+                  Download PowerShell 7+
+                </a>
+                .
+              </p>
+            ) : null}
+          </SearchableSetting>
+        ) : null}
         {isMac ? (
           <SearchableSetting
             title="Option as Alt"

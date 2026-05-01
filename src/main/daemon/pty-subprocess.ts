@@ -1,4 +1,5 @@
 import * as pty from 'node-pty'
+import { win32 as pathWin32 } from 'path'
 import type { SubprocessHandle } from './session'
 import {
   getAttributionShellLaunchConfig,
@@ -8,6 +9,8 @@ import {
 import { isValidPtySize, normalizePtySize } from './daemon-pty-size'
 import { ensureNodePtySpawnHelperExecutable } from '../providers/local-pty-utils'
 import { resolveWindowsShellLaunchArgs } from '../providers/windows-shell-args'
+import { resolveEffectiveWindowsPowerShell } from '../providers/windows-powershell'
+import { isPwshAvailable } from '../pwsh'
 
 export type PtySubprocessOptions = {
   sessionId: string
@@ -20,6 +23,7 @@ export type PtySubprocessOptions = {
    *  Overrides env.COMSPEC / env.SHELL resolution inside the daemon so a user
    *  who picks "New WSL terminal" from the "+" menu actually gets WSL. */
   shellOverride?: string
+  terminalWindowsPowerShellImplementation?: 'powershell.exe' | 'pwsh.exe'
 }
 
 function getDefaultCwd(): string {
@@ -67,16 +71,32 @@ export function createPtySubprocess(opts: PtySubprocessOptions): SubprocessHandl
   // setting, relayed by main) takes priority over env.COMSPEC — otherwise
   // Windows always resolves to cmd.exe (COMSPEC) or PowerShell by fallback,
   // no matter which shell the user actually picked.
-  const shellPath = opts.shellOverride || resolvePtyShellPath(env)
+  let shellPath = opts.shellOverride || resolvePtyShellPath(env)
   let shellArgs: string[]
   let spawnCwd = opts.cwd || getDefaultCwd()
 
   if (process.platform === 'win32') {
+    const normalizedShellFamily = pathWin32.basename(shellPath).toLowerCase()
+    // Why: daemon spawn requests can carry either a canonical shell family
+    // (`powershell.exe`) or a full executable path inherited from COMSPEC /
+    // one-off overrides. Normalize before resolving so the PowerShell 7+
+    // preference applies consistently in both cases, just like the local PTY.
+    shellPath =
+      resolveEffectiveWindowsPowerShell({
+        shellFamily:
+          normalizedShellFamily === 'powershell.exe' ||
+          normalizedShellFamily === 'cmd.exe' ||
+          normalizedShellFamily === 'wsl.exe'
+            ? normalizedShellFamily
+            : undefined,
+        implementation: opts.terminalWindowsPowerShellImplementation,
+        pwshAvailable: isPwshAvailable()
+      }) ?? shellPath
     // Why: matches LocalPtyProvider — CMD needs chcp 65001, PowerShell needs
     // $PROFILE dot-sourcing, WSL needs a --bash entry with a translated cwd.
-    // Previously the daemon passed `[]` here which made every shell launch as
-    // a bare interactive process; that silently degraded PowerShell (no
-    // profile) and never worked at all for WSL (which needs explicit args).
+    // Reuse the same shared launch-args helper after resolving the effective
+    // PowerShell executable so daemon-backed terminals preserve parity with the
+    // in-process PTY path.
     const resolved = resolveWindowsShellLaunchArgs(shellPath, spawnCwd, getDefaultCwd())
     shellArgs = resolved.shellArgs
     spawnCwd = resolved.effectiveCwd

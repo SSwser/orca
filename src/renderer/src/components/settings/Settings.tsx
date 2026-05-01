@@ -153,9 +153,17 @@ function Settings(): React.JSX.Element {
   // TerminalPane, driven by this shared state.
   const ghostty = useGhosttyImport(updateSettings, settings)
   const [wslAvailable, setWslAvailable] = useState(false)
+  const [pwshAvailable, setPwshAvailable] = useState(false)
   useEffect(() => {
+    if (!isWindows) {
+      setWslAvailable(false)
+      setPwshAvailable(false)
+      return
+    }
+
     void window.api.wsl.isAvailable().then(setWslAvailable)
-  }, [])
+    void window.api.pwsh.isAvailable().then(setPwshAvailable)
+  }, [isWindows])
   const [terminalFontSuggestions, setTerminalFontSuggestions] = useState<string[]>(
     getFallbackTerminalFonts()
   )
@@ -662,6 +670,7 @@ function Settings(): React.JSX.Element {
                     setScrollbackMode={setScrollbackMode}
                     ghostty={ghostty}
                     wslAvailable={wslAvailable}
+                    pwshAvailable={pwshAvailable}
                   />
                 </SettingsSection>
 

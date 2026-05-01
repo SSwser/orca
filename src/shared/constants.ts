@@ -146,6 +146,9 @@ export function getDefaultSettings(homedir: string): GlobalSettings {
     // and Ctrl+right-click still opens the context menu when paste is enabled.
     terminalRightClickToPaste: true,
     terminalWindowsShell: 'powershell.exe',
+    // Why: PowerShell 7 is optional on Windows, so the inbox shell stays the
+    // default unless the user explicitly opts into the newer implementation.
+    terminalWindowsPowerShellImplementation: 'powershell.exe',
     terminalMouseHideWhileTyping: false,
     // Default false: opt-in only (matches Ghostty's default). Existing users
     // on upgrade inherit this default via persistence.ts's

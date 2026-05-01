@@ -933,6 +933,9 @@ export type PreloadApi = {
   wsl: {
     isAvailable: () => Promise<boolean>
   }
+  pwsh: {
+    isAvailable: () => Promise<boolean>
+  }
   agentStatus: {
     /** Listen for agent status updates forwarded from native hook receivers. */
     onSet: (

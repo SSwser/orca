@@ -955,6 +955,9 @@ export type GlobalSettings = {
    *  user's preferred shell. Defaults to 'powershell.exe' which is the
    *  modern choice for an IDE context. Only consulted on Windows. */
   terminalWindowsShell: string
+  /** Why: PowerShell 7 is optional on Windows, so the inbox shell stays the
+   *  default unless the user explicitly opts into the newer implementation. */
+  terminalWindowsPowerShellImplementation: 'powershell.exe' | 'pwsh.exe'
   terminalFocusFollowsMouse: boolean
   /** Why: mirrors X11 / gnome-terminal "copy on select" UX — making a terminal
    *  selection copies it to the system clipboard automatically, so users can

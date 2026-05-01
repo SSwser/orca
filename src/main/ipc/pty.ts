@@ -11,6 +11,7 @@ import type { GlobalSettings } from '../../shared/types'
 import { openCodeHookService } from '../opencode/hook-service'
 import { agentHookServer } from '../agent-hooks/server'
 import { piTitlebarExtensionService } from '../pi/titlebar-extension-service'
+import { isPwshAvailable } from '../pwsh'
 import { LocalPtyProvider } from '../providers/local-pty-provider'
 import type { IPtyProvider, PtySpawnOptions, PtySpawnResult } from '../providers/types'
 import { mintPtySessionId, isSafePtySessionId } from '../daemon/pty-session-id'
@@ -347,6 +348,9 @@ export function registerPtyHandlers(
     localProvider.configure({
       isHistoryEnabled: () => getSettings?.()?.terminalScopeHistoryByWorktree ?? true,
       getWindowsShell: () => getSettings?.()?.terminalWindowsShell,
+      getWindowsPowerShellImplementation: () =>
+        getSettings?.()?.terminalWindowsPowerShellImplementation ?? 'powershell.exe',
+      pwshAvailable: () => isPwshAvailable(),
       buildSpawnEnv: (id, baseEnv) => {
         const env = buildPtyHostEnv(id, baseEnv, {
           isPackaged: app.isPackaged,
@@ -649,6 +653,14 @@ export function registerPtyHandlers(
           : undefined)
       if (effectiveShellOverride !== undefined) {
         spawnOptions.shellOverride = effectiveShellOverride
+      }
+      if (process.platform === 'win32' && !args.connectionId) {
+        // Why: the renderer only models PowerShell as one shell family. Thread
+        // the persisted implementation choice through spawnOptions so both the
+        // in-process and daemon-backed PTY paths can resolve the same effective
+        // executable without inventing a fourth top-level shell.
+        spawnOptions.terminalWindowsPowerShellImplementation =
+          getSettings?.()?.terminalWindowsPowerShellImplementation ?? 'powershell.exe'
       }
       let result: PtySpawnResult
       try {

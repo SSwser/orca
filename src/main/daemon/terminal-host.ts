@@ -18,6 +18,7 @@ export type CreateOrAttachOptions = {
    *  daemon path honors per-tab shell selection the same way LocalPtyProvider
    *  does. */
   shellOverride?: string
+  terminalWindowsPowerShellImplementation?: 'powershell.exe' | 'pwsh.exe'
   shellReadySupported?: boolean
   streamClient: { onData: (data: string) => void; onExit: (code: number) => void }
 }
@@ -39,6 +40,7 @@ export type TerminalHostOptions = {
     env?: Record<string, string>
     command?: string
     shellOverride?: string
+    terminalWindowsPowerShellImplementation?: 'powershell.exe' | 'pwsh.exe'
   }) => SubprocessHandle
   // Why: on graceful shutdown, the host writes final checkpoints for all live
   // sessions before killing them. This bypasses the RPC round-trip — the daemon
@@ -95,7 +97,8 @@ export class TerminalHost {
       cwd: opts.cwd,
       env: opts.env,
       command: opts.command,
-      shellOverride: opts.shellOverride
+      shellOverride: opts.shellOverride,
+      terminalWindowsPowerShellImplementation: opts.terminalWindowsPowerShellImplementation
     })
 
     const session = new Session({

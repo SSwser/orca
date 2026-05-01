@@ -88,6 +88,7 @@ function createSettings(overrides: Partial<GlobalSettings> = {}): GlobalSettings
     experimentalAgentDashboard: false,
     experimentalPet: false,
     terminalWindowsShell: 'powershell.exe',
+    terminalWindowsPowerShellImplementation: 'powershell.exe',
     enableGitHubAttribution: true,
     ...overrides
   }
