@@ -349,7 +349,9 @@ export function registerPtyHandlers(
       isHistoryEnabled: () => getSettings?.()?.terminalScopeHistoryByWorktree ?? true,
       getWindowsShell: () => getSettings?.()?.terminalWindowsShell,
       getWindowsPowerShellImplementation: () =>
-        getSettings?.()?.terminalWindowsPowerShellImplementation ?? 'powershell.exe',
+        getSettings
+          ? (getSettings()?.terminalWindowsPowerShellImplementation ?? 'auto')
+          : undefined,
       pwshAvailable: () => isPwshAvailable(),
       buildSpawnEnv: (id, baseEnv) => {
         const env = buildPtyHostEnv(id, baseEnv, {
@@ -659,8 +661,9 @@ export function registerPtyHandlers(
         // the persisted implementation choice through spawnOptions so both the
         // in-process and daemon-backed PTY paths can resolve the same effective
         // executable without inventing a fourth top-level shell.
-        spawnOptions.terminalWindowsPowerShellImplementation =
-          getSettings?.()?.terminalWindowsPowerShellImplementation ?? 'powershell.exe'
+        spawnOptions.terminalWindowsPowerShellImplementation = getSettings
+          ? (getSettings()?.terminalWindowsPowerShellImplementation ?? 'auto')
+          : undefined
       }
       let result: PtySpawnResult
       try {

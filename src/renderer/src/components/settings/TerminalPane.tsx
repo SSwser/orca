@@ -110,8 +110,7 @@ export function TerminalPane({
   const scrollbackToggleValue =
     scrollbackMode === 'custom' ? 'custom' : isPreset ? `${scrollbackMb}` : 'custom'
   const windowsShell = settings.terminalWindowsShell ?? 'powershell.exe'
-  const powerShellImplementation =
-    settings.terminalWindowsPowerShellImplementation ?? 'powershell.exe'
+  const powerShellImplementation = settings.terminalWindowsPowerShellImplementation ?? 'auto'
   const showWindowsPowerShellImplementation = isWindows && windowsShell === 'powershell.exe'
 
   const visibleSections = [
@@ -855,6 +854,7 @@ export function TerminalPane({
             <Label>PowerShell Version</Label>
             <div className="flex w-fit gap-1 rounded-md border border-border/50 p-1">
               {[
+                { label: 'Auto', value: 'auto' },
                 { label: 'Windows PowerShell', value: 'powershell.exe' },
                 { label: 'PowerShell 7+', value: 'pwsh.exe', disabled: !pwshAvailable }
               ].map(({ label, value, disabled }) => (
@@ -866,6 +866,7 @@ export function TerminalPane({
                     }
                     updateSettings({
                       terminalWindowsPowerShellImplementation: value as
+                        | 'auto'
                         | 'powershell.exe'
                         | 'pwsh.exe'
                     })
@@ -885,8 +886,7 @@ export function TerminalPane({
             </div>
             {!pwshAvailable ? (
               <p className="text-xs text-muted-foreground">
-                PowerShell 7+ offers a newer PowerShell experience and requires a separate
-                installation.{' '}
+                Auto uses Windows PowerShell now and switches to PowerShell 7+ when installed.{' '}
                 <a
                   href="https://github.com/PowerShell/PowerShell/releases/latest"
                   target="_blank"

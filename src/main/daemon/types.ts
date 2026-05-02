@@ -72,7 +72,7 @@ export type CreateOrAttachRequest = {
      *  need to substitute pwsh.exe for powershell.exe when the user selected
      *  PowerShell 7+. Forward the persisted implementation choice so the daemon
      *  PTY path resolves the same effective executable as LocalPtyProvider. */
-    terminalWindowsPowerShellImplementation?: 'powershell.exe' | 'pwsh.exe'
+    terminalWindowsPowerShellImplementation?: 'auto' | 'powershell.exe' | 'pwsh.exe'
     shellReadySupported?: boolean
   }
 }

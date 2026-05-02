@@ -35,7 +35,7 @@ export type PtySpawnOptions = {
    *  pwsh.exe at spawn time. Threading the persisted implementation choice
    *  through spawn options keeps local PTY and daemon PTY semantics aligned
    *  without promoting pwsh into a separate shell family. */
-  terminalWindowsPowerShellImplementation?: 'powershell.exe' | 'pwsh.exe'
+  terminalWindowsPowerShellImplementation?: 'auto' | 'powershell.exe' | 'pwsh.exe'
 }
 
 export type PtySpawnResult = {

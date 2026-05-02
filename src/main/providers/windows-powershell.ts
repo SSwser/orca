@@ -1,4 +1,4 @@
-export type WindowsPowerShellImplementation = 'powershell.exe' | 'pwsh.exe'
+export type WindowsPowerShellImplementation = 'auto' | 'powershell.exe' | 'pwsh.exe'
 
 /** Resolve which PowerShell executable to spawn right now on Windows.
  *
@@ -14,7 +14,12 @@ export function resolveEffectiveWindowsPowerShell(args: {
     return null
   }
 
-  if (args.implementation === 'pwsh.exe' && args.pwshAvailable) {
+  if (
+    (args.implementation === undefined ||
+      args.implementation === 'auto' ||
+      args.implementation === 'pwsh.exe') &&
+    args.pwshAvailable
+  ) {
     return 'pwsh.exe'
   }
 

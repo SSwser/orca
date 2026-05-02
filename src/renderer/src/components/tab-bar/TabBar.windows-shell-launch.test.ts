@@ -6,7 +6,7 @@ const useAppStoreMock = vi.fn(
       gitStatusByWorktree: Record<string, never[]>
       settings: {
         terminalWindowsShell: 'powershell.exe' | 'cmd.exe' | 'wsl.exe'
-        terminalWindowsPowerShellImplementation: 'powershell.exe' | 'pwsh.exe'
+        terminalWindowsPowerShellImplementation: 'auto' | 'powershell.exe' | 'pwsh.exe'
       }
     }) => unknown
   ) =>
@@ -234,7 +234,8 @@ describe('TabBar PowerShell launch wiring', () => {
     const item = findDropdownMenuItemByText(expandNode(element), 'New Terminal: PowerShell')
     expect(item).not.toBeNull()
 
-    item?.props.onSelect?.()
+    const onSelect = item?.props.onSelect as (() => void) | undefined
+    onSelect?.()
 
     expect(onNewTerminalWithShell).toHaveBeenCalledWith('pwsh.exe')
   })

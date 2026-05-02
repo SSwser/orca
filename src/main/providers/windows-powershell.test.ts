@@ -58,13 +58,33 @@ describe('resolveEffectiveWindowsPowerShell', () => {
     ).toBe('powershell.exe')
   })
 
-  it('defaults to powershell.exe when no implementation is persisted', () => {
+  it('uses pwsh.exe for Auto when pwsh is available', () => {
+    expect(
+      resolveEffectiveWindowsPowerShell({
+        shellFamily: 'powershell.exe',
+        implementation: 'auto',
+        pwshAvailable: true
+      })
+    ).toBe('pwsh.exe')
+  })
+
+  it('uses powershell.exe for Auto when pwsh is unavailable', () => {
+    expect(
+      resolveEffectiveWindowsPowerShell({
+        shellFamily: 'powershell.exe',
+        implementation: 'auto',
+        pwshAvailable: false
+      })
+    ).toBe('powershell.exe')
+  })
+
+  it('defaults to Auto when no implementation is persisted', () => {
     expect(
       resolveEffectiveWindowsPowerShell({
         shellFamily: 'powershell.exe',
         implementation: undefined,
         pwshAvailable: true
       })
-    ).toBe('powershell.exe')
+    ).toBe('pwsh.exe')
   })
 })

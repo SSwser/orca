@@ -145,8 +145,17 @@ function TabBarInner({
     (s) => s.settings?.terminalWindowsShell ?? 'powershell.exe'
   )
   const defaultWindowsPowerShellImplementation = useAppStore(
-    (s) => s.settings?.terminalWindowsPowerShellImplementation ?? 'powershell.exe'
+    (s) => s.settings?.terminalWindowsPowerShellImplementation ?? 'auto'
   )
+  const [pwshAvailable, setPwshAvailable] = useState(false)
+  useEffect(() => {
+    if (!isWindows) {
+      setPwshAvailable(false)
+      return
+    }
+
+    void window.api.pwsh.isAvailable().then(setPwshAvailable)
+  }, [])
   const resolvedGroupId = groupId ?? worktreeId
   const statusByRelativePath = useMemo(
     () => buildStatusMap(gitStatusByWorktree[worktreeId] ?? []),
@@ -474,10 +483,13 @@ function TabBarInner({
             // each row narrow enough that the shortcut hint fits without
             // wrapping.
             (() => {
-              const allShells = [
+              const allShells: {
+                label: string
+                shell: 'powershell.exe' | 'cmd.exe' | 'wsl.exe'
+              }[] = [
                 { label: 'PowerShell', shell: 'powershell.exe' },
                 { label: 'CMD Prompt', shell: 'cmd.exe' },
-                ...(wslAvailable ? [{ label: 'WSL', shell: 'wsl.exe' }] : [])
+                ...(wslAvailable ? ([{ label: 'WSL', shell: 'wsl.exe' }] as const) : [])
               ]
               const defaultEntry =
                 allShells.find((s) => s.shell === defaultWindowsShell) ?? allShells[0]
@@ -499,7 +511,8 @@ function TabBarInner({
                       onNewTerminalWithShell(
                         resolveWindowsShellLaunchTarget(
                           entry.shell,
-                          defaultWindowsPowerShellImplementation
+                          defaultWindowsPowerShellImplementation,
+                          pwshAvailable
                         )
                       )
                     }}

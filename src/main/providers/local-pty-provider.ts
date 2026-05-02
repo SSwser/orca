@@ -102,7 +102,7 @@ export type LocalPtyProviderOptions = {
    *  IPC layer inject the persisted setting without coupling the provider to the
    *  settings store. Returns undefined when no preference is set. */
   getWindowsShell?: () => string | undefined
-  getWindowsPowerShellImplementation?: () => 'powershell.exe' | 'pwsh.exe'
+  getWindowsPowerShellImplementation?: () => 'auto' | 'powershell.exe' | 'pwsh.exe' | undefined
   pwshAvailable?: () => boolean
   onSpawned?: (id: string) => void
   onExit?: (id: string, code: number) => void
@@ -154,17 +154,21 @@ export class LocalPtyProvider implements IPtyProvider {
       // one-off override. Normalize both forms back to the PowerShell family so
       // the shared resolver can still fall back to inbox powershell.exe when
       // pwsh.exe was requested but is unavailable.
-      shellPath =
-        resolveEffectiveWindowsPowerShell({
-          shellFamily:
-            normalizedShellFamily === 'powershell.exe' || normalizedShellFamily === 'pwsh.exe'
-              ? 'powershell.exe'
-              : normalizedShellFamily === 'cmd.exe' || normalizedShellFamily === 'wsl.exe'
-                ? normalizedShellFamily
-                : undefined,
-          implementation: this.opts.getWindowsPowerShellImplementation?.(),
-          pwshAvailable: this.opts.pwshAvailable?.() ?? false
-        }) ?? shellFamily
+      const powerShellImplementation = this.opts.getWindowsPowerShellImplementation?.()
+      const shouldResolvePowerShellFamily =
+        powerShellImplementation !== undefined || pathWin32.basename(shellFamily) === shellFamily
+      shellPath = shouldResolvePowerShellFamily
+        ? (resolveEffectiveWindowsPowerShell({
+            shellFamily:
+              normalizedShellFamily === 'powershell.exe' || normalizedShellFamily === 'pwsh.exe'
+                ? 'powershell.exe'
+                : normalizedShellFamily === 'cmd.exe' || normalizedShellFamily === 'wsl.exe'
+                  ? normalizedShellFamily
+                  : undefined,
+            implementation: powerShellImplementation,
+            pwshAvailable: this.opts.pwshAvailable?.() ?? false
+          }) ?? shellFamily)
+        : shellFamily
       // Why: one-off overrides and persisted shell-family selection keep the
       // same priority, while the shared resolver chooses which PowerShell
       // executable is safe to run right now if that family is selected.

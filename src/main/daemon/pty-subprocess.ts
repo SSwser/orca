@@ -23,7 +23,7 @@ export type PtySubprocessOptions = {
    *  Overrides env.COMSPEC / env.SHELL resolution inside the daemon so a user
    *  who picks "New WSL terminal" from the "+" menu actually gets WSL. */
   shellOverride?: string
-  terminalWindowsPowerShellImplementation?: 'powershell.exe' | 'pwsh.exe'
+  terminalWindowsPowerShellImplementation?: 'auto' | 'powershell.exe' | 'pwsh.exe'
 }
 
 function getDefaultCwd(): string {
@@ -82,17 +82,21 @@ export function createPtySubprocess(opts: PtySubprocessOptions): SubprocessHandl
     // one-off override. Normalize both forms back to the PowerShell family so
     // the shared resolver can still fall back to inbox powershell.exe when
     // pwsh.exe was requested but is unavailable.
-    shellPath =
-      resolveEffectiveWindowsPowerShell({
-        shellFamily:
-          normalizedShellFamily === 'powershell.exe' || normalizedShellFamily === 'pwsh.exe'
-            ? 'powershell.exe'
-            : normalizedShellFamily === 'cmd.exe' || normalizedShellFamily === 'wsl.exe'
-              ? normalizedShellFamily
-              : undefined,
-        implementation: opts.terminalWindowsPowerShellImplementation,
-        pwshAvailable: isPwshAvailable()
-      }) ?? shellPath
+    const shouldResolvePowerShellFamily =
+      opts.terminalWindowsPowerShellImplementation !== undefined ||
+      pathWin32.basename(shellPath) === shellPath
+    shellPath = shouldResolvePowerShellFamily
+      ? (resolveEffectiveWindowsPowerShell({
+          shellFamily:
+            normalizedShellFamily === 'powershell.exe' || normalizedShellFamily === 'pwsh.exe'
+              ? 'powershell.exe'
+              : normalizedShellFamily === 'cmd.exe' || normalizedShellFamily === 'wsl.exe'
+                ? normalizedShellFamily
+                : undefined,
+          implementation: opts.terminalWindowsPowerShellImplementation,
+          pwshAvailable: isPwshAvailable()
+        }) ?? shellPath)
+      : shellPath
     // Why: matches LocalPtyProvider — CMD needs chcp 65001, PowerShell needs
     // $PROFILE dot-sourcing, WSL needs a --bash entry with a translated cwd.
     // Reuse the same shared launch-args helper after resolving the effective
