@@ -1083,6 +1083,33 @@ describe('registerPtyHandlers', () => {
       )
     })
 
+    it('falls back to powershell.exe when shellOverride requests pwsh.exe but pwsh is unavailable', () => {
+      process.env.COMSPEC = 'C:\\Windows\\system32\\cmd.exe'
+      isPwshAvailableMock.mockReturnValue(false)
+
+      registerPtyHandlers(
+        mainWindow as never,
+        undefined,
+        undefined,
+        () =>
+          ({
+            terminalWindowsShell: 'powershell.exe',
+            terminalWindowsPowerShellImplementation: 'pwsh.exe'
+          }) as never
+      )
+      handlers.get('pty:spawn')!(null, { cols: 80, rows: 24, shellOverride: 'pwsh.exe' })
+
+      expect(spawnMock).toHaveBeenCalledWith(
+        'powershell.exe',
+        [
+          '-NoExit',
+          '-Command',
+          'try { . $PROFILE } catch {}; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8'
+        ],
+        expect.any(Object)
+      )
+    })
+
     it('ignores the PowerShell implementation setting for cmd.exe', () => {
       process.env.COMSPEC = 'C:\\Windows\\system32\\powershell.exe'
       isPwshAvailableMock.mockReturnValue(true)

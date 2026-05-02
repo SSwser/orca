@@ -78,17 +78,18 @@ export function createPtySubprocess(opts: PtySubprocessOptions): SubprocessHandl
   if (process.platform === 'win32') {
     const normalizedShellFamily = pathWin32.basename(shellPath).toLowerCase()
     // Why: daemon spawn requests can carry either a canonical shell family
-    // (`powershell.exe`) or a full executable path inherited from COMSPEC /
-    // one-off overrides. Normalize before resolving so the PowerShell 7+
-    // preference applies consistently in both cases, just like the local PTY.
+    // (`powershell.exe`) or a concrete PowerShell executable path from a
+    // one-off override. Normalize both forms back to the PowerShell family so
+    // the shared resolver can still fall back to inbox powershell.exe when
+    // pwsh.exe was requested but is unavailable.
     shellPath =
       resolveEffectiveWindowsPowerShell({
         shellFamily:
-          normalizedShellFamily === 'powershell.exe' ||
-          normalizedShellFamily === 'cmd.exe' ||
-          normalizedShellFamily === 'wsl.exe'
-            ? normalizedShellFamily
-            : undefined,
+          normalizedShellFamily === 'powershell.exe' || normalizedShellFamily === 'pwsh.exe'
+            ? 'powershell.exe'
+            : normalizedShellFamily === 'cmd.exe' || normalizedShellFamily === 'wsl.exe'
+              ? normalizedShellFamily
+              : undefined,
         implementation: opts.terminalWindowsPowerShellImplementation,
         pwshAvailable: isPwshAvailable()
       }) ?? shellPath

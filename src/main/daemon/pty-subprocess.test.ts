@@ -373,6 +373,39 @@ describe('createPtySubprocess', () => {
     )
   })
 
+  it('falls back to powershell.exe when shellOverride requests pwsh.exe but pwsh is unavailable on Windows', () => {
+    const proc = mockPtyProcess()
+    spawnMock.mockReturnValue(proc)
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')
+
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    isPwshAvailableMock.mockReturnValue(false)
+
+    try {
+      createPtySubprocess({
+        sessionId: 'test',
+        cols: 80,
+        rows: 24,
+        shellOverride: 'pwsh.exe',
+        terminalWindowsPowerShellImplementation: 'pwsh.exe'
+      })
+    } finally {
+      if (platform) {
+        Object.defineProperty(process, 'platform', platform)
+      }
+    }
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      'powershell.exe',
+      [
+        '-NoExit',
+        '-Command',
+        'try { . $PROFILE } catch {}; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8'
+      ],
+      expect.any(Object)
+    )
+  })
+
   it('ignores the PowerShell implementation setting for cmd.exe on Windows', () => {
     const proc = mockPtyProcess()
     spawnMock.mockReturnValue(proc)

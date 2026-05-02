@@ -150,17 +150,18 @@ export class LocalPtyProvider implements IPtyProvider {
         'powershell.exe'
       const normalizedShellFamily = pathWin32.basename(shellFamily).toLowerCase()
       // Why: shell selection can arrive either as a canonical setting value
-      // ('powershell.exe') or as a full executable path from COMSPEC / one-off
-      // overrides. Normalize before resolving so both forms honor the same
-      // PowerShell implementation preference.
+      // ('powershell.exe') or as a concrete PowerShell executable path from a
+      // one-off override. Normalize both forms back to the PowerShell family so
+      // the shared resolver can still fall back to inbox powershell.exe when
+      // pwsh.exe was requested but is unavailable.
       shellPath =
         resolveEffectiveWindowsPowerShell({
           shellFamily:
-            normalizedShellFamily === 'powershell.exe' ||
-            normalizedShellFamily === 'cmd.exe' ||
-            normalizedShellFamily === 'wsl.exe'
-              ? normalizedShellFamily
-              : undefined,
+            normalizedShellFamily === 'powershell.exe' || normalizedShellFamily === 'pwsh.exe'
+              ? 'powershell.exe'
+              : normalizedShellFamily === 'cmd.exe' || normalizedShellFamily === 'wsl.exe'
+                ? normalizedShellFamily
+                : undefined,
           implementation: this.opts.getWindowsPowerShellImplementation?.(),
           pwshAvailable: this.opts.pwshAvailable?.() ?? false
         }) ?? shellFamily
