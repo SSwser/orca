@@ -24,6 +24,7 @@ import type { HoveredTabInsertion, TabDragItemData } from '../tab-group/useTabDr
 import { resolveTabIndicatorEdges } from '../tab-group/tab-insertion'
 import { getEditorDisplayLabel } from '@/components/editor/editor-labels'
 import { ShellIcon } from './shell-icons'
+import { resolveWindowsShellLaunchTarget } from './windows-shell-launch'
 import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
 import {
   DropdownMenu,
@@ -142,6 +143,9 @@ function TabBarInner({
   const gitStatusByWorktree = useAppStore((s) => s.gitStatusByWorktree)
   const defaultWindowsShell = useAppStore(
     (s) => s.settings?.terminalWindowsShell ?? 'powershell.exe'
+  )
+  const defaultWindowsPowerShellImplementation = useAppStore(
+    (s) => s.settings?.terminalWindowsPowerShellImplementation ?? 'powershell.exe'
   )
   const resolvedGroupId = groupId ?? worktreeId
   const statusByRelativePath = useMemo(
@@ -487,7 +491,17 @@ function TabBarInner({
                   <DropdownMenuItem
                     key={entry.shell}
                     onSelect={() => {
-                      onNewTerminalWithShell(entry.shell)
+                      // Why: the top-level Windows shell menu models shell
+                      // categories, not concrete executables. When the user
+                      // picked PowerShell 7+ in advanced settings, launching the
+                      // "PowerShell" menu item must preserve that implementation
+                      // instead of forcing inbox powershell.exe.
+                      onNewTerminalWithShell(
+                        resolveWindowsShellLaunchTarget(
+                          entry.shell,
+                          defaultWindowsPowerShellImplementation
+                        )
+                      )
                     }}
                     className="gap-2 rounded-[7px] px-2 py-1.5 text-[12px] leading-5 font-medium"
                   >
