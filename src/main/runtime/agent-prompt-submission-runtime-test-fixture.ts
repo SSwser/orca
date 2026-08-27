@@ -12,7 +12,7 @@ export async function createAgentPromptSubmissionRuntime(
   const runtime = new OrcaRuntimeService(makeStore() as never)
   const writes: string[] = []
   runtime.setPtyController({
-    spawn: async () => ({ id: 'pty-prompt' }),
+    spawn: async () => ({ id: 'pty-prompt', incarnationId: 'prompt-incarnation' }),
     write: (_ptyId, data) => {
       writes.push(data)
       onWrite(runtime, data, writes.length)

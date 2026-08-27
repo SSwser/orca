@@ -58,6 +58,23 @@ export type WorkspaceStatusDefinition = {
   icon?: string
 }
 
+export type WorkerGenerationWorktreeOperation = {
+  operationId: string
+  payloadFingerprint: string
+  completedReceipt?: {
+    worktreeId: string
+    instanceId?: string
+    terminalHandle: string
+    setup: {
+      requested: 'run' | 'skip' | 'inherit'
+      hookFound: boolean
+      startupPolicy: 'start-immediately' | 'wait-for-setup'
+      state: 'running' | 'skipped' | 'not_configured' | 'spawn_failed'
+      terminalHandle?: string
+    }
+  }
+}
+
 export type Worktree = {
   id: string // `${repoId}::${path}`
   instanceId?: string
@@ -72,6 +89,14 @@ export type Worktree = {
   runtimeOwnerEnvironmentId?: string
   /** Authenticated client that created this workspace. Missing means unknown legacy origin. */
   creatorProvenance?: WorkspaceCreatorProvenance
+  workerGenerationOperation?: WorkerGenerationWorktreeOperation
+  workerGenerationTerminalOperation?: {
+    operationId: string
+    payloadFingerprint: string
+    terminalHandle: string
+    tabId: string
+    leafId: string
+  }
   /** Host-specific setup used to create/run this workspace. */
   projectHostSetupId?: string
   /** Checkout ownership for a recipe-provisioned main workspace. */

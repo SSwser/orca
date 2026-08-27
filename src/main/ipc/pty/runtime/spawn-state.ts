@@ -88,6 +88,7 @@ export type RuntimePtySpawnArgs = {
   launchAgent?: TuiAgent
   commandDelivery?: 'renderer' | 'provider'
   startupCommandDelivery?: StartupCommandDelivery
+  requireHostCrashContainment?: true
   telemetry?: {
     agent_kind?: unknown
     launch_source?: unknown

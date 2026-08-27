@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   AGENT_PROMPT_BRACKETED_PASTE_END,
   buildAgentPromptPasteBytes,
-  getAgentPromptSubmitDelayMs
+  getAgentPromptSubmitDelayMs,
+  getTerminalPasteIngestMs
 } from '../../shared/agent-prompt-injection'
 import {
   AGENT_PROMPT_TEST_WORKTREE_PATH,
@@ -10,6 +11,7 @@ import {
 } from './agent-prompt-submission-runtime-test-fixture'
 import { OrcaRuntimeService } from './orca-runtime'
 import { makeStore } from './runtime-rpc-worktree-store-fixtures'
+import type { WorkerPromptOperationRequest } from '../../shared/worker-prompt-operation'
 
 const createPromptRuntime = createAgentPromptSubmissionRuntime
 
@@ -36,6 +38,136 @@ vi.mock('../git/worktree', () => ({
 
 describe('agent prompt submission runtime', () => {
   afterEach(() => vi.useRealTimers())
+
+  it.each(['v37 local daemon', 'SSH provider', 'paired or federated provider'])(
+    'rejects a worker prompt operation before the first byte for %s without v38 owner support',
+    async () => {
+      const { runtime, handle, writes } = await createPromptRuntime(() => undefined)
+
+      await expect(
+        runtime.sendTerminalAgentPrompt(handle, 'review this', {
+          workerPromptOperation: {
+            operationId: 'prompt-operation',
+            payloadFingerprint: 'prompt-fingerprint'
+          }
+        })
+      ).rejects.toThrow('worker_prompt_operation_unsupported')
+      expect(writes).toEqual([])
+    }
+  )
+
+  it('uses the v38 owner for every worker prompt byte and submit', async () => {
+    vi.useFakeTimers()
+    const { runtime, handle, writes } = await createPromptRuntime(() => undefined)
+    const operationWrites: WorkerPromptOperationRequest[] = []
+    runtime.setPtyController({
+      write: () => {
+        throw new Error('legacy write must not run')
+      },
+      supportsWorkerPromptOperations: () => true,
+      writeWorkerPromptOperation: async (_ptyId, operation) => {
+        operationWrites.push(operation)
+        if (operation.step.kind === 'submit') {
+          runtime.onPtyData('pty-prompt', '\x1b]0;Codex working\x07', Date.now())
+        }
+        return { accepted: true }
+      },
+      inspectWorkerPromptOperation: async () => ({ verdict: 'not_started' }),
+      kill: () => true,
+      getForegroundProcess: async () => null
+    })
+
+    const submission = runtime.sendTerminalAgentPrompt(handle, 'review this', {
+      workerPromptOperation: {
+        operationId: 'prompt-operation',
+        payloadFingerprint: 'prompt-fingerprint'
+      }
+    })
+    await vi.runAllTimersAsync()
+
+    await expect(submission).resolves.toMatchObject({ accepted: true })
+    expect(operationWrites.at(-1)?.step).toMatchObject({
+      kind: 'submit',
+      data: '\r',
+      semanticBaseline: expect.objectContaining({ observedAt: expect.any(Number) })
+    })
+    expect(
+      operationWrites.every(({ step }) => step.kind === 'paste' || step.kind === 'submit')
+    ).toBe(true)
+    expect(writes).toEqual([])
+  })
+
+  it('holds the durable Codex submit until the post-paste handler is ready', async () => {
+    vi.useFakeTimers()
+    const prompt = 'x'.repeat(8_000)
+    const ingestMs = getTerminalPasteIngestMs(
+      process.platform,
+      Buffer.byteLength(buildAgentPromptPasteBytes(prompt), 'utf8')
+    )
+    const { runtime, handle } = await createPromptRuntime(() => undefined, 'codex')
+    const operationWrites: WorkerPromptOperationRequest[] = []
+    runtime.setPtyController({
+      write: () => {
+        throw new Error('legacy write must not run')
+      },
+      supportsWorkerPromptOperations: () => true,
+      writeWorkerPromptOperation: async (_ptyId, operation) => {
+        operationWrites.push(operation)
+        if (operation.step.kind === 'paste' && operation.step.data.includes('\x1b[201~')) {
+          runtime.onPtyData('pty-prompt', '\x1b[?25h', Date.now())
+        }
+        if (operation.step.kind === 'submit') {
+          runtime.onPtyData('pty-prompt', '\x1b]0;Codex working\x07', Date.now())
+        }
+        return { accepted: true }
+      },
+      inspectWorkerPromptOperation: async () => ({ verdict: 'not_started' }),
+      kill: () => true,
+      getForegroundProcess: async () => null
+    })
+
+    const submission = runtime.sendTerminalAgentPrompt(handle, prompt, {
+      workerPromptOperation: {
+        operationId: 'prompt-operation',
+        payloadFingerprint: 'prompt-fingerprint'
+      }
+    })
+    await vi.advanceTimersByTimeAsync(ingestMs + 5_000 - 1)
+    expect(operationWrites.filter(({ step }) => step.kind === 'submit')).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(operationWrites.filter(({ step }) => step.kind === 'submit')).toHaveLength(1)
+
+    await vi.runAllTimersAsync()
+    await expect(submission).resolves.toMatchObject({ accepted: true })
+    expect(operationWrites.filter(({ step }) => step.kind === 'submit')).toHaveLength(1)
+  })
+
+  it('rejects an exact transport receipt without an activity transition', async () => {
+    vi.useFakeTimers()
+    const { runtime, handle, writes } = await createPromptRuntime(() => undefined)
+    runtime.setPtyController({
+      write: () => {
+        throw new Error('legacy write must not run')
+      },
+      supportsWorkerPromptOperations: () => true,
+      writeWorkerPromptOperation: async () => ({ accepted: true }),
+      inspectWorkerPromptOperation: async () => ({ verdict: 'not_started' }),
+      kill: () => true,
+      getForegroundProcess: async () => null
+    })
+
+    const submission = runtime.sendTerminalAgentPrompt(handle, 'review this', {
+      workerPromptOperation: {
+        operationId: 'prompt-operation',
+        payloadFingerprint: 'prompt-fingerprint'
+      }
+    })
+    const rejected = expect(submission).rejects.toThrow('agent_prompt_stalled')
+    await vi.runAllTimersAsync()
+
+    await rejected
+    expect(writes).toEqual([])
+  })
 
   it('submits exactly once after an observed lifecycle transition', async () => {
     vi.useFakeTimers()

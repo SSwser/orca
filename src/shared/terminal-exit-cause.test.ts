@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   describeTerminalExitCause,
   isDeliberateTerminalExit,
+  preserveStrongestTerminalExitCause,
   resolveProcessExitCause,
   resolveUnreportedExitCause
 } from './terminal-exit-cause'
@@ -95,5 +96,16 @@ describe('isDeliberateTerminalExit', () => {
     expect(isDeliberateTerminalExit({ kind: 'exited', exitCode: 0 })).toBe(false)
     expect(isDeliberateTerminalExit({ kind: 'signaled', signal: 9 })).toBe(false)
     expect(isDeliberateTerminalExit({ kind: 'unknown', reason: 'stop_unverified' })).toBe(false)
+  })
+})
+
+describe('preserveStrongestTerminalExitCause', () => {
+  it('preserves operator close over a later cause-less duplicate', () => {
+    expect(
+      preserveStrongestTerminalExitCause(
+        { kind: 'operator_close' },
+        { kind: 'unknown', reason: 'cause_unreported' }
+      )
+    ).toEqual({ kind: 'operator_close' })
   })
 })

@@ -1,6 +1,7 @@
 export { AGENT_PROMPT_EFFECT_TIMEOUT_MS } from '../../shared/orchestration-timing-budgets'
 import { AGENT_PROMPT_EFFECT_TIMEOUT_MS } from '../../shared/orchestration-timing-budgets'
 import type { TuiAgent } from '../../shared/tui-agent'
+import type { WorkerPromptSemanticBaseline } from '../../shared/worker-prompt-operation'
 
 export const AGENT_PROMPT_HOOK_EFFECT_TIMEOUT_MS = AGENT_PROMPT_EFFECT_TIMEOUT_MS
 const AGENT_PROMPT_EFFECT_POLL_MS = 50
@@ -9,18 +10,13 @@ const HOOK_OBSERVED_TURN_START_AGENTS = new Set<TuiAgent>(['codex', 'kimi'])
 
 /** The prompt bytes are written before verification, so this only ever means "not observed". */
 export const AGENT_PROMPT_STALLED_ERROR = 'agent_prompt_stalled'
+export const AGENT_PROMPT_SUBMISSION_UNCONFIRMED_ERROR = 'submission_unconfirmed'
 
-export type AgentPromptActivity = Readonly<{
-  generation: number
-  permissionSequence: number
-  workingSequence: number
-  /** When the hook's current `working` turn began; reaches the runtime with no window and no
-   *  title coverage. Pinned across same-state pings, so a refresh alone cannot move it. */
-  explicitWorkingStartedAt: number | null
-  /** PTY bytes seen on this pane; delivery evidence when a turn-start edge cannot be observed. */
-  outputSequence: number
-  status: 'working' | 'permission' | 'idle' | null
-}>
+export type AgentPromptActivity = Readonly<
+  WorkerPromptSemanticBaseline & {
+    generation: number
+  }
+>
 
 export type AgentPromptWaitTextCache = {
   outputSequence?: number
@@ -64,6 +60,20 @@ export function readAgentPromptWaitText(
   cache.outputSequence = outputSequence
   cache.waitText = waitText
   return waitText
+}
+
+export function createAgentPromptSubmissionUnconfirmedError(): Error & { code: string } {
+  return Object.assign(new Error(AGENT_PROMPT_SUBMISSION_UNCONFIRMED_ERROR), {
+    code: AGENT_PROMPT_SUBMISSION_UNCONFIRMED_ERROR
+  })
+}
+
+export function isAgentPromptSubmissionUnconfirmedError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message === AGENT_PROMPT_SUBMISSION_UNCONFIRMED_ERROR ||
+      (error as Error & { code?: unknown }).code === AGENT_PROMPT_SUBMISSION_UNCONFIRMED_ERROR)
+  )
 }
 
 export async function verifyAgentPromptSubmission(
@@ -112,7 +122,8 @@ function observedHookWorkingAfterBaseline(
 ): boolean {
   return (
     current.explicitWorkingStartedAt !== null &&
-    current.explicitWorkingStartedAt > (baseline.explicitWorkingStartedAt ?? 0)
+    current.explicitWorkingStartedAt >
+      Math.max(baseline.explicitWorkingStartedAt ?? 0, baseline.observedAt)
   )
 }
 

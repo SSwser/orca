@@ -20,14 +20,25 @@ function runtimeWithInventory(
 
 describe('terminal process incarnation liveness', () => {
   it('classifies only an exact incarnation as live on its owning provider', async () => {
-    const listProcesses = vi.fn().mockResolvedValue([
-      {
-        id: 'remote:ssh-1:pty-1',
-        incarnationId: 'inc-1',
-        cwd: '',
-        title: 'worker'
-      }
-    ])
+    const listProcesses = vi
+      .fn()
+      .mockResolvedValueOnce([
+        {
+          id: 'remote:ssh-1:pty-1',
+          incarnationId: 'inc-1',
+          cwd: '',
+          title: 'worker'
+        }
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 'remote:ssh-1:pty-1',
+          incarnationId: 'inc-1',
+          cwd: '',
+          title: 'worker'
+        }
+      ])
+      .mockResolvedValueOnce([])
     const runtime = runtimeWithInventory(listProcesses)
 
     await expect(
@@ -35,9 +46,13 @@ describe('terminal process incarnation liveness', () => {
     ).resolves.toBe('live')
     await expect(
       runtime.inspectTerminalProcessIncarnationLiveness('remote:ssh-1:pty-1:inc-old', SSH_SCOPE)
-    ).resolves.toBe('exited')
+    ).resolves.toBe('unverifiable')
+    await expect(
+      runtime.inspectTerminalProcessIncarnationLiveness('remote:ssh-1:pty-1:inc-old', SSH_SCOPE)
+    ).resolves.toBe('unverifiable')
     expect(listProcesses).toHaveBeenNthCalledWith(1, 'ssh-1')
     expect(listProcesses).toHaveBeenNthCalledWith(2, 'ssh-1')
+    expect(listProcesses).toHaveBeenNthCalledWith(3, 'ssh-1')
   })
 
   it('keeps missing or malformed identity and unavailable inventory unverifiable', async () => {
@@ -77,13 +92,16 @@ describe('terminal process incarnation liveness', () => {
   it.each([
     [{ kind: 'local', hostId: 'local' }, null],
     [{ kind: 'wsl', hostId: 'local', distro: 'Ubuntu' }, null]
-  ] as const)('uses the local provider inventory for %s scope', async (scope, connectionId) => {
-    const listProcesses = vi.fn().mockResolvedValue([])
-    const runtime = runtimeWithInventory(listProcesses)
+  ] as const)(
+    'keeps %s scope unverifiable without restart custody',
+    async (scope, connectionId) => {
+      const listProcesses = vi.fn().mockResolvedValue([])
+      const runtime = runtimeWithInventory(listProcesses)
 
-    await expect(
-      runtime.inspectTerminalProcessIncarnationLiveness('local-pty:inc-1', JSON.stringify(scope))
-    ).resolves.toBe('exited')
-    expect(listProcesses).toHaveBeenCalledWith(connectionId)
-  })
+      await expect(
+        runtime.inspectTerminalProcessIncarnationLiveness('local-pty:inc-1', JSON.stringify(scope))
+      ).resolves.toBe('unverifiable')
+      expect(listProcesses).toHaveBeenCalledWith(connectionId)
+    }
+  )
 })

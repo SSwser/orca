@@ -1209,6 +1209,14 @@ class InMemoryOrchestrationMessages {
     ]
   }
 
+  getNonActionableWorkerTerminalResource(): undefined {
+    return undefined
+  }
+
+  listWorkerTerminalReleaseBacklog(): [] {
+    return []
+  }
+
   setActiveCoordinatorRun(run: { coordinator_handle: string } | null): void {
     this.activeCoordinatorRun = run
   }
@@ -16944,6 +16952,106 @@ describe('OrcaRuntimeService', () => {
     })
   })
 
+  it('waits for the current Codex screen to leave MCP startup before input readiness', async () => {
+    vi.useFakeTimers()
+    try {
+      const runtime = new OrcaRuntimeService(store)
+      let inputReady = false
+      const serializeProviderBuffer = vi.fn().mockImplementation(async () => ({
+        data: [
+          ' >_ OpenAI Codex (v0.149.0)',
+          ' model:     gpt-5.6-sol high',
+          ' directory: /repo',
+          ...(inputReady ? [] : [' Starting MCP servers (1/2): codex_apps']),
+          ' › Ask Codex to do anything'
+        ].join('\r\n'),
+        cols: 100,
+        rows: 30,
+        seq: 100,
+        source: 'headless' as const,
+        alternateScreen: false
+      }))
+      runtime.setPtyController({
+        spawn: vi.fn().mockResolvedValue({ id: 'pty-bg' }),
+        write: () => true,
+        kill: () => true,
+        getForegroundProcess: async () => null,
+        serializeProviderBuffer
+      })
+      const { handle } = await runtime.createTerminal(`path:${TEST_WORKTREE_PATH}`, {
+        launchAgent: 'codex'
+      })
+      runtime.onPtyData('pty-bg', '\x1b]0;Codex idle\x07', Date.now())
+
+      const waiting = runtime.waitForTerminal(handle, {
+        condition: 'tui-idle',
+        timeoutMs: 2_000,
+        requireAgentInputReady: true
+      })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(serializeProviderBuffer).toHaveBeenCalledOnce()
+
+      inputReady = true
+      await vi.advanceTimersByTimeAsync(499)
+      expect(serializeProviderBuffer).toHaveBeenCalledOnce()
+      await vi.advanceTimersByTimeAsync(1)
+
+      await expect(waiting).resolves.toMatchObject({
+        handle,
+        condition: 'tui-idle',
+        satisfied: true
+      })
+      expect(serializeProviderBuffer).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('times out instead of treating a live Codex MCP startup screen as input-ready', async () => {
+    vi.useFakeTimers()
+    try {
+      const runtime = new OrcaRuntimeService(store)
+      const serializeProviderBuffer = vi.fn().mockResolvedValue({
+        data: [
+          ' >_ OpenAI Codex (v0.149.0)',
+          ' model:     gpt-5.6-sol high',
+          ' directory: /repo',
+          ' Starting MCP servers (1/2): codex_apps',
+          ' › Ask Codex to do anything'
+        ].join('\r\n'),
+        cols: 100,
+        rows: 30,
+        seq: 100,
+        source: 'headless' as const,
+        alternateScreen: false
+      })
+      runtime.setPtyController({
+        spawn: vi.fn().mockResolvedValue({ id: 'pty-bg' }),
+        write: () => true,
+        kill: () => true,
+        getForegroundProcess: async () => null,
+        serializeProviderBuffer
+      })
+      const { handle } = await runtime.createTerminal(`path:${TEST_WORKTREE_PATH}`, {
+        launchAgent: 'codex'
+      })
+      runtime.onPtyData('pty-bg', '\x1b]0;Codex idle\x07', Date.now())
+
+      const waiting = runtime.waitForTerminal(handle, {
+        condition: 'tui-idle',
+        timeoutMs: 600,
+        requireAgentInputReady: true
+      })
+      const timedOut = expect(waiting).rejects.toThrow('timeout')
+      await vi.runAllTimersAsync()
+
+      await timedOut
+      expect(serializeProviderBuffer).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('resolves tui-idle from an Antigravity ready prompt preview', async () => {
     const runtime = new OrcaRuntimeService(store)
     runtime.setPtyController({
@@ -17612,6 +17720,7 @@ describe('OrcaRuntimeService', () => {
           launchAgent: agent
         })
         const assertAuthority = vi.fn()
+        const renderQuietMs = agent === 'codex' ? 5_000 : 1_500
 
         const sendPromise = runtime.sendTerminalAgentPrompt(handle, 'review this change', {
           beforeWrite: assertAuthority
@@ -17623,7 +17732,7 @@ describe('OrcaRuntimeService', () => {
         expect(writes).not.toContain('\r')
         await vi.advanceTimersByTimeAsync(101)
         expect(writes).not.toContain('\r')
-        await vi.advanceTimersByTimeAsync(1_748)
+        await vi.advanceTimersByTimeAsync(renderQuietMs + 248)
         expect(writes).not.toContain('\r')
         await vi.advanceTimersByTimeAsync(1)
         await sendPromise
@@ -17704,7 +17813,7 @@ describe('OrcaRuntimeService', () => {
       const sendPromise = runtime.sendTerminalAgentPrompt(handle, 'review this change')
       await vi.advanceTimersByTimeAsync(1_199)
       expect(writes).not.toContain('\r')
-      await vi.advanceTimersByTimeAsync(1_500)
+      await vi.advanceTimersByTimeAsync(5_000)
       expect(writes).not.toContain('\r')
       await vi.advanceTimersByTimeAsync(1)
       await sendPromise
@@ -17777,7 +17886,7 @@ describe('OrcaRuntimeService', () => {
       const sendPromise = runtime.sendTerminalAgentPrompt(handle, 'review this change')
       await vi.advanceTimersByTimeAsync(8_000)
       expect(writes).not.toContain('\r')
-      await vi.advanceTimersByTimeAsync(1_599)
+      await vi.advanceTimersByTimeAsync(5_099)
       expect(writes).not.toContain('\r')
       await vi.advanceTimersByTimeAsync(1)
       await sendPromise
@@ -21362,6 +21471,8 @@ describe('OrcaRuntimeService', () => {
     })
     runtime.setOrchestrationDb({
       getActiveDispatchForTerminal: () => undefined,
+      getNonActionableWorkerTerminalResource: () => undefined,
+      listWorkerTerminalReleaseBacklog: () => [],
       listLegacyWorkerTerminalRecoveryRows: () => [
         {
           dispatch_id: 'dispatch-legacy',
@@ -21607,6 +21718,8 @@ describe('OrcaRuntimeService', () => {
     )
     runtime.setOrchestrationDb({
       getActiveDispatchForTerminal: () => undefined,
+      getNonActionableWorkerTerminalResource: () => undefined,
+      listWorkerTerminalReleaseBacklog: () => [],
       listLegacyWorkerTerminalRecoveryRows: () => [
         {
           dispatch_id: 'dispatch-reveal-retry',
@@ -21721,6 +21834,8 @@ describe('OrcaRuntimeService', () => {
     )
     runtime.setOrchestrationDb({
       getActiveDispatchForTerminal: () => undefined,
+      getNonActionableWorkerTerminalResource: () => undefined,
+      listWorkerTerminalReleaseBacklog: () => [],
       listLegacyWorkerTerminalRecoveryRows: () => [
         {
           dispatch_id: 'dispatch-post-reveal',
@@ -30430,7 +30545,11 @@ describe('OrcaRuntimeService', () => {
       settled = true
     })
 
-    await vi.waitFor(() => expect(closeTerminalTab).toHaveBeenCalledWith('host-tab'))
+    await vi.waitFor(() =>
+      expect(closeTerminalTab).toHaveBeenCalledWith('host-tab', {
+        localPtyTeardownOwnedExternally: true
+      })
+    )
     expect(settled).toBe(false)
 
     acknowledged.resolve()
@@ -30438,7 +30557,7 @@ describe('OrcaRuntimeService', () => {
       handle: terminal.handle,
       tabId: 'host-tab',
       closeMode: 'tab',
-      ptyKilled: false
+      ptyKilled: true
     })
   })
 
@@ -43744,6 +43863,7 @@ describe('OrcaRuntimeService', () => {
       getActiveDispatchForTerminal: vi.fn(() => ({
         task_id: 'task-1'
       })),
+      getNonActionableWorkerTerminalResource: () => undefined,
       getActiveCoordinatorRun: vi.fn(() => ({
         id: 'run-1',
         coordinator_handle: coordinatorHandle
@@ -44820,7 +44940,8 @@ describe('OrcaRuntimeService', () => {
         task_id: 'task_abc123',
         assignee_handle: workerHandle,
         status: 'completed'
-      }))
+      })),
+      getNonActionableWorkerTerminalResource: () => undefined
     } as never)
     runtime.attachWindow(1)
     runtime.syncWindowGraph(1, {
@@ -44915,6 +45036,7 @@ describe('OrcaRuntimeService', () => {
     const parentHandle = runtime.preAllocateHandleForPty('pty-parent')
     runtime.setOrchestrationDb({
       getDispatchContext: vi.fn(() => undefined),
+      getNonActionableWorkerTerminalResource: () => undefined,
       getTask: vi.fn(() => ({
         id: 'task_creator123',
         created_by_terminal_handle: parentHandle

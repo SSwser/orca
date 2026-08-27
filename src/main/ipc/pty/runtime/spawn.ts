@@ -1,4 +1,5 @@
 import type { AgentSessionClaimedSpawnResult } from '../../../../shared/agent-session-host-authority'
+import type { PtyRestartCustody } from '../../../../shared/pty-restart-custody'
 import { isTerminalLeafId, makePaneKey } from '../../../../shared/stable-pane-id'
 import { isValidTerminalTabId } from '../../../../shared/terminal-tab-id'
 import {
@@ -20,6 +21,7 @@ import { createRuntimePtySpawnState, type RuntimePtySpawnArgs } from './spawn-st
 function toRuntimeSpawnReply(result: {
   id: string
   incarnationId?: string
+  restartCustody?: PtyRestartCustody
   wslDistro?: string | null
   stablePaneOwner?: { handle: string; tabId: string; leafId: string }
   agentSessionEnsure?: AgentSessionClaimedSpawnResult
@@ -27,6 +29,7 @@ function toRuntimeSpawnReply(result: {
   return {
     id: result.id,
     ...(result.incarnationId ? { incarnationId: result.incarnationId } : {}),
+    ...(result.restartCustody ? { restartCustody: result.restartCustody } : {}),
     ...(typeof result.wslDistro === 'string' ? { wslDistro: result.wslDistro } : {}),
     ...(result.stablePaneOwner ? { stablePaneOwner: result.stablePaneOwner } : {}),
     ...(result.agentSessionEnsure ? { agentSessionEnsure: result.agentSessionEnsure } : {})

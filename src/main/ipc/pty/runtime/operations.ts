@@ -18,6 +18,12 @@ import {
 } from '../provider/registry'
 import { inspectPtyProviderProcess } from '../../../providers/pty-process-inspection'
 import type { PtyRuntimeControllerDeps } from './controller-deps'
+import type { PtyRestartCustody } from '../../../../shared/pty-restart-custody'
+import type {
+  WorkerPromptOperationIdentity,
+  WorkerPromptOperationInspection,
+  WorkerPromptOperationRequest
+} from '../../../../shared/worker-prompt-operation'
 
 export function writePtyFromRuntimeController(ptyId: string, data: string): boolean {
   try {
@@ -25,6 +31,70 @@ export function writePtyFromRuntimeController(ptyId: string, data: string): bool
     return true
   } catch {
     return false
+  }
+}
+
+export async function writePtyWithSettlementFromRuntimeController(
+  ptyId: string,
+  data: string
+): Promise<boolean> {
+  try {
+    const provider = getProviderForPty(ptyId)
+    return provider.writeWithSettlement
+      ? await provider.writeWithSettlement(ptyId, data)
+      : provider.write(ptyId, data) !== false
+  } catch {
+    return false
+  }
+}
+
+export function supportsWorkerPromptOperationsFromRuntimeController(ptyId: string): boolean {
+  try {
+    return getProviderForPty(ptyId).supportsWorkerPromptOperations?.(ptyId) === true
+  } catch {
+    return false
+  }
+}
+
+export async function writeWorkerPromptOperationFromRuntimeController(
+  ptyId: string,
+  operation: WorkerPromptOperationRequest
+): Promise<{ accepted: boolean }> {
+  const provider = getProviderForPty(ptyId)
+  if (
+    provider.supportsWorkerPromptOperations?.(ptyId) !== true ||
+    !provider.writeWorkerPromptOperation
+  ) {
+    throw new Error('worker_prompt_operation_unsupported')
+  }
+  return await provider.writeWorkerPromptOperation(ptyId, operation)
+}
+
+export async function inspectWorkerPromptOperationFromRuntimeController(
+  ptyId: string,
+  identity: WorkerPromptOperationIdentity
+): Promise<WorkerPromptOperationInspection> {
+  try {
+    const provider = getProviderForPty(ptyId)
+    if (
+      provider.supportsWorkerPromptOperations?.(ptyId) !== true ||
+      !provider.inspectWorkerPromptOperation
+    ) {
+      return { verdict: 'unverifiable' }
+    }
+    return await provider.inspectWorkerPromptOperation(ptyId, identity)
+  } catch {
+    return { verdict: 'unverifiable' }
+  }
+}
+
+export async function inspectRestartCustodyFromRuntimeController(
+  custody: PtyRestartCustody
+): Promise<'live' | 'exited' | 'unverifiable'> {
+  try {
+    return (await localProvider.inspectRestartCustody?.(custody)) ?? 'unverifiable'
+  } catch {
+    return 'unverifiable'
   }
 }
 
@@ -111,14 +181,6 @@ export async function confirmForegroundProcessFromRuntimeController(ptyId: strin
     return (await provider.confirmForegroundProcess?.(ptyId)) ?? null
   } catch {
     return null
-  }
-}
-
-export async function confirmShellForegroundFromRuntimeController(ptyId: string) {
-  try {
-    return (await getProviderForPty(ptyId).confirmShellForeground?.(ptyId)) ?? false
-  } catch {
-    return false
   }
 }
 

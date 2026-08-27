@@ -101,3 +101,27 @@ export function describeTerminalExitCause(cause: TerminalExitCause): string {
 export function isDeliberateTerminalExit(cause: TerminalExitCause): boolean {
   return cause.kind === 'operator_close'
 }
+
+export function preserveStrongestTerminalExitCause(
+  current: TerminalExitCause | null | undefined,
+  incoming: TerminalExitCause
+): TerminalExitCause {
+  if (!current) {
+    return incoming
+  }
+  return terminalExitCauseStrength(current) >= terminalExitCauseStrength(incoming)
+    ? current
+    : incoming
+}
+
+function terminalExitCauseStrength(cause: TerminalExitCause): number {
+  switch (cause.kind) {
+    case 'operator_close':
+      return 3
+    case 'signaled':
+    case 'exited':
+      return 2
+    case 'unknown':
+      return 1
+  }
+}

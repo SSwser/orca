@@ -156,6 +156,9 @@ export async function buildRuntimePtySpawnOptions(
   if (!ctx.preAdoptedStablePane && args.agentSessionEnsure) {
     ctx.spawnOptions.agentSessionEnsure = args.agentSessionEnsure
   }
+  if (!ctx.preAdoptedStablePane && args.requireHostCrashContainment) {
+    ctx.spawnOptions.requireHostCrashContainment = true
+  }
   if (!ctx.preAdoptedStablePane && args.agentSessionCreateOperationId) {
     ctx.spawnOptions.agentSessionCreateOperationId = args.agentSessionCreateOperationId
   }

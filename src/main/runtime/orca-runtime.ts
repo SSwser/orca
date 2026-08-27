@@ -29,6 +29,11 @@ import type { TerminalOscColorQueryReplyColors } from '../../shared/terminal-osc
 import type { TerminalOutputSourceRange } from '../../shared/terminal-output-source-range'
 import { detectTerminalComposerDraft } from '../../shared/terminal-composer-draft'
 import type {
+  WorkerPromptOperationIdentity,
+  WorkerPromptOperationInspection,
+  WorkerPromptOperationRequest
+} from '../../shared/worker-prompt-operation'
+import type {
   RemoteTerminalSourceRangeConsumerHooks,
   RemoteTerminalSourceRangeReplacementPublication,
   RemoteTerminalSourceRangeReplacementReservation,
@@ -108,6 +113,8 @@ import {
 import {
   type AgentPromptActivity,
   type AgentPromptWaitTextCache,
+  createAgentPromptSubmissionUnconfirmedError,
+  isAgentPromptStalledError,
   readAgentPromptWaitText,
   resolveAgentPromptEffectTimeoutMs,
   verifyAgentPromptSubmission
@@ -138,8 +145,8 @@ import { OrchestrationDb } from './orchestration/db'
 import type { DispatchStatus } from './orchestration/types'
 import { reconcileRequestedWorkerTerminalReleases } from './orchestration/worker-terminal-release-reconciliation'
 import {
-  classifyWorkerTerminalProcessIncarnation,
   parseWorkerTerminalHostScope,
+  reconcileWorkerTerminalProcessIncarnation,
   type WorkerTerminalHostScope
 } from './orchestration/worker-terminal-process-liveness'
 import { rollbackWorkspaceSessionAfterFailedAsyncWrite } from './workspace-session-failed-write-rollback'
@@ -424,6 +431,7 @@ import {
   describeTerminalExitCause,
   isDeliberateTerminalExit,
   OPERATOR_CLOSE_EXIT_CAUSE,
+  preserveStrongestTerminalExitCause,
   resolveUnreportedExitCause,
   type TerminalExitCause
 } from '../../shared/terminal-exit-cause'
@@ -463,6 +471,7 @@ import {
   type RuntimeRepoSearchRefs,
   type RuntimeTerminalRead,
   type RuntimeTerminalRename,
+  type RuntimeTerminalAgentPromptSend,
   type RuntimeTerminalAgentStatus,
   type RuntimeTerminalSend,
   type RuntimeTerminalCreate,
@@ -577,6 +586,11 @@ import {
   type TerminalQuickCommandMutation
 } from '../../shared/terminal-quick-commands'
 import type { PtyIncarnationId } from '../../shared/pty-incarnation'
+import {
+  parsePtyRestartCustody,
+  ptyRestartCustodiesEqual,
+  type PtyRestartCustody
+} from '../../shared/pty-restart-custody'
 import {
   buildAgentDraftLaunchPlan,
   buildAgentResumeStartupPlan,
@@ -1556,6 +1570,7 @@ type RuntimeLeafRecord = RuntimeSyncedLeaf & {
 type RuntimePtyWorktreeRecord = {
   ptyId: string
   incarnationId: PtyIncarnationId | null
+  restartCustody: PtyRestartCustody | null
   worktreeId: string
   connectionId: string | null
   runtimeSessionOwned: boolean
@@ -1635,6 +1650,8 @@ type TerminalCreateOptions = {
   terminalColorQueryReplies?: TerminalOscColorQueryReplyColors
   viewMode?: 'terminal' | 'chat'
   startupCommandDelivery?: WorktreeStartupLaunch['startupCommandDelivery']
+  /** Supervised native Windows workers require daemon-death containment before spawn. */
+  requireHostCrashContainment?: true
   telemetry?: WorktreeStartupLaunch['telemetry']
   title?: string
   focus?: boolean
@@ -1988,6 +2005,7 @@ type RuntimePtyController = {
     launchAgent?: TuiAgent
     commandDelivery?: 'renderer' | 'provider'
     startupCommandDelivery?: WorktreeStartupLaunch['startupCommandDelivery']
+    requireHostCrashContainment?: true
     env?: Record<string, string>
     envToDelete?: string[]
     resumeProviderSession?: AgentProviderSessionMetadata
@@ -2023,12 +2041,22 @@ type RuntimePtyController = {
   }): Promise<{
     id: string
     incarnationId?: PtyIncarnationId
+    restartCustody?: PtyRestartCustody
     wslDistro?: string
     stablePaneOwner?: { handle: string; tabId: string; leafId: string }
     agentSessionEnsure?: AgentSessionClaimedSpawnResult
   }>
   write(ptyId: string, data: string): boolean
   writeWithSettlement?(ptyId: string, data: string): Promise<boolean>
+  supportsWorkerPromptOperations?(ptyId: string): boolean
+  writeWorkerPromptOperation?(
+    ptyId: string,
+    operation: WorkerPromptOperationRequest
+  ): Promise<{ accepted: boolean }>
+  inspectWorkerPromptOperation?(
+    ptyId: string,
+    identity: WorkerPromptOperationIdentity
+  ): Promise<WorkerPromptOperationInspection>
   /** Attach-only adoption of a live local daemon session so its output streams
    *  to main without a renderer pane; never creates, resizes, or focuses.
    *  False on doubt (absent session, SSH-scoped id, non-daemon provider). */
@@ -2092,6 +2120,7 @@ type RuntimePtyController = {
   getSize?(ptyId: string): { cols: number; rows: number } | null
   /** False only when the owning provider proved the PTY absent; null = unknown (never a denial). */
   probePtyLiveness?(ptyId: string): Promise<boolean | null>
+  inspectRestartCustody?(custody: PtyRestartCustody): Promise<'live' | 'exited' | 'unverifiable'>
 }
 
 type PtyControllerTerminalIdentity = Readonly<{
@@ -2156,6 +2185,7 @@ const AGENT_PROMPT_RENDER_QUIET_MS = 1500
 const CODEX_PROMPT_RENDER_QUIET_MS = 5000
 // Why: Claude and Codex emit show-cursor while rendering bracketed paste.
 const AGENT_PROMPT_RENDER_MARKER = '\x1b[?25h'
+const AGENT_INPUT_READY_POLL_INTERVAL_MS = 500
 
 function assertAgentPromptRequestActive(signal?: AbortSignal): void {
   if (signal?.aborted) {
@@ -9844,6 +9874,7 @@ export class OrcaRuntimeService {
         closedSelectionTabIds
       )
     if (tab.type === 'terminal') {
+      const localPtyTeardownOwnedExternally = options.localPtyTeardownOwnedExternally === true
       const parentLeafCount = snapshot.tabs.filter(
         (candidate) => candidate.type === 'terminal' && candidate.parentTabId === tab.parentTabId
       ).length
@@ -9911,7 +9942,9 @@ export class OrcaRuntimeService {
       // renderer's live pin guard and durable close transaction.
       if (closingWholeParent && !this.tabs.has(tab.parentTabId)) {
         this.closeHeadlessMobileTerminalTab(worktreeId, snapshot, tab, {
-          killPtys: options.reason === undefined || options.reason === 'user'
+          killPtys:
+            !localPtyTeardownOwnedExternally &&
+            (options.reason === undefined || options.reason === 'user')
         })
         this.notifyRendererOfHeadlessTerminalClose(tab.parentTabId)
         this.store?.flushOrThrow?.()
@@ -9950,7 +9983,8 @@ export class OrcaRuntimeService {
           // Why: after relay recovery the renderer can acknowledge a tab it no longer mirrors; the HUB must still retire its SSH-owned surface.
           this.closeHeadlessMobileTerminalTab(worktreeId, remainingSnapshot, remainingTab, {
             // Why: the renderer may already have durably removed the tab before acknowledging.
-            allowMissingPersistedTab: true
+            allowMissingPersistedTab: true,
+            killPtys: !localPtyTeardownOwnedExternally
           })
           this.notifyRendererOfHeadlessTerminalClose(tab.parentTabId)
           this.store?.flushOrThrow?.()
@@ -9961,20 +9995,24 @@ export class OrcaRuntimeService {
       // Why: notifier implementations without the acknowledged relay may expose
       // only raw pane close. Runtime-owned parents still need de-persist + kill.
       if (closingWholeParent && this.isRuntimeOwnedHeadlessMobileTab(worktreeId, tab)) {
-        this.closeHeadlessMobileTerminalTab(worktreeId, snapshot, tab)
+        this.closeHeadlessMobileTerminalTab(worktreeId, snapshot, tab, {
+          killPtys: !localPtyTeardownOwnedExternally
+        })
         this.notifyRendererOfHeadlessTerminalClose(tab.parentTabId)
         this.store?.flushOrThrow?.()
         return finishCommittedClose()
       }
       if (!this.notifier?.closeTerminal) {
-        this.closeHeadlessMobileTerminalTab(worktreeId, snapshot, tab)
+        this.closeHeadlessMobileTerminalTab(worktreeId, snapshot, tab, {
+          killPtys: !localPtyTeardownOwnedExternally
+        })
         this.store?.flushOrThrow?.()
         return finishCommittedClose()
       }
       if (tab.id === tabId) {
         const pty = this.findPtyForMobileTerminalTab(worktreeId, tab)
         if (pty) {
-          if (this.ptyController?.kill(pty.ptyId) !== true) {
+          if (!localPtyTeardownOwnedExternally && this.ptyController?.kill(pty.ptyId) !== true) {
             throw new Error('terminal_close_failed')
           }
           return finishCommittedClose()
@@ -11453,6 +11491,13 @@ export class OrcaRuntimeService {
       leaf.connected = true
       leaf.writable = this.graphStatus === 'ready'
       this.adoptPreAllocatedHandle(leaf)
+    }
+  }
+
+  recordPtyRestartCustody(ptyId: string, value: PtyRestartCustody | null): void {
+    const pty = this.getOrCreatePtyWorktreeRecord(ptyId)
+    if (pty) {
+      pty.restartCustody = value ? parsePtyRestartCustody(value) : null
     }
   }
 
@@ -14606,7 +14651,10 @@ export class OrcaRuntimeService {
       return false
     }
     if (left.kind === 'local' && right.kind === 'local') {
-      return left.hostId === right.hostId
+      return (
+        left.hostId === right.hostId &&
+        ptyRestartCustodiesEqual(left.restartCustody, right.restartCustody)
+      )
     }
     if (left.kind === 'wsl' && right.kind === 'wsl') {
       return left.hostId === right.hostId && left.distro === right.distro
@@ -14623,7 +14671,11 @@ export class OrcaRuntimeService {
     if (pty.isWsl || pty.wslDistro) {
       return pty.wslDistro ? { kind: 'wsl', hostId: 'local', distro: pty.wslDistro } : null
     }
-    return { kind: 'local', hostId: 'local' }
+    return {
+      kind: 'local',
+      hostId: 'local',
+      ...(pty.restartCustody ? { restartCustody: pty.restartCustody } : {})
+    }
   }
 
   private rememberRestoredOrchestrationAuthority(
@@ -14666,7 +14718,7 @@ export class OrcaRuntimeService {
       return null
     }
     const pty = this.ptysById.get(ptyId)
-    if (!pty?.connected) {
+    if (!pty || !this.isPtyExecutionActionable(pty)) {
       return null
     }
     const hostScope = this.getOrchestrationCompatibilityHostScope(pty)
@@ -15983,10 +16035,11 @@ export class OrcaRuntimeService {
     const observedCause = options?.cause ?? resolveUnreportedExitCause(exitCode)
     const stopNeverConfirmed =
       observedCause.kind === 'unknown' && observedCause.reason === 'stop_unverified'
-    const exitCause: TerminalExitCause =
+    const attributedCause: TerminalExitCause =
       this.stopRequestedPtyIds.has(ptyId) && !stopNeverConfirmed
         ? OPERATOR_CLOSE_EXIT_CAUSE
         : observedCause
+    const exitCause = preserveStrongestTerminalExitCause(pty?.lastExitCause, attributedCause)
     this.stopRequestedPtyIds.delete(ptyId)
     const preservesAbnormalSshSurface =
       this.isSshOwnedPtyId(ptyId) &&
@@ -16017,6 +16070,11 @@ export class OrcaRuntimeService {
       exitIncarnationId ??
       pty?.incarnationId ??
       `runtime:${this.runtimeId}:${this.getPtyLifecycleGeneration(ptyId)}`
+    const exitProcessIncarnation = pty?.incarnationId
+      ? `${ptyId}:${pty.incarnationId}`
+      : ((this.handleByPtyId.get(ptyId)
+          ? this.getTerminalProcessIncarnation(this.handleByPtyId.get(ptyId)!)
+          : null) ?? `${this.runtimeId}:${ptyId}:${this.getPtyLifecycleGeneration(ptyId)}`)
     this.advancePtyLifecycleGeneration(ptyId)
     this.notifyPtyExitListeners(ptyId)
     const exactSurfaceByKey = new Map<
@@ -16180,7 +16238,13 @@ export class OrcaRuntimeService {
     }
     if (!preservesAbnormalSshSurface) {
       for (const surface of exitedSurfaces) {
-        this.failActiveDispatchOnExit(surface.handle, surface.paneKey, exitCode, exitCause)
+        this.failActiveDispatchOnExit(
+          surface.handle,
+          surface.paneKey,
+          exitProcessIncarnation,
+          exitCode,
+          exitCause
+        )
       }
     }
     this.pruneDisconnectedPtyRecords()
@@ -17808,6 +17872,7 @@ export class OrcaRuntimeService {
   private failActiveDispatchOnExit(
     handle: string,
     paneKey: string | null,
+    processIncarnation: string,
     exitCode: number,
     cause: TerminalExitCause
   ): void {
@@ -17822,6 +17887,22 @@ export class OrcaRuntimeService {
       paneKey ?? undefined
     )
     if (!dispatch) {
+      return
+    }
+
+    const worker = this._orchestrationDb.getWorkerDispatch?.(dispatch.id)
+    if (
+      worker &&
+      !this._orchestrationDb.isDispatchProcessCurrent({
+        dispatchId: dispatch.id,
+        paneKey,
+        processIncarnation
+      })
+    ) {
+      return
+    }
+    if (worker?.state === 'stopping' && isDeliberateTerminalExit(cause)) {
+      this._orchestrationDb.settleWorkerStop(dispatch.id)
       return
     }
 
@@ -18150,7 +18231,31 @@ export class OrcaRuntimeService {
     if (!listed.ok) {
       return 'unverifiable'
     }
-    return classifyWorkerTerminalProcessIncarnation(processIncarnation, listed.value)
+    let restartCustodyLiveness: 'live' | 'exited' | 'unverifiable' = 'unverifiable'
+    if (hostScope.kind === 'local' && hostScope.restartCustody) {
+      const inspection = this.ptyController.inspectRestartCustody?.(hostScope.restartCustody)
+      if (inspection) {
+        const inspected = await withTimeoutResult(inspection, PTY_CONTROLLER_LIST_TIMEOUT_MS)
+        restartCustodyLiveness = inspected.ok ? inspected.value : 'unverifiable'
+      }
+    }
+    const liveness = reconcileWorkerTerminalProcessIncarnation(
+      processIncarnation,
+      listed.value,
+      hostScope,
+      restartCustodyLiveness
+    )
+    if (liveness === 'live') {
+      const exactSession = listed.value.find(
+        (session) =>
+          Boolean(session.incarnationId) &&
+          `${session.id}:${session.incarnationId}` === processIncarnation
+      )
+      if (exactSession) {
+        this.markPtyLivenessLive(exactSession.id)
+      }
+    }
+    return liveness
   }
 
   private getTerminalTopologyRevision(worktreeId: string): number {
@@ -19048,6 +19153,20 @@ export class OrcaRuntimeService {
     return this.ptyLivenessVerdictByPtyId.get(ptyId)?.verdict ?? null
   }
 
+  private isPtyIdExecutionActionable(ptyId: string): boolean {
+    return this.getPtyLivenessVerdict(ptyId)?.status !== 'unverifiable'
+  }
+
+  private isPtyExecutionActionable(pty: RuntimePtyWorktreeRecord): boolean {
+    return pty.connected && this.isPtyIdExecutionActionable(pty.ptyId)
+  }
+
+  private getTerminalCustodyState(handle: string): 'release_unknown' | 'contained' | null {
+    const state =
+      this._orchestrationDb?.getNonActionableWorkerTerminalResource(handle)?.lifecycle_state
+    return state === 'release_unknown' || state === 'contained' ? state : null
+  }
+
   getTerminalLivenessVerdict(handle: string): PtyLivenessVerdict | null {
     const record = this.getLivePtyForHandle(handle)?.record ?? this.handles.get(handle)
     return record?.ptyId ? this.getPtyLivenessVerdict(record.ptyId) : null
@@ -19399,9 +19518,12 @@ export class OrcaRuntimeService {
       signal?: AbortSignal
     } = {}
   ): Promise<RuntimeTerminalSend> {
+    if (this.getTerminalCustodyState(handle)) {
+      throw new Error('terminal_not_writable')
+    }
     const pty = this.getLivePtyForHandle(handle)
     if (pty) {
-      if (!pty.pty.connected) {
+      if (!this.isPtyExecutionActionable(pty.pty)) {
         throw new Error('terminal_not_writable')
       }
       const payload = buildSendPayload(action)
@@ -19418,7 +19540,7 @@ export class OrcaRuntimeService {
     }
 
     const { leaf } = this.getLiveLeafForHandle(handle)
-    if (!leaf.writable || !leaf.ptyId) {
+    if (!leaf.writable || !leaf.ptyId || !this.isPtyIdExecutionActionable(leaf.ptyId)) {
       throw new Error('terminal_not_writable')
     }
     const payload = buildSendPayload(action)
@@ -19450,15 +19572,23 @@ export class OrcaRuntimeService {
       beforeWrite?: (ptyId: string) => void | Promise<void>
       suffixFailureError?: string
       signal?: AbortSignal
+      workerPromptOperation?: { operationId: string; payloadFingerprint: string }
     } = {}
-  ): Promise<RuntimeTerminalSend> {
+  ): Promise<RuntimeTerminalAgentPromptSend> {
+    const { workerPromptOperation: requestedWorkerPromptOperation, ...writeOptions } = options
+    if (this.getTerminalCustodyState(handle)) {
+      throw new Error('terminal_not_writable')
+    }
     const payload = buildAgentPromptPasteBytes(prompt)
     const pty = this.getLivePtyForHandle(handle)
     if (pty) {
-      if (!pty.pty.connected) {
+      if (!this.isPtyExecutionActionable(pty.pty)) {
         throw new Error('terminal_not_writable')
       }
       await assertTerminalInputWithinLimitWithYield(payload)
+      const workerPromptOperation = requestedWorkerPromptOperation
+        ? this.resolveWorkerPromptOperationIdentity(handle, pty.pty, requestedWorkerPromptOperation)
+        : undefined
       const generation = this.getPtyLifecycleGeneration(pty.pty.ptyId)
       const submits = await this.serializeAgentPromptSubmission(
         pty.pty.ptyId,
@@ -19466,21 +19596,22 @@ export class OrcaRuntimeService {
         async () => {
           this.assertLiveTerminalHandleTargetsPty(handle, pty.pty.ptyId)
           this.assertAgentPromptGeneration(pty.pty.ptyId, generation)
-          return await this.writeTerminalAgentPrompt(
-            handle,
-            pty.pty.ptyId,
-            generation,
-            payload,
-            options
-          )
+          return await this.writeTerminalAgentPrompt(handle, pty.pty.ptyId, generation, payload, {
+            ...writeOptions,
+            workerPromptOperation
+          })
         }
       )
       const bytesWritten = Buffer.byteLength(payload, 'utf8') + submits
-      return { handle, accepted: true, bytesWritten }
+      return { handle, accepted: true, bytesWritten, semanticObservedAt: Date.now() }
+    }
+
+    if (requestedWorkerPromptOperation) {
+      throw new Error('worker_prompt_operation_unsupported')
     }
 
     const { leaf } = this.getLiveLeafForHandle(handle)
-    if (!leaf.writable || !leaf.ptyId) {
+    if (!leaf.writable || !leaf.ptyId || !this.isPtyIdExecutionActionable(leaf.ptyId)) {
       throw new Error('terminal_not_writable')
     }
     await assertTerminalInputWithinLimitWithYield(payload)
@@ -19493,10 +19624,75 @@ export class OrcaRuntimeService {
     const submits = await this.serializeAgentPromptSubmission(leaf.ptyId, generation, async () => {
       this.assertLiveTerminalHandleTargetsPty(handle, leaf.ptyId!)
       this.assertAgentPromptGeneration(leaf.ptyId!, generation)
-      return await this.writeTerminalAgentPrompt(handle, leaf.ptyId!, generation, payload, options)
+      return await this.writeTerminalAgentPrompt(
+        handle,
+        leaf.ptyId!,
+        generation,
+        payload,
+        writeOptions
+      )
     })
     const bytesWritten = Buffer.byteLength(payload, 'utf8') + submits
-    return { handle, accepted: true, bytesWritten }
+    return { handle, accepted: true, bytesWritten, semanticObservedAt: Date.now() }
+  }
+
+  async inspectTerminalWorkerPromptOperation(
+    handle: string,
+    operation: { operationId: string; payloadFingerprint: string }
+  ): Promise<WorkerPromptOperationInspection> {
+    const pty = this.getLivePtyForHandle(handle)
+    if (!pty) {
+      return { verdict: 'unverifiable' }
+    }
+    let inspection: WorkerPromptOperationInspection
+    try {
+      const identity = this.resolveWorkerPromptOperationIdentity(handle, pty.pty, operation)
+      inspection = await this.ptyController!.inspectWorkerPromptOperation!(pty.pty.ptyId, identity)
+    } catch {
+      return { verdict: 'unverifiable' }
+    }
+    if (inspection.verdict !== 'completed') {
+      return inspection
+    }
+    try {
+      await verifyAgentPromptSubmission({
+        baseline: {
+          ...inspection.receipt.semanticBaseline,
+          generation: this.getPtyLifecycleGeneration(pty.pty.ptyId)
+        },
+        readActivity: () => this.getAgentPromptActivity(handle, pty.pty.ptyId),
+        timeoutMs: resolveAgentPromptEffectTimeoutMs(this.getPtyAgent(pty.pty.ptyId))
+      })
+    } catch (error) {
+      if (isAgentPromptStalledError(error)) {
+        throw createAgentPromptSubmissionUnconfirmedError()
+      }
+      throw error
+    }
+    return {
+      verdict: 'completed',
+      receipt: { ...inspection.receipt, semanticObservedAt: Date.now() }
+    }
+  }
+
+  private resolveWorkerPromptOperationIdentity(
+    handle: string,
+    pty: RuntimePtyWorktreeRecord,
+    operation: { operationId: string; payloadFingerprint: string }
+  ): WorkerPromptOperationIdentity {
+    if (
+      !pty.incarnationId ||
+      this.ptyController?.supportsWorkerPromptOperations?.(pty.ptyId) !== true ||
+      !this.ptyController.writeWorkerPromptOperation ||
+      !this.ptyController.inspectWorkerPromptOperation
+    ) {
+      throw new Error('worker_prompt_operation_unsupported')
+    }
+    return {
+      ...operation,
+      sessionIncarnationId: pty.incarnationId,
+      terminalHandle: handle
+    }
   }
 
   async getTerminalAgentStatus(handle: string): Promise<RuntimeTerminalAgentStatus> {
@@ -20209,6 +20405,7 @@ export class OrcaRuntimeService {
       beforeWrite?: (ptyId: string) => void | Promise<void>
       suffixFailureError?: string
       signal?: AbortSignal
+      workerPromptOperation?: WorkerPromptOperationIdentity
     } = {}
   ): Promise<number> {
     assertAgentPromptRequestActive(options.signal)
@@ -20224,10 +20421,9 @@ export class OrcaRuntimeService {
     let wrotePasteBytes = false
     let completedPaste = false
     try {
-      const chunks = iterateTerminalInputChunks(pastePayload)
-      let chunk = chunks.next()
-      while (!chunk.done) {
-        const nextChunk = chunks.next()
+      const chunks = [...iterateTerminalInputChunks(pastePayload)]
+      for (let index = 0; index < chunks.length; index++) {
+        const chunk = chunks[index]!
         assertAgentPromptRequestActive(options.signal)
         this.assertAgentPromptGeneration(ptyId, generation)
         await options.beforeWrite?.(ptyId)
@@ -20237,16 +20433,22 @@ export class OrcaRuntimeService {
           permissionBaseline,
           this.getAgentPromptActivity(handle, ptyId)
         )
-        if (nextChunk.done) {
+        if (index === chunks.length - 1) {
           renderGate?.arm()
         }
-        const wrote = this.ptyController?.write(ptyId, chunk.value) ?? false
+        const wrote = options.workerPromptOperation
+          ? (
+              await this.ptyController?.writeWorkerPromptOperation?.(ptyId, {
+                ...options.workerPromptOperation,
+                step: { kind: 'paste', index, count: chunks.length, data: chunk }
+              })
+            )?.accepted === true
+          : (this.ptyController?.write(ptyId, chunk) ?? false)
         if (!wrote) {
           throw new Error('terminal_not_writable')
         }
         wrotePasteBytes = true
-        chunk = nextChunk
-        if (!chunk.done) {
+        if (index < chunks.length - 1) {
           await yieldBetweenTerminalInputChunks()
         }
       }
@@ -20257,7 +20459,9 @@ export class OrcaRuntimeService {
         !completedPaste &&
         this.getPtyLifecycleGeneration(ptyId) === generation
       ) {
-        this.ptyController?.write(ptyId, AGENT_PROMPT_BRACKETED_PASTE_END)
+        if (!options.workerPromptOperation) {
+          this.ptyController?.write(ptyId, AGENT_PROMPT_BRACKETED_PASTE_END)
+        }
       }
       renderGate?.dispose()
       throw error
@@ -20290,7 +20494,22 @@ export class OrcaRuntimeService {
     const waitTextCache: AgentPromptWaitTextCache = {}
     const baseline = this.getAgentPromptActivity(handle, ptyId, waitTextCache)
     this.assertAgentPromptPermissionSafe(permissionBaseline, baseline)
-    const suffixWrote = this.ptyController?.write(ptyId, AGENT_PROMPT_SUBMIT) ?? false
+    const semanticBaseline = {
+      observedAt: baseline.observedAt,
+      permissionSequence: baseline.permissionSequence,
+      workingSequence: baseline.workingSequence,
+      explicitWorkingStartedAt: baseline.explicitWorkingStartedAt,
+      outputSequence: baseline.outputSequence,
+      status: baseline.status
+    }
+    const suffixWrote = options.workerPromptOperation
+      ? (
+          await this.ptyController?.writeWorkerPromptOperation?.(ptyId, {
+            ...options.workerPromptOperation,
+            step: { kind: 'submit', data: AGENT_PROMPT_SUBMIT, semanticBaseline }
+          })
+        )?.accepted === true
+      : (this.ptyController?.write(ptyId, AGENT_PROMPT_SUBMIT) ?? false)
     if (!suffixWrote) {
       throw new Error(options.suffixFailureError ?? 'terminal_not_writable')
     }
@@ -20363,6 +20582,7 @@ export class OrcaRuntimeService {
         ? lifecycle.status
         : (explicit?.status ?? ptyStatus ?? null)
     return {
+      observedAt: Date.now(),
       generation: this.getPtyLifecycleGeneration(ptyId),
       permissionSequence: this.agentPromptPermissionSequenceByPtyId.get(ptyId) ?? 0,
       workingSequence: lifecycle?.workingSequence ?? 0,
@@ -20526,9 +20746,13 @@ export class OrcaRuntimeService {
       condition?: RuntimeTerminalWaitCondition
       timeoutMs?: number
       signal?: AbortSignal
+      requireAgentInputReady?: boolean
     }
   ): Promise<RuntimeTerminalWait> {
     const condition = options?.condition ?? 'exit'
+    if (condition === 'tui-idle' && options?.requireAgentInputReady) {
+      return await this.waitForTerminalAgentInputReady(handle, options)
+    }
     const pty = this.getLivePtyForHandle(handle)
     if (pty) {
       if (condition === 'exit' && !pty.pty.connected) {
@@ -20731,6 +20955,73 @@ export class OrcaRuntimeService {
         reject(error instanceof Error ? error : new Error(String(error)))
       }
     })
+  }
+
+  private async waitForTerminalAgentInputReady(
+    handle: string,
+    options: { timeoutMs?: number; signal?: AbortSignal }
+  ): Promise<RuntimeTerminalWait> {
+    const timeoutMs =
+      typeof options.timeoutMs === 'number' && options.timeoutMs > 0
+        ? options.timeoutMs
+        : TUI_IDLE_DEFAULT_TIMEOUT_MS
+    const deadlineAt = Date.now() + timeoutMs
+    const wait = await this.waitForTerminal(handle, {
+      condition: 'tui-idle',
+      timeoutMs,
+      signal: options.signal
+    })
+    if (!wait.satisfied) {
+      return wait
+    }
+    const live = this.getLivePtyForHandle(handle)
+    if (!live || this.getPtyAgent(live.pty.ptyId) !== 'codex') {
+      return wait
+    }
+    const ptyId = live.pty.ptyId
+    const generation = this.getPtyLifecycleGeneration(ptyId)
+    while (true) {
+      assertAgentPromptRequestActive(options.signal)
+      this.assertLiveTerminalHandleTargetsPty(handle, ptyId)
+      this.assertAgentPromptGeneration(ptyId, generation)
+      const remainingMs = deadlineAt - Date.now()
+      if (remainingMs <= 0) {
+        throw new Error('timeout')
+      }
+      const visibleLines = await this.readAgentInputVisibleLines(
+        ptyId,
+        Math.min(VISIBLE_TERMINAL_SNAPSHOT_TIMEOUT_MS, remainingMs)
+      )
+      const visibleText = visibleLines.join('\n')
+      const blockedReason = detectTerminalWaitBlockedReason(visibleText)
+      if (blockedReason) {
+        return { ...wait, satisfied: false, blockedReason }
+      }
+      if (isCodexInputReadyVisibleScreen(visibleText)) {
+        return wait
+      }
+      const delayMs = Math.min(AGENT_INPUT_READY_POLL_INTERVAL_MS, deadlineAt - Date.now())
+      if (delayMs <= 0) {
+        throw new Error('timeout')
+      }
+      await waitForAgentPromptDelay(delayMs, options.signal)
+    }
+  }
+
+  private async readAgentInputVisibleLines(ptyId: string, timeoutMs: number): Promise<string[]> {
+    const providerLines = await this.readProviderTerminalTailLines(ptyId, undefined, {
+      timeoutMs,
+      retireOnTimeout: true,
+      visibleScreenOnly: true
+    })
+    if (providerLines.length > 0) {
+      return providerLines
+    }
+    const headlessState = await this.readHeadlessVisibleTerminalState(ptyId)
+    if (headlessState?.lines.length) {
+      return headlessState.lines
+    }
+    return await this.readRendererVisibleSnapshotLines(ptyId)
   }
 
   subscribeToPtyExit(ptyId: string, listener: () => void): () => void {
@@ -25157,6 +25448,87 @@ export class OrcaRuntimeService {
     })
   }
 
+  async resolveLocalManagedRepoCommit(repoSelector: string, revision: string): Promise<string> {
+    if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(revision)) {
+      throw new OrchestrationError(
+        'invalid_argument',
+        'A trusted recovery revision must be an immutable 40- or 64-character Git object ID.'
+      )
+    }
+    const repo = await this.resolveRepoSelector(repoSelector)
+    if (isFolderRepo(repo) || repo.connectionId || repo.executionHostId?.startsWith('runtime:')) {
+      throw new OrchestrationError(
+        'federation_unsupported',
+        'Worker recovery requires a local Git provider with isolated-generation support.'
+      )
+    }
+    const { stdout } = await gitExecFileAsync(['rev-parse', '--verify', `${revision}^{commit}`], {
+      ...getLocalProjectGitExecOptions(this.requireStore(), repo),
+      cwd: repo.path
+    })
+    const resolved = stdout.trim()
+    if (resolved.toLowerCase() !== revision.toLowerCase()) {
+      throw new OrchestrationError(
+        'invalid_argument',
+        'The trusted recovery revision did not resolve to the exact requested commit.'
+      )
+    }
+    return resolved
+  }
+
+  async inspectManagedWorkerGenerationOperation(args: {
+    repoSelector: string
+    operationId: string
+    payloadFingerprint: string
+    branchName: string
+  }): Promise<
+    | { verdict: 'not_started' | 'conflict' | 'unverifiable' }
+    | {
+        verdict: 'completed'
+        worktree: Awaited<ReturnType<OrcaRuntimeService['showManagedWorktree']>>
+        receipt: NonNullable<Worktree['workerGenerationOperation']>['completedReceipt']
+      }
+  > {
+    try {
+      const repo = await this.resolveRepoSelector(args.repoSelector)
+      if (isFolderRepo(repo) || repo.connectionId || repo.executionHostId?.startsWith('runtime:')) {
+        return { verdict: 'unverifiable' }
+      }
+      const candidates = (await this.listResolvedWorktrees()).filter(
+        (worktree) =>
+          worktree.repoId === repo.id &&
+          (worktree.workerGenerationOperation?.operationId === args.operationId ||
+            worktree.branch === `refs/heads/${args.branchName}`)
+      )
+      if (candidates.length === 0) {
+        return { verdict: 'not_started' }
+      }
+      if (candidates.length !== 1) {
+        return { verdict: 'conflict' }
+      }
+      const worktree = candidates[0]!
+      if (
+        worktree.workerGenerationOperation?.operationId === args.operationId &&
+        worktree.workerGenerationOperation.payloadFingerprint !== args.payloadFingerprint
+      ) {
+        return { verdict: 'conflict' }
+      }
+      if (
+        worktree.workerGenerationOperation?.operationId !== args.operationId ||
+        worktree.branch !== `refs/heads/${args.branchName}`
+      ) {
+        return { verdict: 'unverifiable' }
+      }
+      const receipt = worktree.workerGenerationOperation.completedReceipt
+      if (!receipt || receipt.worktreeId !== worktree.id) {
+        return { verdict: 'unverifiable' }
+      }
+      return { verdict: 'completed', worktree, receipt }
+    } catch {
+      return { verdict: 'unverifiable' }
+    }
+  }
+
   async createManagedWorktree(args: {
     repoSelector: string
     name: string
@@ -25195,12 +25567,24 @@ export class OrcaRuntimeService {
     observeSetupCompletion?: boolean
     createdWithAgent?: TuiAgent
     startupAgent?: TuiAgent
+    requireStartupHostCrashContainment?: true
     startupLaunchPreferences?: AgentLaunchPreferences
     startupPrompt?: string
     pendingFirstAgentMessageRename?: boolean
     automationProvenance?: AutomationWorkspaceProvenance
     cliProvenance?: CliWorkspaceProvenance
     creatorProvenance?: Worktree['creatorProvenance']
+    workerGenerationOperation?: {
+      operationId: string
+      payloadFingerprint: string
+    }
+    workerGenerationTerminalOperation?: {
+      operationId: string
+      payloadFingerprint: string
+      terminalHandle: string
+      tabId: string
+      leafId: string
+    }
     startup?: WorktreeStartupLaunch
     startupDraft?: string
     startupDraftPaste?: WorktreeStartupDraftPaste
@@ -25210,6 +25594,7 @@ export class OrcaRuntimeService {
       throw new Error('runtime_unavailable')
     }
 
+    const workerGenerationOperation = args.workerGenerationOperation
     const repo = await this.resolveRepoSelector(args.repoSelector)
     const createSettings = this.store.getSettings()
     const requestedAgent = args.startupAgent ?? args.createdWithAgent
@@ -25327,6 +25712,9 @@ export class OrcaRuntimeService {
             ...(effectiveCreatedWithAgent ? { launchAgent: effectiveCreatedWithAgent } : {}),
             ...(effectiveStartup.viewMode ? { viewMode: effectiveStartup.viewMode } : {}),
             startupCommandDelivery: effectiveStartup.startupCommandDelivery,
+            ...(args.requireStartupHostCrashContainment
+              ? { requireHostCrashContainment: true }
+              : {}),
             telemetry: effectiveStartup.telemetry,
             ...ownerSurfacing(shouldActivate)
           })
@@ -25937,6 +26325,12 @@ export class OrcaRuntimeService {
       ...(args.automationProvenance ? { automationProvenance: args.automationProvenance } : {}),
       ...(args.cliProvenance ? { cliProvenance: args.cliProvenance } : {}),
       creatorProvenance: args.creatorProvenance ?? { kind: 'host' },
+      ...(args.workerGenerationOperation
+        ? { workerGenerationOperation: args.workerGenerationOperation }
+        : {}),
+      ...(args.workerGenerationTerminalOperation
+        ? { workerGenerationTerminalOperation: args.workerGenerationTerminalOperation }
+        : {}),
       ...(args.comment !== undefined ? { comment: args.comment } : {}),
       ...(args.manualOrder !== undefined ? { manualOrder: args.manualOrder } : {}),
       ...(args.workspaceStatus !== undefined ? { workspaceStatus: args.workspaceStatus } : {})
@@ -26121,7 +26515,16 @@ export class OrcaRuntimeService {
           ...(effectiveCreatedWithAgent ? { launchAgent: effectiveCreatedWithAgent } : {}),
           ...(sequencedStartup.viewMode ? { viewMode: sequencedStartup.viewMode } : {}),
           startupCommandDelivery: sequencedStartup.startupCommandDelivery,
+          ...(args.requireStartupHostCrashContainment ? { requireHostCrashContainment: true } : {}),
           telemetry: sequencedStartup.telemetry,
+          ...(args.workerGenerationTerminalOperation
+            ? {
+                preAllocatedHandle: args.workerGenerationTerminalOperation.terminalHandle,
+                tabId: args.workerGenerationTerminalOperation.tabId,
+                leafId: args.workerGenerationTerminalOperation.leafId,
+                agentSessionCreateOperationId: args.workerGenerationTerminalOperation.operationId
+              }
+            : {}),
           ...ownerSurfacing(shouldActivate)
         })
         if (effectiveDraftPaste) {
@@ -26248,6 +26651,34 @@ export class OrcaRuntimeService {
               : {})
           }
         : undefined
+    const setupReceipt = {
+      requested: effectiveDecision,
+      hookFound: Boolean(hooks?.scripts.setup),
+      startupPolicy: setup?.waitForAgentStartup
+        ? ('wait-for-setup' as const)
+        : ('start-immediately' as const),
+      state: !hooks?.scripts.setup
+        ? ('not_configured' as const)
+        : effectiveDecision === 'skip' || !shouldRunSetup
+          ? ('skipped' as const)
+          : didSpawnSetup || didStartInProcessSetupHook
+            ? ('running' as const)
+            : ('spawn_failed' as const),
+      ...(setupTerminalHandle ? { terminalHandle: setupTerminalHandle } : {})
+    }
+    if (workerGenerationOperation && startupTerminalHandle) {
+      this.store.setWorktreeMeta(worktree.id, {
+        workerGenerationOperation: {
+          ...workerGenerationOperation,
+          completedReceipt: {
+            worktreeId: worktree.id,
+            ...(worktree.instanceId ? { instanceId: worktree.instanceId } : {}),
+            terminalHandle: startupTerminalHandle,
+            setup: setupReceipt
+          }
+        }
+      })
+    }
     this.emitWorktreeLifecycle({
       kind: 'created',
       worktreeId: worktree.id,
@@ -26265,27 +26696,7 @@ export class OrcaRuntimeService {
       },
       ...(lineageInput ? { lineage, workspaceLineage, warnings: lineageWarnings } : {}),
       ...(returnedSetup ? { setup: returnedSetup } : {}),
-      ...(args.awaitTerminalProvisioning
-        ? {
-            setupReceipt: {
-              requested: effectiveDecision,
-              hookFound: Boolean(hooks?.scripts.setup),
-              startupPolicy: setup?.waitForAgentStartup
-                ? ('wait-for-setup' as const)
-                : ('start-immediately' as const),
-              state: !hooks?.scripts.setup
-                ? ('not_configured' as const)
-                : effectiveDecision === 'skip' || !shouldRunSetup
-                  ? ('skipped' as const)
-                  : // Why: the in-process hook is already executing, so reporting
-                    // spawn_failed would strand callers that retry on it.
-                    didSpawnSetup || didStartInProcessSetupHook
-                    ? ('running' as const)
-                    : ('spawn_failed' as const),
-              ...(setupTerminalHandle ? { terminalHandle: setupTerminalHandle } : {})
-            }
-          }
-        : {}),
+      ...(args.awaitTerminalProvisioning ? { setupReceipt } : {}),
       ...(defaultTabs ? { defaultTabs } : {}),
       ...(warning ? { warning } : {}),
       ...(addResult.localBaseRefRefresh
@@ -29191,6 +29602,11 @@ export class OrcaRuntimeService {
               ? { agentSessionCreateOperationId: launchOpts.agentSessionCreateOperationId }
               : {}),
             ...(launchOpts.signal ? { signal: launchOpts.signal } : {}),
+            ...(launchOpts.requireHostCrashContainment &&
+            !workspace.connectionId &&
+            this.getAgentLaunchPlatformForWorkspace(workspace) === 'win32'
+              ? { requireHostCrashContainment: true }
+              : {}),
             ...(launchOpts.onPtySpawnCommitted
               ? { onPtySpawnCommitted: reportPtySpawnCommitted }
               : {}),
@@ -29238,6 +29654,7 @@ export class OrcaRuntimeService {
           leafId,
           ...(result.incarnationId ? { incarnationId: result.incarnationId } : {})
         })
+        this.recordPtyRestartCustody(result.id, result.restartCustody ?? null)
         const pty = this.getOrCreatePtyWorktreeRecord(result.id)
         if (pty) {
           // Released again by releaseRuntimeSessionOwnershipForRendererRetiredTabs
@@ -29482,7 +29899,9 @@ export class OrcaRuntimeService {
     this.adoptControllerTerminalHandle(session.id, terminalHandle)
     const pty = this.recordPtyWorktree(session.id, worktreeId, {
       connected: true,
-      title: session.title
+      title: session.title,
+      ...(session.incarnationId ? { incarnationId: session.incarnationId } : {}),
+      restartCustody: session.restartCustody ?? null
     })
     const adoptedHandle = this.issuePtyHandle(pty)
     if (adoptedHandle !== terminalHandle) {
@@ -30531,7 +30950,10 @@ export class OrcaRuntimeService {
   ): Promise<boolean> {
     let addressedPtyStopped = false
     const deadlineMs = Date.now() + EXPLICIT_TERMINAL_CLOSE_STOP_TIMEOUT_MS
-    for (const ptyId of ptyIds) {
+    for (const ptyId of new Set([...ptyIds, addressedPtyId])) {
+      if (this.getPtyLivenessVerdict(ptyId)?.status === 'unverifiable') {
+        continue
+      }
       // Why here: this is the single funnel for an explicit close, and the
       // intent must be on record before the stop, since the provider may report
       // the exit itself with a status that reads like a natural finish.
@@ -30740,7 +31162,6 @@ export class OrcaRuntimeService {
 
   async closeTerminal(handle: string): Promise<RuntimeTerminalClose> {
     const pty = this.getLivePtyForHandle(handle)
-    this.claudeAgentTeams.removeTeamForLeaderHandle(handle)
     if (pty) {
       // Why: PTY exit can immediately replace a ready SSH publication with a pending one, so capture its durable HUB surface before killing it.
       const surface =
@@ -30752,38 +31173,62 @@ export class OrcaRuntimeService {
       const siblingCount = surface?.tab.parentLayout
         ? countTerminalLayoutLeaves(surface.tab.parentLayout.root)
         : this.countLeavesInTab(tabId)
+      const ptyIdsToKill =
+        siblingCount <= 1
+          ? this.getPtyIdsForExplicitTabClose(pty.pty.worktreeId, tabId)
+          : [pty.pty.ptyId]
+      const ptyIdsForCustody = [...new Set([...ptyIdsToKill, pty.pty.ptyId])]
+      const blocked = this.describeUnverifiableTerminalClose(handle, tabId, ptyIdsForCustody)
+      if (blocked) {
+        return blocked
+      }
+      this.claudeAgentTeams.removeTeamForLeaderHandle(handle)
       if (siblingCount <= 1 && surface && this.tabs.has(tabId) && this.notifier?.closeTerminalTab) {
-        const ptyIdsToKill = this.getPtyIdsForExplicitTabClose(pty.pty.worktreeId, tabId)
         try {
           await this.closeMobileSessionTab(`id:${pty.pty.worktreeId}`, tabId, {
             localPtyTeardownOwnedExternally: true
           })
         } catch (error) {
-          if (!(error instanceof Error) || error.message !== 'workspace_session_unavailable') {
+          if (!(error instanceof Error)) {
             throw error
           }
-          this.notifier.closeTerminal?.(tabId)
+          if (error.message === 'workspace_session_unavailable') {
+            this.notifier.closeTerminal?.(tabId)
+          } else if (error.message !== 'tab_not_found') {
+            throw error
+          }
         }
         const ptyKilled = await this.stopExplicitlyClosedTabPtys(ptyIdsToKill, pty.pty.ptyId)
         return this.describeTerminalClose(handle, tabId, pty.pty.ptyId, ptyKilled)
       }
       if (siblingCount <= 1 && !surface && pty.pty.tabId && this.notifier?.closeTerminalTab) {
-        const ptyIdsToKill = this.getPtyIdsForExplicitTabClose(pty.pty.worktreeId, tabId)
-        await this.notifier.closeTerminalTab(tabId, { localPtyTeardownOwnedExternally: true })
+        try {
+          await this.notifier.closeTerminalTab(tabId, { localPtyTeardownOwnedExternally: true })
+        } catch (error) {
+          if (!(error instanceof Error) || error.message !== 'tab_not_found') {
+            throw error
+          }
+        }
         const ptyKilled = await this.stopExplicitlyClosedTabPtys(ptyIdsToKill, pty.pty.ptyId)
         return this.describeTerminalClose(handle, tabId, pty.pty.ptyId, ptyKilled)
       }
-      const ptyKilled = await this.stopExplicitlyClosedTabPtys([pty.pty.ptyId], pty.pty.ptyId)
+      const ptyKilled = await this.stopExplicitlyClosedTabPtys(ptyIdsToKill, pty.pty.ptyId)
       if (!ptyKilled || siblingCount <= 1) {
         if (surface) {
           // Why: paired viewers keep ended streams mounted until the HUB publishes removal, so explicit close uses the durable host-tab transaction instead of viewer-local exit handling.
           try {
-            await this.closeMobileSessionTab(`id:${pty.pty.worktreeId}`, tabId)
+            await this.closeMobileSessionTab(`id:${pty.pty.worktreeId}`, tabId, {
+              localPtyTeardownOwnedExternally: true
+            })
           } catch (error) {
-            if (!(error instanceof Error) || error.message !== 'workspace_session_unavailable') {
+            if (!(error instanceof Error)) {
               throw error
             }
-            this.notifier?.closeTerminal(tabId)
+            if (error.message === 'workspace_session_unavailable') {
+              this.notifier?.closeTerminal(tabId)
+            } else if (error.message !== 'tab_not_found') {
+              throw error
+            }
           }
         } else {
           this.notifier?.closeTerminal(tabId)
@@ -30801,10 +31246,21 @@ export class OrcaRuntimeService {
         : leaf.ptyId
           ? [leaf.ptyId]
           : []
+    const blocked = this.describeUnverifiableTerminalClose(handle, leaf.tabId, ptyIdsToKill)
+    if (blocked) {
+      return blocked
+    }
+    this.claudeAgentTeams.removeTeamForLeaderHandle(handle)
     if (siblingCount <= 1 && this.notifier?.closeTerminalTab) {
-      await this.notifier.closeTerminalTab(leaf.tabId, {
-        localPtyTeardownOwnedExternally: true
-      })
+      try {
+        await this.notifier.closeTerminalTab(leaf.tabId, {
+          localPtyTeardownOwnedExternally: true
+        })
+      } catch (error) {
+        if (!(error instanceof Error) || error.message !== 'tab_not_found') {
+          throw error
+        }
+      }
     }
     const ptyKilled = leaf.ptyId
       ? await this.stopExplicitlyClosedTabPtys(ptyIdsToKill, leaf.ptyId)
@@ -30844,6 +31300,39 @@ export class OrcaRuntimeService {
     return { handle, tabId, ptyKilled }
   }
 
+  private describeUnverifiableTerminalClose(
+    handle: string,
+    tabId: string,
+    ptyIds: readonly string[],
+    closeMode?: 'tab'
+  ): RuntimeTerminalClose | null {
+    const custodyState = this.getTerminalCustodyState(handle)
+    if (custodyState) {
+      return {
+        handle,
+        tabId,
+        ...(closeMode ? { closeMode } : {}),
+        ptyKilled: false,
+        ptyStopVerdict: 'unverifiable',
+        ptyStopReason: `terminal custody is ${custodyState}; connectivity does not authorize process action`
+      }
+    }
+    for (const ptyId of ptyIds) {
+      const verdict = this.getPtyLivenessVerdict(ptyId)
+      if (verdict?.status === 'unverifiable') {
+        return {
+          handle,
+          tabId,
+          ...(closeMode ? { closeMode } : {}),
+          ptyKilled: false,
+          ptyStopVerdict: 'unverifiable',
+          ptyStopReason: verdict.reason
+        }
+      }
+    }
+    return null
+  }
+
   async closeTerminalTab(handle: string): Promise<RuntimeTerminalClose> {
     const pty = this.getLivePtyForHandle(handle)
     if (pty) {
@@ -30851,17 +31340,42 @@ export class OrcaRuntimeService {
       if (!tabId) {
         return this.closeTerminal(handle)
       }
-      // Why: a handle-addressed CLI/automation close is an explicit intent, so
-      // it must stay destructive under the non-user close adjudication gate.
-      await this.closeMobileSessionTab(`id:${pty.pty.worktreeId}`, tabId, { reason: 'user' })
+      const ptyIdsToKill = this.getPtyIdsForExplicitTabClose(pty.pty.worktreeId, tabId)
+      const ptyIdsForCustody = [...new Set([...ptyIdsToKill, pty.pty.ptyId])]
+      const blocked = this.describeUnverifiableTerminalClose(handle, tabId, ptyIdsForCustody, 'tab')
+      if (blocked) {
+        return blocked
+      }
+      await this.closeMobileSessionTab(`id:${pty.pty.worktreeId}`, tabId, {
+        reason: 'user',
+        localPtyTeardownOwnedExternally: true
+      })
+      const ptyKilled = await this.stopExplicitlyClosedTabPtys(ptyIdsToKill, pty.pty.ptyId)
       this.claudeAgentTeams.removeTeamForLeaderHandle(handle)
-      return { handle, tabId, closeMode: 'tab', ptyKilled: false }
+      return {
+        ...this.describeTerminalClose(handle, tabId, pty.pty.ptyId, ptyKilled),
+        closeMode: 'tab'
+      }
     }
     this.assertGraphReady()
     const { leaf } = this.getLiveLeafForHandle(handle)
-    await this.closeMobileSessionTab(`id:${leaf.worktreeId}`, leaf.tabId, { reason: 'user' })
+    const ptyIdsToKill = this.getPtyIdsForExplicitTabClose(leaf.worktreeId, leaf.tabId)
+    const blocked = this.describeUnverifiableTerminalClose(handle, leaf.tabId, ptyIdsToKill, 'tab')
+    if (blocked) {
+      return blocked
+    }
+    await this.closeMobileSessionTab(`id:${leaf.worktreeId}`, leaf.tabId, {
+      reason: 'user',
+      localPtyTeardownOwnedExternally: true
+    })
+    const ptyKilled = leaf.ptyId
+      ? await this.stopExplicitlyClosedTabPtys(ptyIdsToKill, leaf.ptyId)
+      : false
     this.claudeAgentTeams.removeTeamForLeaderHandle(handle)
-    return { handle, tabId: leaf.tabId, closeMode: 'tab', ptyKilled: false }
+    return {
+      ...this.describeTerminalClose(handle, leaf.tabId, leaf.ptyId ?? null, ptyKilled),
+      closeMode: 'tab'
+    }
   }
 
   async splitTerminal(
@@ -30878,12 +31392,18 @@ export class OrcaRuntimeService {
       telemetrySource?: TerminalPaneSplitSource
     } = {}
   ): Promise<RuntimeTerminalSplit> {
+    if (this.getTerminalCustodyState(handle)) {
+      throw new Error('terminal_not_writable')
+    }
     const livePty = this.getLivePtyForHandle(handle)
     if (livePty) {
       return await this.splitPtyBackedTerminal(livePty.pty, opts)
     }
     this.assertGraphReady()
     const { leaf } = this.getLiveLeafForHandle(handle)
+    if (!leaf.writable || !leaf.ptyId || !this.isPtyIdExecutionActionable(leaf.ptyId)) {
+      throw new Error('terminal_exited')
+    }
     const direction = opts.direction ?? 'horizontal'
 
     // Snapshot current leaf keys so the post-split graph-sync delta reveals the new pane.
@@ -30918,11 +31438,11 @@ export class OrcaRuntimeService {
       telemetrySource?: TerminalPaneSplitSource
     } = {}
   ): Promise<RuntimeTerminalSplit> {
+    if (!this.isPtyExecutionActionable(pty)) {
+      throw new Error('terminal_exited')
+    }
     if (!this.ptyController?.spawn) {
       throw new Error('runtime_unavailable')
-    }
-    if (!pty.connected) {
-      throw new Error('terminal_exited')
     }
     const parsedPaneKey = parsePaneKey(pty.paneKey ?? '')
     const parentTabId = pty.tabId?.trim()
@@ -30983,6 +31503,7 @@ export class OrcaRuntimeService {
       this.preparePtyExecutionContext(result.id, result.wslDistro)
     }
     this.registerPty(result.id, workspace.id, workspace.connectionId)
+    this.recordPtyRestartCustody(result.id, result.restartCustody ?? null)
     const createdPty = this.getOrCreatePtyWorktreeRecord(result.id)
     if (createdPty) {
       createdPty.tabId = parentTabId
@@ -33360,6 +33881,7 @@ export class OrcaRuntimeService {
         | 'isWsl'
         | 'wslDistro'
         | 'incarnationId'
+        | 'restartCustody'
       >
     > = {}
   ): RuntimePtyWorktreeRecord {
@@ -33379,6 +33901,7 @@ export class OrcaRuntimeService {
       pty = {
         ptyId,
         incarnationId: state.incarnationId ?? null,
+        restartCustody: state.restartCustody ? parsePtyRestartCustody(state.restartCustody) : null,
         worktreeId,
         connectionId,
         runtimeSessionOwned: state.runtimeSessionOwned ?? false,
@@ -33440,6 +33963,11 @@ export class OrcaRuntimeService {
         this.invalidatePtyIncarnationHandle(ptyId)
       }
       pty.incarnationId = state.incarnationId
+    }
+    if (state.restartCustody !== undefined) {
+      pty.restartCustody = state.restartCustody
+        ? parsePtyRestartCustody(state.restartCustody)
+        : null
     }
     if (state.connectionId !== undefined) {
       pty.connectionId = state.connectionId
@@ -33727,6 +34255,7 @@ export class OrcaRuntimeService {
         const pty = this.recordPtyWorktree(session.id, worktreeId, {
           connected: true,
           ...(session.incarnationId ? { incarnationId: session.incarnationId } : {}),
+          restartCustody: session.restartCustody ?? null,
           ...(session.wslDistro !== undefined
             ? { isWsl: Boolean(session.wslDistro), wslDistro: session.wslDistro }
             : {}),
@@ -34053,6 +34582,8 @@ export class OrcaRuntimeService {
   ): RuntimeTerminalSummary {
     const worktree = worktreesById.get(leaf.worktreeId)
     const tab = this.tabs.get(leaf.tabId) ?? null
+    const handle = this.issueHandle(leaf)
+    const custodyState = this.getTerminalCustodyState(handle)
 
     const pty = leaf.ptyId ? this.ptysById.get(leaf.ptyId) : undefined
     const title = getLatestLeafTitle(leaf, tab?.title ?? null)
@@ -34072,7 +34603,7 @@ export class OrcaRuntimeService {
       parseAppSshPtyId(leaf.ptyId) === null &&
       this.ptyController?.hasPty?.(leaf.ptyId) !== true
     return {
-      handle: this.issueHandle(leaf),
+      handle,
       ptyId: leaf.ptyId,
       incarnationId: pty?.incarnationId ?? null,
       orphaned: false,
@@ -34083,7 +34614,12 @@ export class OrcaRuntimeService {
       leafId: leaf.leafId,
       title,
       connected: provenAbsent ? false : leaf.connected,
-      writable: provenAbsent ? false : leaf.writable,
+      writable:
+        !provenAbsent &&
+        !custodyState &&
+        leaf.writable &&
+        (!leaf.ptyId || this.isPtyIdExecutionActionable(leaf.ptyId)),
+      ...(custodyState ? { custodyState } : {}),
       lastOutputAt: leaf.lastOutputAt,
       preview: leaf.preview,
       ...(leaf.lastExitCause ? { exitCause: leaf.lastExitCause } : {}),
@@ -36127,8 +36663,10 @@ export class OrcaRuntimeService {
 
     const pane = parsePaneKey(pty.paneKey ?? '')
     const orphaned = !pty.tabId || !pane || pane.tabId !== pty.tabId
+    const handle = this.issuePtyHandle(pty)
+    const custodyState = this.getTerminalCustodyState(handle)
     return {
-      handle: this.issuePtyHandle(pty),
+      handle,
       ptyId: pty.ptyId,
       incarnationId: pty.incarnationId,
       orphaned,
@@ -36139,7 +36677,8 @@ export class OrcaRuntimeService {
       leafId: orphaned ? `pty:${pty.ptyId}` : pane.leafId,
       title,
       connected: pty.connected,
-      writable: pty.connected,
+      writable: !custodyState && this.isPtyExecutionActionable(pty),
+      ...(custodyState ? { custodyState } : {}),
       lastOutputAt: pty.lastOutputAt,
       preview: pty.preview,
       ...(pty.lastExitCause ? { exitCause: pty.lastExitCause } : {}),
@@ -41292,6 +41831,16 @@ function findCodexReadyPromptIndex(normalized: string): number | null {
   const readySegment = normalized.slice(headerIndex)
   // Why: Codex prints permissions only in YOLO mode; the stable ready header is OpenAI Codex + model + directory.
   return readySegment.includes('model:') && readySegment.includes('directory:') ? headerIndex : null
+}
+
+function isCodexInputReadyVisibleScreen(screen: string): boolean {
+  const normalized = screen.toLowerCase()
+  const headerIndex = findCodexReadyPromptIndex(normalized)
+  if (headerIndex === null) {
+    return false
+  }
+  const currentSession = normalized.slice(headerIndex)
+  return currentSession.includes('›') && !/(?:starting|booting) mcp servers?/.test(currentSession)
 }
 
 function findAntigravityReadyPromptIndex(normalized: string): number | null {

@@ -44,6 +44,9 @@ export function adoptMaterializedRuntimePtySpawn(
     ...(ctx.preAdoptedStablePane.result.incarnationId
       ? { incarnationId: ctx.preAdoptedStablePane.result.incarnationId }
       : {}),
+    ...(ctx.preAdoptedStablePane.result.restartCustody
+      ? { restartCustody: ctx.preAdoptedStablePane.result.restartCustody }
+      : {}),
     ...(typeof ctx.preAdoptedStablePane.result.wslDistro === 'string'
       ? { wslDistro: ctx.preAdoptedStablePane.result.wslDistro }
       : {}),
@@ -53,6 +56,7 @@ export function adoptMaterializedRuntimePtySpawn(
       leafId: ctx.preAdoptedStablePane.owner.leafId
     }
   }
+  ctx.deps.runtime?.recordPtyRestartCustody?.(ctx.result.id, ctx.result.restartCustody ?? null)
   ensureWslHookRelayForReattach(
     { isReattach: true, wslDistro: ctx.preAdoptedStablePane.result.wslDistro },
     args.connectionId

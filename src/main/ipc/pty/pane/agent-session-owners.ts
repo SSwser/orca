@@ -28,6 +28,7 @@ export function seedTerminalRestoreRecordsFromSpawnResult(
   runtime: OrcaRuntimeService | undefined,
   result: PtySpawnResult
 ): void {
+  runtime?.recordPtyRestartCustody?.(result.id, result.restartCustody ?? null)
   const text =
     typeof result.snapshot === 'string' && result.snapshot.length > 0
       ? result.snapshot

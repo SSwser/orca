@@ -11,6 +11,7 @@ import {
 
 function activity(overrides: Partial<AgentPromptActivity> = {}): AgentPromptActivity {
   return {
+    observedAt: 1_000,
     generation: 1,
     permissionSequence: 2,
     workingSequence: 4,
@@ -188,6 +189,21 @@ describe('agent prompt submission verification', () => {
     await rejected
   })
 
+  it('does not accept a working turn that began before the submit observation', async () => {
+    vi.useFakeTimers()
+    let current = activity()
+    const verification = verifyAgentPromptSubmission({
+      baseline: current,
+      readActivity: () => current
+    })
+    const rejected = expect(verification).rejects.toThrow('agent_prompt_stalled')
+
+    current = activity({ explicitWorkingStartedAt: 900, status: 'working' })
+    await vi.advanceTimersByTimeAsync(AGENT_PROMPT_EFFECT_TIMEOUT_MS)
+
+    await rejected
+  })
+
   // Why: same-state hook pings refresh the row without starting a turn, so only the pinned
   // stateStartedAt may satisfy the check — a refreshed row must stay unproven.
   it('does not accept a refreshed hook row whose working turn did not restart', async () => {
@@ -234,17 +250,17 @@ describe('agent prompt submission verification', () => {
     await rejected
   })
 
-  it('holds the extended hook window open past the former hook timeout', async () => {
+  it('accepts a genuine Codex hook edge delayed past the generic hook window', async () => {
     vi.useFakeTimers()
     let current = activity()
     const verification = verifyAgentPromptSubmission({
       baseline: current,
       readActivity: () => current,
-      timeoutMs: AGENT_PROMPT_HOOK_EFFECT_TIMEOUT_MS
+      timeoutMs: resolveAgentPromptEffectTimeoutMs('codex')
     })
 
-    await vi.advanceTimersByTimeAsync(15_000 + 1_000)
-    current = activity({ explicitWorkingStartedAt: 9_000, status: 'working' })
+    await vi.advanceTimersByTimeAsync(18_000)
+    current = activity({ explicitWorkingStartedAt: 19_000, status: 'working' })
     await vi.advanceTimersByTimeAsync(50)
 
     await expect(verification).resolves.toBeUndefined()

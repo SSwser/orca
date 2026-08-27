@@ -40,6 +40,12 @@ export function mergeWorktree(
       ? { ephemeralVmCheckoutMode: meta.ephemeralVmCheckoutMode }
       : {}),
     ...(creatorProvenance ? { creatorProvenance } : {}),
+    ...(meta?.workerGenerationOperation
+      ? { workerGenerationOperation: meta.workerGenerationOperation }
+      : {}),
+    ...(meta?.workerGenerationTerminalOperation
+      ? { workerGenerationTerminalOperation: meta.workerGenerationTerminalOperation }
+      : {}),
     path: git.path,
     head: git.head,
     branch: git.branch,

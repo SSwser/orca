@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OrcaRuntimeService } from './orca-runtime'
+import { OrchestrationDb } from './orchestration/db'
 import { getDefaultWorkspaceSession } from '../../shared/constants'
 import { SSH_EXIT_UNCONFIRMED_REASON } from '../../shared/pty-liveness-verdict'
 
@@ -9,6 +10,28 @@ import { SSH_EXIT_UNCONFIRMED_REASON } from '../../shared/pty-liveness-verdict'
 
 const WORKTREE_ID = 'repo-1::/tmp/inventory-verdict'
 const REMOTE_PTY_ID = 'ssh:conn-1@@relay-9'
+const LOCAL_PTY_ID = `${WORKTREE_ID}@@local-1`
+const RESTART_CUSTODY = {
+  kind: 'windows_daemon_job' as const,
+  daemonPid: 4000,
+  daemonStartedAtMs: 1_786_000_000_000,
+  daemonLaunchNonce: 'inventory-verdict-daemon'
+}
+const testDbs: OrchestrationDb[] = []
+
+afterEach(() => {
+  for (const db of testDbs.splice(0)) {
+    db.close()
+  }
+})
+
+function createRuntime(): OrcaRuntimeService {
+  const runtime = new OrcaRuntimeService(makeStore() as never)
+  const db = new OrchestrationDb(':memory:')
+  runtime.setOrchestrationDb(db)
+  testDbs.push(db)
+  return runtime
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -43,12 +66,13 @@ function makeStore() {
 
 function makeRuntimeMissingFromInventory(
   hasPty: () => boolean | null,
-  listProcesses: () => Promise<{ id: string; worktreeId: string }[]> = vi.fn(async () => [])
+  listProcesses: () => Promise<{ id: string; worktreeId: string }[]> = vi.fn(async () => []),
+  kill: () => boolean = vi.fn(() => true)
 ): OrcaRuntimeService {
-  const runtime = new OrcaRuntimeService(makeStore() as never)
+  const runtime = createRuntime()
   runtime.setPtyController({
     write: () => true,
-    kill: () => true,
+    kill,
     hasPty,
     listProcesses,
     getForegroundProcess: async () => null
@@ -103,6 +127,39 @@ describe('inventory sweep liveness verdicts', () => {
     })
   })
 
+  it('keeps a transport-connected orphan visible but non-actionable after lost contact', async () => {
+    const inventory = deferred<{ id: string; worktreeId: string }[]>()
+    const listProcesses = vi.fn(() => inventory.promise)
+    const kill = vi.fn(() => true)
+    const runtime = makeRuntimeMissingFromInventory(() => null, listProcesses, kill)
+    const listing = runtime.listTerminals(`id:${WORKTREE_ID}`)
+    await vi.waitFor(() => expect(listProcesses).toHaveBeenCalled())
+    runtime.markPtyLivenessUnverifiable(REMOTE_PTY_ID, 'stop outcome was not verified')
+    inventory.resolve([{ id: REMOTE_PTY_ID, worktreeId: WORKTREE_ID }])
+
+    const [listed] = (await listing).terminals
+
+    expect(listed).toMatchObject({ connected: true, writable: false, orphaned: true })
+    await expect(runtime.showTerminal(listed!.handle)).resolves.toMatchObject({
+      connected: true,
+      writable: false,
+      orphaned: true
+    })
+    expect(runtime.getOrchestrationDispatchAuthority(listed!.handle)).toBeNull()
+    await expect(runtime.sendTerminal(listed!.handle, { text: 'unsafe' })).rejects.toThrow(
+      'terminal_not_writable'
+    )
+    await expect(runtime.sendTerminalAgentPrompt(listed!.handle, 'unsafe')).rejects.toThrow(
+      'terminal_not_writable'
+    )
+    await expect(runtime.splitTerminal(listed!.handle)).rejects.toThrow('terminal_exited')
+    await expect(runtime.closeTerminal(listed!.handle)).resolves.toMatchObject({
+      ptyKilled: false,
+      ptyStopVerdict: 'unverifiable'
+    })
+    expect(kill).not.toHaveBeenCalled()
+  })
+
   it('records no doubt when the owning provider reports the PTY absent', async () => {
     const runtime = makeRuntimeMissingFromInventory(() => false)
 
@@ -126,6 +183,49 @@ describe('inventory sweep liveness verdicts', () => {
     await runtime.listTerminals(`id:${WORKTREE_ID}`)
 
     expect(runtime.getPtyLivenessVerdict(REMOTE_PTY_ID)).toBeNull()
+  })
+
+  it('clears stale restart custody when authoritative inventory omits it', async () => {
+    let includesCustody = true
+    const runtime = createRuntime()
+    runtime.setPtyController({
+      write: () => true,
+      kill: () => true,
+      hasPty: () => true,
+      listProcesses: async () => [
+        {
+          id: LOCAL_PTY_ID,
+          worktreeId: WORKTREE_ID,
+          incarnationId: 'incarnation-1',
+          cwd: '/tmp/inventory-verdict',
+          title: 'shell',
+          ...(includesCustody ? { restartCustody: RESTART_CUSTODY } : {})
+        }
+      ],
+      getForegroundProcess: async () => null
+    } as never)
+    runtime.attachWindow(1)
+    runtime.syncWindowGraph(1, { tabs: [], leaves: [] })
+    runtime.registerPty(LOCAL_PTY_ID, WORKTREE_ID, null, {
+      tabId: 'tab-local',
+      leafId: '11111111-1111-4111-8111-111111111111',
+      incarnationId: 'incarnation-1'
+    } as never)
+
+    const [terminal] = (await runtime.listTerminals(`id:${WORKTREE_ID}`)).terminals
+    expect(runtime.getOrchestrationDispatchAuthority(terminal!.handle)?.hostScope).toEqual({
+      kind: 'local',
+      hostId: 'local',
+      restartCustody: RESTART_CUSTODY
+    })
+
+    includesCustody = false
+    await runtime.listTerminals(`id:${WORKTREE_ID}`)
+
+    expect(runtime.getOrchestrationDispatchAuthority(terminal!.handle)?.hostScope).toEqual({
+      kind: 'local',
+      hostId: 'local'
+    })
   })
 
   it('does not let a pre-drop inventory clear a newer lost-contact verdict', async () => {
@@ -179,7 +279,7 @@ describe('inventory sweep liveness verdicts', () => {
   })
 
   it('retains unresolved verdicts for every still-addressable PTY', () => {
-    const runtime = new OrcaRuntimeService(makeStore() as never)
+    const runtime = createRuntime()
     for (let index = 0; index < 257; index += 1) {
       const ptyId = `ssh:conn-1@@relay-${index}`
       runtime.registerPty(ptyId, WORKTREE_ID, 'conn-1')

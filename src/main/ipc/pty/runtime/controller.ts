@@ -2,6 +2,7 @@ import { makePaneKey } from '../../../../shared/stable-pane-id'
 import { claimRuntimePaneCreate, makePaneSpawnReservationKey } from '../pane/spawn-reservation'
 import type { PtyRuntimeControllerDeps } from './controller-deps'
 import { spawnPtyFromRuntimeController } from './spawn'
+import { confirmShellForegroundFromRuntimeController } from './pty-shell-ownership-operation'
 import {
   killPtyFromRuntimeController,
   markReversibleStopsFromRuntimeController,
@@ -12,7 +13,6 @@ import {
   attachPtyFromRuntimeController,
   clearBufferFromRuntimeController,
   confirmForegroundProcessFromRuntimeController,
-  confirmShellForegroundFromRuntimeController,
   getCwdFromRuntimeController,
   getForegroundProcessFromRuntimeController,
   getRendererSerializerGenerationFromRuntimeController,
@@ -21,13 +21,18 @@ import {
   hasPtyFromRuntimeController,
   hasRendererSerializerFromRuntimeController,
   inspectProcessFromRuntimeController,
+  inspectRestartCustodyFromRuntimeController,
+  inspectWorkerPromptOperationFromRuntimeController,
   listProcessesFromRuntimeController,
   listProcessesWithHostScopeFromRuntimeController,
   probePtyLivenessFromRuntimeController,
   resizePtyFromRuntimeController,
   serializeProviderBufferFromRuntimeController,
+  supportsWorkerPromptOperationsFromRuntimeController,
   waitForRendererSerializerFromRuntimeController,
-  writePtyFromRuntimeController
+  writePtyFromRuntimeController,
+  writePtyWithSettlementFromRuntimeController,
+  writeWorkerPromptOperationFromRuntimeController
 } from './operations'
 
 export function installPtyRuntimeController(deps: PtyRuntimeControllerDeps): void {
@@ -42,7 +47,15 @@ export function installPtyRuntimeController(deps: PtyRuntimeControllerDeps): voi
     adoptStablePane,
     spawn: async (args) => spawnPtyFromRuntimeController(deps, args),
     write: (ptyId, data) => writePtyFromRuntimeController(ptyId, data),
+    writeWithSettlement: (ptyId, data) => writePtyWithSettlementFromRuntimeController(ptyId, data),
+    supportsWorkerPromptOperations: (ptyId) =>
+      supportsWorkerPromptOperationsFromRuntimeController(ptyId),
+    writeWorkerPromptOperation: (ptyId, operation) =>
+      writeWorkerPromptOperationFromRuntimeController(ptyId, operation),
+    inspectWorkerPromptOperation: (ptyId, identity) =>
+      inspectWorkerPromptOperationFromRuntimeController(ptyId, identity),
     probePtyLiveness: (ptyId) => probePtyLivenessFromRuntimeController(deps, ptyId),
+    inspectRestartCustody: (custody) => inspectRestartCustodyFromRuntimeController(custody),
     // Why: subscriber-driven ingestion for daemon sessions no renderer pane
     // ever attached. Local daemon sessions only — SSH panes have their own
     // lease machinery, and the in-process local provider streams without

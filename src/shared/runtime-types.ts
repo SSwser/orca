@@ -141,6 +141,7 @@ export type {
   RuntimeTerminalDriverState
 } from './runtime-session-contracts'
 export type {
+  RuntimeTerminalAgentPromptSend,
   RuntimeTerminalAgentStatus,
   RuntimeTerminalAgentStatusState,
   RuntimeTerminalClose,
