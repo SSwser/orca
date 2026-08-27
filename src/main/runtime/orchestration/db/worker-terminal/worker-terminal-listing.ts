@@ -16,8 +16,8 @@ export function markWorkerTerminalUserOwned(this: OrchestrationDb, paneKey: stri
     const exact = this.db
       .prepare(
         `SELECT id, owner_dispatch_id, pane_key FROM worker_terminal_resources
-          WHERE pane_key = ? AND ownership_state = 'owned'
-            AND release_state IN ('not_requested', 'retained', 'requested')
+          WHERE pane_key = ?
+            AND lifecycle_state IN ('owned', 'retained', 'release_requested')
             AND NOT EXISTS (
               SELECT 1 FROM worker_dispatches w
                WHERE w.dispatch_id = owner_dispatch_id AND w.state = 'stopping'
@@ -31,8 +31,7 @@ export function markWorkerTerminalUserOwned(this: OrchestrationDb, paneKey: stri
             this.db
               .prepare(
                 `SELECT id, owner_dispatch_id, pane_key FROM worker_terminal_resources
-                WHERE ownership_state = 'owned'
-                  AND release_state IN ('not_requested', 'retained', 'requested')
+                WHERE lifecycle_state IN ('owned', 'retained', 'release_requested')
                   AND NOT EXISTS (
                     SELECT 1 FROM worker_dispatches w
                      WHERE w.dispatch_id = owner_dispatch_id AND w.state = 'stopping'
@@ -43,10 +42,9 @@ export function markWorkerTerminalUserOwned(this: OrchestrationDb, paneKey: stri
           ).filter((candidate) => isEquivalentPaneKey(candidate.pane_key, paneKey))
     const update = this.db.prepare(
       `UPDATE worker_terminal_resources
-       SET ownership_state = 'user_owned', release_state = 'retained',
+       SET lifecycle_state = 'user_owned',
            retained_reason = 'user_takeover', updated_at = datetime('now')
-       WHERE id = ? AND ownership_state = 'owned'
-         AND release_state IN ('not_requested', 'retained', 'requested')
+       WHERE id = ? AND lifecycle_state IN ('owned', 'retained', 'release_requested')
          AND NOT EXISTS (
            SELECT 1 FROM worker_dispatches w
             WHERE w.dispatch_id = owner_dispatch_id AND w.state = 'stopping'
@@ -76,7 +74,7 @@ export function listWorkerTerminalReleaseBacklog(
   return this.db
     .prepare(
       `SELECT * FROM worker_terminal_resources
-        WHERE release_state IN ('requested', 'releasing')
+        WHERE lifecycle_state IN ('release_requested', 'release_closing')
         ORDER BY release_requested_at ASC`
     )
     .all() as WorkerTerminalResourceRow[]

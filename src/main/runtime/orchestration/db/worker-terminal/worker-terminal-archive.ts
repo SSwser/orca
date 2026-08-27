@@ -48,8 +48,7 @@ export function commitWorkerTerminalArchiveForRelease(
     }
     if (
       resource.owner_dispatch_id === params.dispatchId &&
-      resource.ownership_state === 'owned' &&
-      resource.release_state === 'requested'
+      resource.lifecycle_state === 'release_requested'
     ) {
       if (params.kind && params.content !== undefined) {
         this.storeWorkerTerminalArchive({
@@ -69,13 +68,79 @@ export function commitWorkerTerminalArchiveForRelease(
       this.db
         .prepare(
           `UPDATE worker_terminal_resources
-           SET release_state = 'releasing', archive_source = ?, archive_status = ?,
+           SET lifecycle_state = 'release_closing', archive_source = ?, archive_status = ?,
                updated_at = datetime('now')
-           WHERE id = ? AND owner_dispatch_id = ? AND ownership_state = 'owned'
-             AND release_state = 'requested'`
+           WHERE id = ? AND owner_dispatch_id = ?
+             AND lifecycle_state = 'release_requested'`
         )
         .run(params.archiveSource, params.archiveStatus, params.resourceId, params.dispatchId)
     }
+    const updated = this.getWorkerTerminalResource(params.resourceId) as WorkerTerminalResourceRow
+    this.db.exec('COMMIT')
+    return updated
+  } catch (error) {
+    this.db.exec('ROLLBACK')
+    throw error
+  }
+}
+
+export function commitWorkerTerminalArchiveForStop(
+  this: OrchestrationDb,
+  params: {
+    dispatchId: string
+    resourceId: string
+    processIncarnation: string
+    kind?: 'transcript_pin' | 'terminal_tail'
+    content?: string
+    archiveSource: 'transcript' | 'terminal'
+    archiveStatus: Extract<WorkerTerminalArchiveStatus, 'captured' | 'empty'>
+  }
+): WorkerTerminalResourceRow {
+  this.db.exec('BEGIN IMMEDIATE')
+  try {
+    const resource = this.getWorkerTerminalResource(params.resourceId)
+    if (
+      !resource ||
+      resource.owner_dispatch_id !== params.dispatchId ||
+      resource.process_incarnation !== params.processIncarnation ||
+      resource.lifecycle_state !== 'owned'
+    ) {
+      throw new OrchestrationError(
+        'terminal_resource_unsettled',
+        `Worker terminal resource ${params.resourceId} no longer has exact stop authority.`
+      )
+    }
+    if (params.kind && params.content !== undefined) {
+      this.db
+        .prepare(
+          `INSERT INTO worker_terminal_archives (dispatch_id, resource_id, kind, content)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(dispatch_id) DO NOTHING`
+        )
+        .run(params.dispatchId, params.resourceId, params.kind, params.content)
+    }
+    const archive = this.getWorkerTerminalArchive(params.dispatchId)
+    if (!archive || archive.resource_id !== params.resourceId) {
+      throw new OrchestrationError(
+        'archive_failed',
+        `Output could not be preserved for Dispatch ${params.dispatchId}; the terminal was retained.`
+      )
+    }
+    this.db
+      .prepare(
+        `UPDATE worker_terminal_resources
+         SET archive_source = COALESCE(archive_source, ?),
+             archive_status = COALESCE(archive_status, ?), updated_at = datetime('now')
+         WHERE id = ? AND owner_dispatch_id = ? AND process_incarnation = ?
+           AND lifecycle_state = 'owned'`
+      )
+      .run(
+        params.archiveSource,
+        params.archiveStatus,
+        params.resourceId,
+        params.dispatchId,
+        params.processIncarnation
+      )
     const updated = this.getWorkerTerminalResource(params.resourceId) as WorkerTerminalResourceRow
     this.db.exec('COMMIT')
     return updated
@@ -101,10 +166,11 @@ export function settleWorkerTerminalRelease(
   this.db
     .prepare(
       `UPDATE worker_terminal_resources
-       SET release_state = 'released', ownership_state = 'released',
+       SET lifecycle_state = 'released',
            release_completed_at = datetime('now'), release_error = NULL,
            updated_at = datetime('now')
-       WHERE id = ? AND release_state IN ('requested', 'releasing', 'unknown')`
+       WHERE id = ?
+         AND lifecycle_state IN ('release_requested', 'release_closing', 'release_unknown')`
     )
     .run(resourceId)
   return this.getWorkerTerminalResource(resourceId) as WorkerTerminalResourceRow
@@ -118,8 +184,8 @@ export function markWorkerTerminalReleaseUnknown(
   this.db
     .prepare(
       `UPDATE worker_terminal_resources
-       SET release_state = 'unknown', release_error = ?, updated_at = datetime('now')
-       WHERE id = ? AND release_state IN ('requested', 'releasing')`
+       SET lifecycle_state = 'release_unknown', release_error = ?, updated_at = datetime('now')
+       WHERE id = ? AND lifecycle_state IN ('release_requested', 'release_closing')`
     )
     .run(reason, resourceId)
   return this.getWorkerTerminalResource(resourceId) as WorkerTerminalResourceRow
@@ -133,8 +199,8 @@ export function revertWorkerTerminalReleaseToRetained(
   this.db
     .prepare(
       `UPDATE worker_terminal_resources
-       SET release_state = 'retained', retained_reason = ?, updated_at = datetime('now')
-       WHERE id = ? AND release_state IN ('requested', 'releasing')`
+       SET lifecycle_state = 'retained', retained_reason = ?, updated_at = datetime('now')
+       WHERE id = ? AND lifecycle_state IN ('release_requested', 'release_closing')`
     )
     .run(reason, resourceId)
   return this.getWorkerTerminalResource(resourceId) as WorkerTerminalResourceRow
@@ -166,20 +232,20 @@ export function retainWorkerTerminalResource(
       this.db.exec('COMMIT')
       return { disposition: 'no_owned_resource', resource: null }
     }
-    if (resource.release_state === 'released') {
+    if (resource.lifecycle_state === 'released') {
       this.db.exec('COMMIT')
       return { disposition: 'already_released', resource }
     }
     this.db
       .prepare(
         `UPDATE worker_terminal_resources
-         SET release_state = 'retained', retained_reason = 'user_requested',
+         SET lifecycle_state = 'retained', retained_reason = 'user_requested',
              updated_at = datetime('now')
-         WHERE id = ? AND release_state IN ('not_requested', 'retained', 'requested')`
+         WHERE id = ? AND lifecycle_state IN ('owned', 'retained', 'release_requested')`
       )
       .run(resource.id)
     const updated = this.getWorkerTerminalResource(resource.id) as WorkerTerminalResourceRow
-    if (updated.release_state !== 'retained') {
+    if (updated.lifecycle_state !== 'retained') {
       this.db.exec('COMMIT')
       return { disposition: 'release_committed', resource: updated }
     }
@@ -195,6 +261,7 @@ export function retainWorkerTerminalResource(
 export type WorkerTerminalArchiveMethods = {
   storeWorkerTerminalArchive: typeof storeWorkerTerminalArchive
   commitWorkerTerminalArchiveForRelease: typeof commitWorkerTerminalArchiveForRelease
+  commitWorkerTerminalArchiveForStop: typeof commitWorkerTerminalArchiveForStop
   getWorkerTerminalArchive: typeof getWorkerTerminalArchive
   settleWorkerTerminalRelease: typeof settleWorkerTerminalRelease
   markWorkerTerminalReleaseUnknown: typeof markWorkerTerminalReleaseUnknown
@@ -206,6 +273,7 @@ export function attachWorkerTerminalArchive(ctor: { prototype: object }): void {
   Object.assign(ctor.prototype, {
     storeWorkerTerminalArchive,
     commitWorkerTerminalArchiveForRelease,
+    commitWorkerTerminalArchiveForStop,
     getWorkerTerminalArchive,
     settleWorkerTerminalRelease,
     markWorkerTerminalReleaseUnknown,

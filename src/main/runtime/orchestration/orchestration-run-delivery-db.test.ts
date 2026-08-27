@@ -164,6 +164,180 @@ describe('OrchestrationDb Run state', () => {
       expect(replacement?.messages.map((message) => message.subject)).toEqual(['one'])
     })
 
+    it('replays worker_done after coordinator rebind until terminal ownership settles', () => {
+      const d = createDb()
+      const run = createBoundRun(d)
+      const task = d.createTask({ spec: 'release before ACK', runId: run.id })
+      const started = d.createStartingWorkerDispatch({
+        creator: { kind: 'system' },
+        maxDepth: Number.MAX_SAFE_INTEGER,
+        taskId: task.id,
+        startOptions: {}
+      })
+      const processIncarnation = 'worker-release:1'
+      d.prepareStartingWorkerAuthority({
+        dispatchId: started.dispatch.id,
+        handle: 'term_worker',
+        paneKey: 'tab_worker:33333333-3333-4333-8333-333333333333',
+        processIncarnation,
+        hostScope: JSON.stringify({ kind: 'local', hostId: 'local' }),
+        worktreeId: 'repo::worker',
+        effects: [],
+        setupState: 'not_applicable',
+        terminalOwnership: 'created'
+      })
+      d.markWorkerDispatchReady(started.dispatch.id)
+      d.settleWorkerReport({
+        taskId: task.id,
+        dispatchId: started.dispatch.id,
+        outcome: 'succeeded',
+        result: 'done'
+      })
+      const requested = d.requestWorkerTerminalRelease(started.dispatch.id)
+      expect(requested.disposition).toBe('requested')
+      const resource = d.markWorkerTerminalReleaseUnknown(
+        requested.resource!.id,
+        'daemon restarted before close confirmation'
+      )
+      const message = d.insertMessage({
+        from: 'term_worker',
+        to: `run:${run.id}`,
+        subject: 'worker done',
+        type: 'worker_done',
+        runId: run.id,
+        payload: JSON.stringify({ taskId: task.id, dispatchId: started.dispatch.id })
+      })
+      const oldDelivery = d.getOrCreateRunDelivery({
+        runId: run.id,
+        consumerGeneration: run.consumer_generation
+      })!
+
+      expect(() =>
+        d.acknowledgeRunDelivery({
+          runId: run.id,
+          consumerGeneration: run.consumer_generation,
+          deliveryId: oldDelivery.delivery.id
+        })
+      ).toThrowError(expect.objectContaining({ code: 'terminal_resource_unsettled' }))
+      expect(d.getMessageById(message.id)?.read).toBe(0)
+
+      const rebound = d.bindRun({
+        runId: run.id,
+        coordinatorHandle: 'term_rebound',
+        coordinatorPaneKey: 'tab_rebound:44444444-4444-4444-8444-444444444444'
+      })!
+      expect(() =>
+        d.acknowledgeRunDelivery({
+          runId: run.id,
+          consumerGeneration: run.consumer_generation,
+          deliveryId: oldDelivery.delivery.id
+        })
+      ).toThrowError(expect.objectContaining({ code: 'consumer_fenced' }))
+      const replay = d.getOrCreateRunDelivery({
+        runId: run.id,
+        consumerGeneration: rebound.consumer_generation
+      })!
+      expect(replay.messages.map((entry) => entry.id)).toEqual([message.id])
+
+      expect(
+        d.settleDeadWorkerTerminalRelease({
+          requestingDispatchId: started.dispatch.id,
+          resourceId: resource.id,
+          processIncarnation
+        }).disposition
+      ).toBe('released')
+      expect(
+        d.acknowledgeRunDelivery({
+          runId: run.id,
+          consumerGeneration: rebound.consumer_generation,
+          deliveryId: replay.delivery.id
+        }).duplicate
+      ).toBe(false)
+      expect(d.getMessageById(message.id)?.read).toBe(1)
+    })
+
+    it('finalizes the source Task when its settled terminal transfers before Delivery ACK', () => {
+      const d = createDb()
+      const run = createBoundRun(d)
+      const sourceTask = d.createTask({ spec: 'source task', runId: run.id })
+      const source = d.createStartingWorkerDispatch({
+        creator: { kind: 'system' },
+        maxDepth: Number.MAX_SAFE_INTEGER,
+        taskId: sourceTask.id,
+        startOptions: {}
+      })
+      const paneKey = 'tab_worker:55555555-5555-4555-8555-555555555555'
+      const processIncarnation = 'worker-transfer:1'
+      const hostScope = JSON.stringify({ kind: 'local', hostId: 'local' })
+      d.prepareStartingWorkerAuthority({
+        dispatchId: source.dispatch.id,
+        handle: 'term_worker',
+        paneKey,
+        processIncarnation,
+        hostScope,
+        worktreeId: 'repo::source',
+        effects: [],
+        setupState: 'not_applicable',
+        terminalOwnership: 'created'
+      })
+      d.markWorkerDispatchReady(source.dispatch.id)
+      d.settleWorkerReport({
+        taskId: sourceTask.id,
+        dispatchId: source.dispatch.id,
+        outcome: 'succeeded',
+        result: 'source complete'
+      })
+
+      const sourceResource = d.getWorkerTerminalResourceByOwner(source.dispatch.id)!
+      const message = d.insertMessage({
+        from: 'term_worker',
+        to: `run:${run.id}`,
+        subject: 'source done',
+        type: 'worker_done',
+        runId: run.id,
+        payload: JSON.stringify({ taskId: sourceTask.id, dispatchId: source.dispatch.id })
+      })
+      const delivery = d.getOrCreateRunDelivery({
+        runId: run.id,
+        consumerGeneration: run.consumer_generation
+      })!
+
+      const successorTask = d.createTask({ spec: 'follow-up task', runId: run.id })
+      const successor = d.createStartingWorkerDispatch({
+        creator: { kind: 'system' },
+        maxDepth: Number.MAX_SAFE_INTEGER,
+        taskId: successorTask.id,
+        startOptions: {}
+      })
+      d.prepareStartingWorkerAuthority({
+        dispatchId: successor.dispatch.id,
+        handle: 'term_worker_reminted',
+        paneKey,
+        processIncarnation,
+        hostScope,
+        worktreeId: 'repo::successor',
+        effects: [],
+        setupState: 'not_applicable',
+        terminalOwnership: 'external'
+      })
+      d.markWorkerDispatchReady(successor.dispatch.id)
+
+      expect(d.getWorkerTerminalResourceByOwner(source.dispatch.id)).toBeUndefined()
+      expect(d.getWorkerTerminalResourceByOwner(successor.dispatch.id)).toMatchObject({
+        id: sourceResource.id,
+        lifecycle_state: 'owned'
+      })
+
+      d.acknowledgeRunDelivery({
+        runId: run.id,
+        consumerGeneration: run.consumer_generation,
+        deliveryId: delivery.delivery.id
+      })
+
+      expect(d.getMessageById(message.id)?.read).toBe(1)
+      expect(d.getTask(sourceTask.id)?.status).toBe('completed')
+    })
+
     it('does not move a mismatched Run through another Run Dispatch mailbox', () => {
       const d = createDb()
       const runA = createBoundRun(d)

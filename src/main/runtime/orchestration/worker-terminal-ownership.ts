@@ -1,19 +1,16 @@
 import type { WorkerDispatchState } from './types'
 
-export type WorkerTerminalOwnershipState =
+export type WorkerTerminalLifecycleState =
   | 'owned'
+  | 'retained'
+  | 'release_requested'
+  | 'release_closing'
+  | 'release_unknown'
+  | 'contained'
+  | 'released'
   | 'transferred'
   | 'user_owned'
   | 'external'
-  | 'released'
-
-export type WorkerTerminalReleaseState =
-  | 'not_requested'
-  | 'retained'
-  | 'requested'
-  | 'releasing'
-  | 'released'
-  | 'unknown'
 
 export type WorkerTerminalRetainedReason =
   | 'external_terminal'
@@ -23,6 +20,7 @@ export type WorkerTerminalRetainedReason =
   | 'no_owned_resource'
   | 'identity_unproven'
   | 'legacy_ambiguous'
+  | 'lost_custody'
   | 'federation_unsupported'
 
 export type WorkerTerminalArchiveStatus = 'captured' | 'empty' | 'unavailable'
@@ -37,8 +35,7 @@ export type WorkerTerminalResourceRow = {
   pane_key: string | null
   process_incarnation: string | null
   host_scope: string | null
-  ownership_state: WorkerTerminalOwnershipState
-  release_state: WorkerTerminalReleaseState
+  lifecycle_state: WorkerTerminalLifecycleState
   retained_reason: string | null
   release_requested_at: string | null
   release_completed_at: string | null
@@ -56,6 +53,7 @@ export type WorkerTerminalListState =
   | 'retained'
   | 'release_pending'
   | 'release_unknown'
+  | 'contained'
   | 'released'
 
 export type WorkerDispatchListState = WorkerDispatchState | 'unsupervised'
@@ -87,16 +85,22 @@ export function deriveWorkerTerminalListState(params: {
   if (!resource) {
     return params.agentTerminalHandle ? 'retained' : null
   }
-  if (resource.release_state === 'released') {
+  if (resource.lifecycle_state === 'released') {
     return 'released'
   }
-  if (resource.release_state === 'unknown') {
+  if (resource.lifecycle_state === 'contained') {
+    return 'contained'
+  }
+  if (resource.lifecycle_state === 'release_unknown') {
     return 'release_unknown'
   }
-  if (resource.release_state === 'requested' || resource.release_state === 'releasing') {
+  if (
+    resource.lifecycle_state === 'release_requested' ||
+    resource.lifecycle_state === 'release_closing'
+  ) {
     return 'release_pending'
   }
-  if (resource.ownership_state !== 'owned' || resource.release_state === 'retained') {
+  if (resource.lifecycle_state !== 'owned') {
     return 'retained'
   }
   if (

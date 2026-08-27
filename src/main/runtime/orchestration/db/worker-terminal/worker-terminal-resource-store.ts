@@ -1,6 +1,6 @@
 import type {
   WorkerTerminalResourceRow,
-  WorkerTerminalOwnershipState
+  WorkerTerminalLifecycleState
 } from '../../worker-terminal-ownership'
 import { OrchestrationError } from '../../orchestration-error'
 import { generateId } from '../generated-id'
@@ -32,8 +32,8 @@ export function backfillWorkerTerminalResources(this: OrchestrationDb): void {
   const insert = this.db.prepare(
     `INSERT INTO worker_terminal_resources (
        id, origin_dispatch_id, owner_dispatch_id, worktree_id, terminal_handle,
-       pane_key, process_incarnation, ownership_state, release_state, retained_reason
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       pane_key, process_incarnation, lifecycle_state, retained_reason
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
   for (const row of rows) {
     insert.run(
@@ -45,7 +45,6 @@ export function backfillWorkerTerminalResources(this: OrchestrationDb): void {
       row.assignee_pane_key,
       row.process_incarnation,
       'external',
-      'retained',
       'legacy_ambiguous'
     )
   }
@@ -61,7 +60,7 @@ export function createWorkerTerminalResourceStatement(
     paneKey: string | null
     processIncarnation: string | null
     hostScope?: string | null
-    ownership: Extract<WorkerTerminalOwnershipState, 'owned' | 'external'>
+    lifecycleState: Extract<WorkerTerminalLifecycleState, 'owned' | 'external'>
   }
 ): WorkerTerminalResourceRow {
   const id = generateId('wtr')
@@ -69,9 +68,8 @@ export function createWorkerTerminalResourceStatement(
     .prepare(
       `INSERT INTO worker_terminal_resources (
          id, origin_dispatch_id, owner_dispatch_id, worktree_id, terminal_handle,
-         pane_key, process_incarnation, host_scope, ownership_state, release_state,
-         retained_reason
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_requested', ?)`
+         pane_key, process_incarnation, host_scope, lifecycle_state, retained_reason
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
@@ -82,8 +80,8 @@ export function createWorkerTerminalResourceStatement(
       params.paneKey,
       params.processIncarnation,
       params.hostScope ?? null,
-      params.ownership,
-      params.ownership === 'external' ? 'external_terminal' : null
+      params.lifecycleState,
+      params.lifecycleState === 'external' ? 'external_terminal' : null
     )
   return this.getWorkerTerminalResource(id) as WorkerTerminalResourceRow
 }
@@ -119,6 +117,19 @@ export function getWorkerTerminalResourceFormerlyOwnedBy(
     .get(`%"${dispatchId}"%`) as WorkerTerminalResourceRow | undefined
 }
 
+export function getNonActionableWorkerTerminalResource(
+  this: OrchestrationDb,
+  terminalHandle: string
+): WorkerTerminalResourceRow | undefined {
+  return this.db
+    .prepare(
+      `SELECT * FROM worker_terminal_resources
+        WHERE terminal_handle = ? AND lifecycle_state IN ('release_unknown', 'contained')
+        ORDER BY updated_at DESC LIMIT 1`
+    )
+    .get(terminalHandle) as WorkerTerminalResourceRow | undefined
+}
+
 // Reusable exact settled terminal: transfers cleanup ownership to the new Dispatch and fences
 // release through the old owner. No transaction: composes inside the authority transaction.
 export function transferWorkerTerminalResourceStatement(
@@ -144,11 +155,11 @@ export function transferWorkerTerminalResourceStatement(
   this.db
     .prepare(
       `UPDATE worker_terminal_resources
-       SET owner_dispatch_id = ?, prior_owner_dispatch_ids = ?, release_state = 'not_requested',
+       SET owner_dispatch_id = ?, prior_owner_dispatch_ids = ?, lifecycle_state = 'owned',
            retained_reason = NULL, release_requested_at = NULL, release_completed_at = NULL,
            release_error = NULL, terminal_handle = ?, pane_key = ?, process_incarnation = ?,
            host_scope = ?, updated_at = datetime('now')
-       WHERE id = ? AND ownership_state = 'owned'`
+       WHERE id = ? AND lifecycle_state IN ('owned', 'retained')`
     )
     .run(
       params.toDispatchId,
@@ -170,6 +181,7 @@ export type WorkerTerminalResourceStoreMethods = {
   getWorkerTerminalResource: typeof getWorkerTerminalResource
   getWorkerTerminalResourceByOwner: typeof getWorkerTerminalResourceByOwner
   getWorkerTerminalResourceFormerlyOwnedBy: typeof getWorkerTerminalResourceFormerlyOwnedBy
+  getNonActionableWorkerTerminalResource: typeof getNonActionableWorkerTerminalResource
   transferWorkerTerminalResourceStatement: typeof transferWorkerTerminalResourceStatement
 }
 
@@ -180,6 +192,7 @@ export function attachWorkerTerminalResourceStore(ctor: { prototype: object }): 
     getWorkerTerminalResource,
     getWorkerTerminalResourceByOwner,
     getWorkerTerminalResourceFormerlyOwnedBy,
+    getNonActionableWorkerTerminalResource,
     transferWorkerTerminalResourceStatement
   })
 }

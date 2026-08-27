@@ -79,7 +79,7 @@ describe('OrchestrationDb worker Dispatch state', () => {
 
     expect(d.retainWorkerTerminalResource(started.dispatch.id)).toMatchObject({
       disposition: 'retained',
-      resource: { release_state: 'retained', retained_reason: 'user_requested' }
+      resource: { lifecycle_state: 'retained', retained_reason: 'user_requested' }
     })
     expect(d.getWorkerDispatch(started.dispatch.id)?.state).toBe('ready')
   })
@@ -234,6 +234,100 @@ describe('OrchestrationDb worker Dispatch state', () => {
         startOptions: {}
       }).worker.state
     ).toBe('starting')
+  })
+
+  it('blocks retry until the current failed Dispatch terminal resource is settled', () => {
+    const d = createDb()
+    const task = d.createTask({ spec: 'retry after exact terminal settlement' })
+    const first = d.createStartingWorkerDispatch({
+      creator: { kind: 'system' },
+      maxDepth: Number.MAX_SAFE_INTEGER,
+      taskId: task.id,
+      startOptions: {}
+    })
+    d.prepareStartingWorkerAuthority({
+      dispatchId: first.dispatch.id,
+      handle: 'term_failed',
+      paneKey: 'tab_failed:leaf_failed',
+      processIncarnation: 'daemon:pty:failed',
+      hostScope: JSON.stringify({ kind: 'local', hostId: 'local' }),
+      worktreeId: 'repo::failed-generation',
+      setupState: 'not_applicable',
+      effects: [],
+      terminalOwnership: 'created'
+    })
+    d.failWorkerStart(first.dispatch.id, 'agent_readiness', 'first failed')
+
+    expect(() =>
+      d.createStartingWorkerDispatch({
+        creator: { kind: 'system' },
+        maxDepth: Number.MAX_SAFE_INTEGER,
+        taskId: task.id,
+        retryOf: first.dispatch.id,
+        startOptions: {}
+      })
+    ).toThrowError(expect.objectContaining({ code: 'terminal_resource_unsettled' }))
+
+    const requested = d.requestWorkerTerminalRelease(first.dispatch.id)
+    expect(requested).toMatchObject({ disposition: 'requested' })
+    if (!requested.resource) {
+      throw new Error('expected worker terminal resource')
+    }
+    d.markWorkerTerminalReleaseUnknown(requested.resource.id, 'close outcome unavailable')
+    expect(
+      d.settleDeadWorkerTerminalRelease({
+        requestingDispatchId: first.dispatch.id,
+        resourceId: requested.resource.id,
+        processIncarnation: 'daemon:pty:failed'
+      })
+    ).toMatchObject({ disposition: 'released' })
+    expect(
+      d.createStartingWorkerDispatch({
+        creator: { kind: 'system' },
+        maxDepth: Number.MAX_SAFE_INTEGER,
+        taskId: task.id,
+        retryOf: first.dispatch.id,
+        startOptions: {}
+      }).worker.state
+    ).toBe('starting')
+  })
+
+  it('preserves a user-owned failed attempt while accepting its retry', () => {
+    const d = createDb()
+    const task = d.createTask({ spec: 'retry after user takeover' })
+    const first = d.createStartingWorkerDispatch({
+      creator: { kind: 'system' },
+      maxDepth: Number.MAX_SAFE_INTEGER,
+      taskId: task.id,
+      startOptions: {}
+    })
+    d.prepareStartingWorkerAuthority({
+      dispatchId: first.dispatch.id,
+      handle: 'term_user_owned',
+      paneKey: 'tab_user_owned:leaf_user_owned',
+      processIncarnation: 'daemon:pty:user-owned',
+      hostScope: JSON.stringify({ kind: 'local', hostId: 'local' }),
+      worktreeId: 'repo::user-owned-generation',
+      setupState: 'not_applicable',
+      effects: [],
+      terminalOwnership: 'created'
+    })
+    expect(d.markWorkerTerminalUserOwned('tab_user_owned:leaf_user_owned')).toBe(1)
+    d.failWorkerStart(first.dispatch.id, 'agent_readiness', 'user took over failed attempt')
+
+    expect(
+      d.createStartingWorkerDispatch({
+        creator: { kind: 'system' },
+        maxDepth: Number.MAX_SAFE_INTEGER,
+        taskId: task.id,
+        retryOf: first.dispatch.id,
+        startOptions: {}
+      }).worker.state
+    ).toBe('starting')
+    expect(d.getWorkerTerminalResourceByOwner(first.dispatch.id)).toMatchObject({
+      lifecycle_state: 'user_owned',
+      retained_reason: 'user_takeover'
+    })
   })
 
   it('treats abandon of a superseded Dispatch as a no-op', () => {

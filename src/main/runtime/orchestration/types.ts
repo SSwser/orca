@@ -52,7 +52,7 @@ export type RunRow = {
   updated_at: string
 }
 
-export type DeliveryStatus = 'outstanding' | 'acknowledged' | 'fenced'
+export type DeliveryStatus = 'outstanding' | 'acknowledged' | 'fenced' | 'contained'
 
 export type DeliveryRow = {
   id: string
@@ -158,6 +158,28 @@ export type WorkerDispatchRow = {
   last_error: string | null
   created_at: string
   updated_at: string
+}
+
+export type WorkerLostCustodyRecoveryRow = {
+  id: string
+  run_id: string
+  task_id: string
+  source_dispatch_id: string
+  source_resource_id: string
+  source_delivery_id: string
+  source_worktree_id: string
+  disposition: 'accept_archived_result' | 'retry_with_successor'
+  trusted_revision: string | null
+  successor_dispatch_id: string | null
+  successor_worktree_id: string | null
+  successor_placement: 'new-child' | 'new-top-level' | null
+  successor_name: string | null
+  authorization:
+    | 'accept_authoritative_archived_result_with_lost_custody'
+    | 'acknowledge_possible_duplicate_external_effects'
+  mutation_caller_fingerprint: string
+  mutation_request_id: string
+  created_at: string
 }
 
 export type LegacyWorkerTerminalRecoveryRow = {

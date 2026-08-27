@@ -4,6 +4,10 @@ import { generateId } from '../generated-id'
 import { exposeMessageListTimestamps, exposeDeliveryTimestamps } from '../utc-timestamp'
 import { ORCHESTRATION_DELIVERY_BATCH_LIMIT } from '../messages/mailbox-routing-page'
 import type { OrchestrationDb } from '../orchestration-db'
+import {
+  finalizeWorkerTaskAfterResourceSettlement,
+  unresolvedWorkerTerminalDispatchId
+} from './run-delivery-worker-settlement'
 
 export function requireCurrentConsumer(
   this: OrchestrationDb,
@@ -153,6 +157,13 @@ export function acknowledgeRunDelivery(
       this.db.exec('COMMIT')
       return { delivery: exposeDeliveryTimestamps(delivery), duplicate: true }
     }
+    const unresolvedDispatchId = unresolvedWorkerTerminalDispatchId(this, delivery)
+    if (unresolvedDispatchId) {
+      throw new OrchestrationError(
+        'terminal_resource_unsettled',
+        `Dispatch ${unresolvedDispatchId} still owns an unsettled worker terminal resource.`
+      )
+    }
 
     const messageIds = JSON.parse(delivery.message_ids) as string[]
     if (messageIds.length > 0) {
@@ -160,6 +171,19 @@ export function acknowledgeRunDelivery(
       this.db
         .prepare(`UPDATE messages SET read = 1 WHERE id IN (${placeholders})`)
         .run(...messageIds)
+    }
+    for (const message of this.getDeliveryMessages(delivery)) {
+      if (message.type !== 'worker_done' || !message.payload) {
+        continue
+      }
+      try {
+        const dispatchId = (JSON.parse(message.payload) as { dispatchId?: unknown }).dispatchId
+        if (typeof dispatchId === 'string') {
+          finalizeWorkerTaskAfterResourceSettlement(this, dispatchId)
+        }
+      } catch {
+        continue
+      }
     }
     this.db
       .prepare(

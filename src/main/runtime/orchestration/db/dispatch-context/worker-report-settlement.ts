@@ -55,6 +55,10 @@ export function settleWorkerReportInTransaction(
 
   const expectedDispatchStatus = params.outcome === 'succeeded' ? 'completed' : 'failed'
   const expectedTaskStatus = params.outcome === 'succeeded' ? 'completed' : 'failed'
+  const reportingWorker = this.getWorkerDispatch(params.dispatchId)
+  const defersTaskFinalization = Boolean(
+    reportingWorker && this.getWorkerTerminalResourceByOwner(params.dispatchId)
+  )
   // Why (#16095): worker-start records a stalled prompt as failed, but the preamble was written
   // before verification ran — the worker may have been executing it the whole time. Its own report
   // is first-hand evidence and must be able to correct that record instead of being thrown away.
@@ -67,7 +71,7 @@ export function settleWorkerReportInTransaction(
   if (
     !settledByUnobservedPrompt &&
     dispatch.status === expectedDispatchStatus &&
-    task.status === expectedTaskStatus
+    (task.status === expectedTaskStatus || (defersTaskFinalization && task.status === 'dispatched'))
   ) {
     return { action: 'settled', outcome: params.outcome, duplicate: true }
   }
@@ -99,7 +103,6 @@ export function settleWorkerReportInTransaction(
       reason: `Task ${params.taskId} still has active supervised Dispatch ${conflictingWorker.id}; stop or settle it before completing ${params.dispatchId}.`
     }
   }
-  const reportingWorker = this.getWorkerDispatch(params.dispatchId)
   const latest = getActiveDispatchForTask(this, params.taskId)
   if (!reportingWorker && latest?.id !== params.dispatchId) {
     return {
@@ -134,10 +137,16 @@ export function settleWorkerReportInTransaction(
   const taskUpdate = this.db
     .prepare(
       `UPDATE tasks
-       SET status = ?, result = ?, completed_at = datetime('now')
+       SET status = ?, result = ?, completed_at = CASE WHEN ? = 1 THEN NULL ELSE datetime('now') END
        WHERE id = ? AND status = ?`
     )
-    .run(expectedTaskStatus, params.result, params.taskId, previous.status)
+    .run(
+      defersTaskFinalization ? 'dispatched' : expectedTaskStatus,
+      params.result,
+      defersTaskFinalization ? 1 : 0,
+      params.taskId,
+      previous.status
+    )
   if (dispatchUpdate.changes !== 1 || taskUpdate.changes !== 1) {
     this.db.exec('ROLLBACK TO settle_worker_report')
     this.db.exec('RELEASE settle_worker_report')
@@ -168,7 +177,7 @@ export function settleWorkerReportInTransaction(
   for (const sibling of siblingDispatchIds) {
     this.closeQuestionsForDispatch(sibling.id)
   }
-  if (params.outcome === 'succeeded') {
+  if (params.outcome === 'succeeded' && !defersTaskFinalization) {
     this.promoteReadyTasks(params.taskId)
   }
   this.db.exec('RELEASE settle_worker_report')

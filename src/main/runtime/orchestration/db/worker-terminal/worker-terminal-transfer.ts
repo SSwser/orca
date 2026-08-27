@@ -21,7 +21,7 @@ export function findTransferableWorkerTerminalResource(
       `SELECT r.* FROM worker_terminal_resources r
          JOIN worker_dispatches w ON w.dispatch_id = r.owner_dispatch_id
         WHERE r.process_incarnation = ? AND r.host_scope IS ?
-          AND r.ownership_state != 'released'`
+          AND r.lifecycle_state != 'released'`
     )
     .all(params.processIncarnation, params.hostScope) as WorkerTerminalResourceRow[]
   const exact = candidates.filter(
@@ -34,7 +34,9 @@ export function findTransferableWorkerTerminalResource(
   )
   if (
     exact.some((candidate) =>
-      ['requested', 'releasing', 'unknown'].includes(candidate.release_state)
+      ['release_requested', 'release_closing', 'release_unknown', 'contained'].includes(
+        candidate.lifecycle_state
+      )
     )
   ) {
     throw new OrchestrationError(
@@ -44,8 +46,7 @@ export function findTransferableWorkerTerminalResource(
   }
   return exact.find(
     (candidate) =>
-      candidate.ownership_state === 'owned' &&
-      ['not_requested', 'retained'].includes(candidate.release_state) &&
+      ['owned', 'retained'].includes(candidate.lifecycle_state) &&
       ['succeeded', 'failed', 'stopped', 'abandoned'].includes(
         this.getWorkerDispatch(candidate.owner_dispatch_id)?.state ?? ''
       )
@@ -64,7 +65,7 @@ export function workerTerminalResourceHasIdentityConflict(
     .prepare(
       `SELECT * FROM worker_terminal_resources
         WHERE process_incarnation = ? AND host_scope IS ?
-          AND id != ? AND ownership_state != 'released'`
+          AND id != ? AND lifecycle_state != 'released'`
     )
     .all(
       resource.process_incarnation,

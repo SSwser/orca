@@ -93,7 +93,14 @@ export function settleWorkerStop(this: OrchestrationDb, dispatchId: string): Wor
   try {
     const worker = this.getWorkerDispatch(dispatchId)
     const dispatch = this.getDispatchContextById(dispatchId)
-    if (!worker || !dispatch || worker.state !== 'stopping') {
+    if (!worker || !dispatch) {
+      throw new OrchestrationError('dispatch_inactive', `Dispatch ${dispatchId} is not stopping.`)
+    }
+    if (worker.state === 'stopped') {
+      this.db.exec('COMMIT')
+      return worker
+    }
+    if (worker.state !== 'stopping') {
       throw new OrchestrationError('dispatch_inactive', `Dispatch ${dispatchId} is not stopping.`)
     }
     this.db
@@ -106,7 +113,8 @@ export function settleWorkerStop(this: OrchestrationDb, dispatchId: string): Wor
     this.db
       .prepare(
         `UPDATE dispatch_contexts
-         SET status = 'failed', completed_at = datetime('now'), last_failure = 'stopped'
+         SET status = 'failed', completed_at = datetime('now'), last_failure = 'stopped',
+             termination_reason = COALESCE(termination_reason, 'operator_close')
          WHERE id = ? AND status IN ('pending', 'dispatched')`
       )
       .run(dispatchId)

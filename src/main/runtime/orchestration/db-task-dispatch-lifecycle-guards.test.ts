@@ -441,8 +441,7 @@ function startWorker(database: OrchestrationDb, taskId: string, name: string): W
     processIncarnation,
     worktreeId: `repo::${name}`,
     effects: [],
-    setupState: 'not_applicable',
-    terminalOwnership: 'created'
+    setupState: 'not_applicable'
   })
   database.markWorkerDispatchReady(started.dispatch.id)
   return { dispatchId: started.dispatch.id, capability, handle, paneKey, processIncarnation }

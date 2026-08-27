@@ -19,6 +19,11 @@ export function prepareStartingWorkerAuthority(
     // worktree creation, whose effects receipt says 'reused_agent_terminal'). 'external': an
     // explicit --terminal reuse; ownership transfers only from an exact owned settled resource.
     terminalOwnership?: 'created' | 'external'
+    generationOperation?: {
+      operationId: string
+      payloadFingerprint: string
+      claimantId: string
+    }
   }
 ): string {
   this.db.exec('BEGIN IMMEDIATE')
@@ -110,7 +115,7 @@ export function prepareStartingWorkerAuthority(
           paneKey: params.paneKey,
           processIncarnation: params.processIncarnation,
           hostScope: params.hostScope,
-          ownership: 'owned'
+          lifecycleState: 'owned'
         })
       } else {
         const transferable = this.findTransferableWorkerTerminalResource({
@@ -136,9 +141,38 @@ export function prepareStartingWorkerAuthority(
             paneKey: params.paneKey,
             processIncarnation: params.processIncarnation,
             hostScope: params.hostScope,
-            ownership: 'external'
+            lifecycleState: 'external'
           })
         }
+      }
+    }
+    if (params.generationOperation) {
+      const completed = this.db
+        .prepare(
+          `UPDATE worker_generation_operations
+              SET state = 'completed', receipt = ?, updated_at = datetime('now')
+            WHERE dispatch_id = ? AND effect_kind = 'authority' AND operation_id = ?
+              AND payload_fingerprint = ? AND claimant_id = ? AND state = 'claimed'`
+        )
+        .run(
+          JSON.stringify({
+            terminalHandle: params.handle,
+            capability,
+            paneKey: params.paneKey,
+            processIncarnation: params.processIncarnation,
+            hostScope: params.hostScope ?? null,
+            ...(params.launchTokenHash ? { launchTokenHash: params.launchTokenHash } : {})
+          }),
+          params.dispatchId,
+          params.generationOperation.operationId,
+          params.generationOperation.payloadFingerprint,
+          params.generationOperation.claimantId
+        )
+      if (completed.changes !== 1) {
+        throw new OrchestrationError(
+          'operation_unknown',
+          `Worker generation authority for ${params.dispatchId} could not settle atomically.`
+        )
       }
     }
     this.db.exec('COMMIT')

@@ -1,17 +1,7 @@
 import type { OrchestrationDb } from './db'
 import type { MessageRow, WorkerReportOutcome } from './types'
-import { parsePaneKey } from '../../../shared/stable-pane-id'
-
-// Why: the tab half can change on pane break-out, while opaque legacy keys
-// have no safe equivalence beyond exact equality.
-function isSamePane(assigneePaneKey: string, senderPaneKey: string): boolean {
-  if (assigneePaneKey === senderPaneKey) {
-    return true
-  }
-  const assigneeLeaf = parsePaneKey(assigneePaneKey)?.leafId
-  const senderLeaf = parsePaneKey(senderPaneKey)?.leafId
-  return Boolean(assigneeLeaf && senderLeaf && assigneeLeaf === senderLeaf)
-}
+import { containedSourceSuccessorId } from './db/runs/run-delivery-worker-settlement'
+import { isEquivalentPaneKey } from './db/pane-key-match'
 
 function hasLifecycleAuthority(
   dispatch: { assignee_handle: string | null; assignee_pane_key: string | null },
@@ -19,7 +9,7 @@ function hasLifecycleAuthority(
 ): boolean {
   if (dispatch.assignee_pane_key) {
     return Boolean(
-      msg.sender_pane_key && isSamePane(dispatch.assignee_pane_key, msg.sender_pane_key)
+      msg.sender_pane_key && isEquivalentPaneKey(dispatch.assignee_pane_key, msg.sender_pane_key)
     )
   }
   // Why: rows created before pane identity existed can only use the exact
@@ -264,6 +254,14 @@ function reconcileWorkerDoneMessage(
     onLog(`Warning: worker_done rejected: ${reason}`)
     db.convertLifecycleMessageToRejection(msg.id, 'sender_not_assignee', reason)
     return { action: 'rejected', code: 'sender_not_assignee', reason }
+  }
+  const successorId = containedSourceSuccessorId(db, dispatchId)
+  if (successorId) {
+    const reason = `contained source dispatch ${dispatchId} was replaced by successor ${successorId}.`
+    db.convertLifecycleMessageToRejection(msg.id, 'inactive_dispatch', reason)
+    db.markAsReadAndDelivered([msg.id])
+    onLog(`Warning: worker_done rejected: ${reason}`)
+    return { action: 'rejected', code: 'inactive_dispatch', reason }
   }
   // Why: `orchestration.send` can release the DB lock before waking the
   // coordinator; the later coordinator read still needs to observe completion.

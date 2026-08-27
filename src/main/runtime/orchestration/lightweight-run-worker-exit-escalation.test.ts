@@ -6,6 +6,7 @@ import { makePaneKey } from '../../../shared/stable-pane-id'
 import { getDefaultWorkspaceSession } from '../../../shared/constants'
 import type { WorkspaceSessionState } from '../../../shared/workspace-session-state-types'
 import { createRootDispatch } from './db/root-dispatch-test-fixture'
+import { ORCHESTRATION_METHODS } from '../rpc/methods/orchestration'
 
 // STA-4604: failActiveDispatchOnExit fails the dispatch on worker PTY exit but used to
 // gate the "Agent exited unexpectedly" escalation on the legacy coordinator_runs table.
@@ -50,6 +51,8 @@ function makeRuntimeWithTwoPanes(): {
   coordinatorHandle: string
 } {
   const runtime = new OrcaRuntimeService(makeStore() as never)
+  // Keep graph setup from lazily opening a Windows-locked on-disk test database.
+  runtime.setOrchestrationDb(new OrchestrationDb(':memory:'))
   runtime.setPtyController({
     spawn: vi.fn(async () => ({ id: 'never' })),
     write: vi.fn(() => true),
@@ -317,7 +320,7 @@ describe('STA-4604 worker PTY exit escalation reaches the coordinator', () => {
         dispatchId: started.dispatch.id,
         handle: workerHandle,
         paneKey: WORKER_PANE_KEY,
-        processIncarnation: 'inc-1',
+        processIncarnation: runtime.getTerminalProcessIncarnation(workerHandle)!,
         worktreeId: WORKTREE_ID,
         effects: [],
         setupState: 'skipped'
@@ -339,6 +342,80 @@ describe('STA-4604 worker PTY exit escalation reaches the coordinator', () => {
         workerStage: 'process_exited',
         escalations: 1
       })
+    } finally {
+      db.close()
+    }
+  })
+
+  it('settles a synchronous operator close through worker-stop without generic failure', async () => {
+    const { runtime, workerHandle, coordinatorHandle } = makeRuntimeWithTwoPanes()
+    const db = new OrchestrationDb(':memory:')
+    try {
+      runtime.setPtyController({
+        spawn: vi.fn(async () => ({ id: 'never' })),
+        write: vi.fn(() => true),
+        kill: () => {
+          runtime.onPtyExit(WORKER_PTY_ID, 0)
+          return true
+        },
+        getForegroundProcess: async () => null,
+        listProcesses: vi.fn(async () => [])
+      } as never)
+      const run = db.createRun({
+        objective: 'stop-owned exit',
+        coordinatorHandle,
+        coordinatorPaneKey: COORDINATOR_PANE_KEY
+      })
+      const task = db.createTask({ spec: 'stop this worker', runId: run.id })
+      const started = db.createStartingWorkerDispatch({
+        creator: { kind: 'system' },
+        maxDepth: Number.MAX_SAFE_INTEGER,
+        taskId: task.id,
+        startOptions: {}
+      })
+      db.prepareStartingWorkerAuthority({
+        dispatchId: started.dispatch.id,
+        handle: workerHandle,
+        paneKey: WORKER_PANE_KEY,
+        processIncarnation: runtime.getTerminalProcessIncarnation(workerHandle)!,
+        worktreeId: WORKTREE_ID,
+        effects: [{ kind: 'terminal', action: 'created', id: workerHandle }],
+        setupState: 'skipped',
+        terminalOwnership: 'created'
+      })
+      db.markWorkerDispatchReady(started.dispatch.id)
+      runtime.setOrchestrationDb(db as never)
+      vi.spyOn(runtime, 'readTerminal').mockResolvedValue({
+        handle: workerHandle,
+        status: 'running',
+        tail: ['archived before close'],
+        truncated: false,
+        nextCursor: '1'
+      })
+
+      const workerStop = ORCHESTRATION_METHODS.find(
+        (candidate) => candidate.name === 'orchestration.workerStop'
+      )!
+      await expect(
+        workerStop.handler(workerStop.params!.parse({ dispatch: started.dispatch.id }), { runtime })
+      ).resolves.toMatchObject({
+        state: 'stopped',
+        processAction: 'closed_agent_terminal',
+        archive: { status: 'captured' }
+      })
+
+      expect(db.getWorkerDispatch(started.dispatch.id)).toMatchObject({
+        state: 'stopped',
+        stage: 'process_stopped'
+      })
+      expect(db.getDispatchContextById(started.dispatch.id)).toMatchObject({
+        termination_reason: 'operator_close',
+        last_failure: 'stopped'
+      })
+      expect(db.getWorkerTerminalResourceByOwner(started.dispatch.id)).toMatchObject({
+        archive_status: 'captured'
+      })
+      expect(db.getUnreadRunMailbox(run.id, 100, ['escalation'])).toHaveLength(0)
     } finally {
       db.close()
     }

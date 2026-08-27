@@ -52,7 +52,7 @@ describe('Task/Dispatch concurrency', () => {
     })
   })
 
-  it('does not let stale failure overwrite a completed worker report', () => {
+  it('does not let stale failure overwrite a worker report awaiting resource finalization', () => {
     const first = createDatabase()
     const concurrent = createDatabase(first.path)
     const task = first.db.createTask({ spec: 'worker completion wins' })
@@ -103,7 +103,7 @@ describe('Task/Dispatch concurrency', () => {
     })
     expect(completionWon).toBe(true)
     expect(first.db.getTask(task.id)).toMatchObject({
-      status: 'completed',
+      status: 'dispatched',
       result: 'completed concurrently'
     })
     expect(first.db.getWorkerDispatch(started.dispatch.id)?.state).toBe('succeeded')
@@ -181,7 +181,7 @@ describe('Task/Dispatch concurrency', () => {
     })
     expect(first.db.getWorkerTerminalResourceByOwner(winner.dispatch.id)).toMatchObject({
       terminal_handle: 'term_reminted',
-      ownership_state: 'owned'
+      lifecycle_state: 'owned'
     })
     expect(
       sqlite
