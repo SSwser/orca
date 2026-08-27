@@ -1,6 +1,5 @@
 import type { OrchestrationDb } from './db'
 import type { MessageRow, WorkerReportOutcome } from './types'
-import { containedSourceSuccessorId } from './db/runs/run-delivery-worker-settlement'
 import { isEquivalentPaneKey } from './db/pane-key-match'
 
 function hasLifecycleAuthority(
@@ -254,14 +253,6 @@ function reconcileWorkerDoneMessage(
     onLog(`Warning: worker_done rejected: ${reason}`)
     db.convertLifecycleMessageToRejection(msg.id, 'sender_not_assignee', reason)
     return { action: 'rejected', code: 'sender_not_assignee', reason }
-  }
-  const successorId = containedSourceSuccessorId(db, dispatchId)
-  if (successorId) {
-    const reason = `contained source dispatch ${dispatchId} was replaced by successor ${successorId}.`
-    db.convertLifecycleMessageToRejection(msg.id, 'inactive_dispatch', reason)
-    db.markAsReadAndDelivered([msg.id])
-    onLog(`Warning: worker_done rejected: ${reason}`)
-    return { action: 'rejected', code: 'inactive_dispatch', reason }
   }
   // Why: `orchestration.send` can release the DB lock before waking the
   // coordinator; the later coordinator read still needs to observe completion.

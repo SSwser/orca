@@ -24,6 +24,14 @@ describe('worker-stop against a terminal we lost contact with', () => {
       connected: false,
       status: 'exited'
     } as never)
+    vi.spyOn(runtime, 'getExactWorkerProviderSession').mockReturnValue(null)
+    vi.spyOn(runtime, 'readTerminal').mockResolvedValue({
+      handle: 'term_worker',
+      status: 'running',
+      tail: ['worker output'],
+      truncated: false,
+      nextCursor: '1'
+    })
   })
 
   afterEach(() => db.close())
@@ -173,7 +181,7 @@ describe('worker-stop against a terminal we lost contact with', () => {
     ).resolves.toMatchObject({
       state: 'stop_unknown',
       processAction: 'none',
-      lastError: 'The worker terminal is user_owned; no terminal was closed.'
+      lastError: 'The worker terminal lifecycle is user_owned; no terminal was closed.'
     })
     expect(closeTerminal).not.toHaveBeenCalled()
   })
@@ -204,7 +212,7 @@ describe('worker-stop against a terminal we lost contact with', () => {
     ).resolves.toMatchObject({
       state: 'stop_unknown',
       processAction: 'none',
-      lastError: 'The worker terminal is unproven; no terminal was closed.'
+      lastError: 'The worker terminal lifecycle is unproven; no terminal was closed.'
     })
     expect(closeTerminal).not.toHaveBeenCalled()
   })
@@ -217,8 +225,7 @@ describe('worker-stop against a terminal we lost contact with', () => {
       0
     )
     expect(db.getWorkerTerminalResourceByOwner(dispatch.id)).toMatchObject({
-      ownership_state: 'owned',
-      release_state: 'not_requested'
+      lifecycle_state: 'owned'
     })
   })
 

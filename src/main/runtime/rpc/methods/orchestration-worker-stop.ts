@@ -9,6 +9,9 @@ import {
   inspectWorkerTerminal,
   resolvePinnedFederatedServer
 } from './orchestration-worker-observation'
+import { captureWorkerTerminalArchiveOnce } from './orchestration-worker-archive-capture'
+import { orchestrationTimestampToMs } from './orchestration-worker-output'
+import { archiveSummary } from './orchestration-worker-release-completion'
 
 const WorkerDispatchParams = z.object({ dispatch: requiredString('Missing --dispatch') })
 
@@ -138,26 +141,78 @@ export const ORCHESTRATION_WORKER_STOP_METHODS: RpcMethod[] = [
         )
       }
       const resource = db.getWorkerTerminalResourceByOwner(params.dispatch)
-      if (!resource || resource.ownership_state !== 'owned') {
-        const ownership = resource?.ownership_state ?? 'unproven'
+      if (!resource || resource.lifecycle_state !== 'owned') {
+        const lifecycle = resource?.lifecycle_state ?? 'unproven'
         return unknownReceipt(
           params.dispatch,
           db.markWorkerStopUnknown(
             params.dispatch,
-            `The worker terminal is ${ownership}; no terminal was closed.`
+            `The worker terminal lifecycle is ${lifecycle}; no terminal was closed.`
+          ),
+          'none'
+        )
+      }
+      if (!resource.process_incarnation) {
+        return unknownReceipt(
+          params.dispatch,
+          db.markWorkerStopUnknown(
+            params.dispatch,
+            'The worker terminal has no exact process incarnation; no terminal was closed.'
           ),
           'none'
         )
       }
       try {
+        const archive = await captureWorkerTerminalArchiveOnce({
+          runtime,
+          db,
+          dispatchId: params.dispatch,
+          terminalHandle: handle,
+          attachedAtMs: orchestrationTimestampToMs(begun.worker.created_at)
+        })
+        const archivedResource = db.commitWorkerTerminalArchiveForStop({
+          dispatchId: params.dispatch,
+          resourceId: resource.id,
+          processIncarnation: resource.process_incarnation,
+          ...(archive.kind && archive.content
+            ? { kind: archive.kind, content: archive.content }
+            : {}),
+          archiveSource: archive.source,
+          archiveStatus: archive.status
+        })
+        const current = await inspectWorkerTerminal(runtime, db, params.dispatch)
+        if (!current.exact || (current.status !== 'live' && current.status !== 'unverifiable')) {
+          return unknownReceipt(
+            params.dispatch,
+            db.markWorkerStopUnknown(
+              params.dispatch,
+              `The recorded worker process changed to ${current.status} after archive capture; no terminal was closed.`
+            ),
+            'none',
+            archiveSummary(archivedResource)
+          )
+        }
         const close = await runtime.closeTerminal(handle)
         if (!close.ptyKilled) {
+          const exitSettled = db.getWorkerDispatch(params.dispatch)
+          if (exitSettled?.state === 'stopped') {
+            runtime.notifyMessageArrived(`dispatch:${params.dispatch}`, 'status')
+            return {
+              dispatchId: params.dispatch,
+              state: exitSettled.state,
+              alreadySettled: false,
+              processAction: 'closed_agent_terminal',
+              close,
+              archive: archiveSummary(archivedResource)
+            }
+          }
           // The tab is retired, but the agent process was never confirmed stopped —
           // settling here is the false success this receipt exists to prevent.
           return unknownReceipt(
             params.dispatch,
             db.markWorkerStopUnknown(params.dispatch, describeUnconfirmedAgentStop(close)),
-            'closed_agent_terminal'
+            'closed_agent_terminal',
+            archiveSummary(archivedResource)
           )
         }
         const worker = db.settleWorkerStop(params.dispatch)
@@ -167,9 +222,21 @@ export const ORCHESTRATION_WORKER_STOP_METHODS: RpcMethod[] = [
           state: worker.state,
           alreadySettled: false,
           processAction: 'closed_agent_terminal',
-          close
+          close,
+          archive: archiveSummary(archivedResource)
         }
       } catch (error) {
+        const exitSettled = db.getWorkerDispatch(params.dispatch)
+        if (exitSettled?.state === 'stopped') {
+          runtime.notifyMessageArrived(`dispatch:${params.dispatch}`, 'status')
+          return {
+            dispatchId: params.dispatch,
+            state: exitSettled.state,
+            alreadySettled: false,
+            processAction: 'closed_agent_terminal',
+            archive: archiveSummary(db.getWorkerTerminalResourceByOwner(params.dispatch) ?? null)
+          }
+        }
         const reason = error instanceof Error ? error.message : String(error)
         return unknownReceipt(
           params.dispatch,
@@ -209,13 +276,15 @@ function contextOnlyStopWarning(result: {
 function unknownReceipt(
   dispatchId: string,
   worker: { state: string; last_error: string | null },
-  processAction: string
+  processAction: string,
+  archive: { source: string | null; status: string | null } | null = null
 ) {
   return {
     dispatchId,
     state: worker.state,
     alreadySettled: false,
     processAction,
-    lastError: worker.last_error
+    lastError: worker.last_error,
+    archive
   }
 }

@@ -82,6 +82,17 @@ describe('mapRuntimeError', () => {
     }
   )
 
+  it('preserves the unsettled worker terminal gate for coordinator recovery', () => {
+    const error = Object.assign(new Error('The worker terminal is not settled.'), {
+      code: 'terminal_resource_unsettled'
+    })
+
+    expect(mapRuntimeError('req_1', { runtimeId: 'runtime-1' }, error)).toMatchObject({
+      ok: false,
+      error: { code: 'terminal_resource_unsettled' }
+    })
+  })
+
   it.each([
     ['window_not_focused', 'keyboard input requires focus', 'restore-window'],
     ['permission_denied', 'missing DBUS_SESSION_BUS_ADDRESS', 'permissions'],

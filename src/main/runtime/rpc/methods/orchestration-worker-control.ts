@@ -17,7 +17,7 @@ import {
 import { readArchivedWorkerOutput } from './orchestration-worker-archive-read'
 import { readLegacyFederatedTerminal } from './orchestration-worker-legacy-federated-read'
 import { readExactWorkerOutput } from './orchestration-worker-output'
-import { exposeWorkerTerminalResource } from './orchestration-worker-release-completion'
+import * as workerRelease from './orchestration-worker-release-completion'
 
 const WorkerDispatchParams = z.object({ dispatch: requiredString('Missing --dispatch') })
 const WorkerReadParams = WorkerDispatchParams.extend({
@@ -147,7 +147,7 @@ export const ORCHESTRATION_WORKER_CONTROL_METHODS: RpcMethod[] = [
           // null there is the false negative this field exists to remove.
           ...(observation.agentWait !== undefined ? { agentWait: observation.agentWait } : {})
         },
-        terminalResource: resource ? exposeWorkerTerminalResource(resource) : null
+        terminalResource: resource ? workerRelease.exposeWorkerTerminalResource(resource) : null
       }
     }
   }),
@@ -208,7 +208,12 @@ export const ORCHESTRATION_WORKER_CONTROL_METHODS: RpcMethod[] = [
         )
       }
       const resource = db.getWorkerTerminalResourceByOwner(params.dispatch)
-      if (resource && ['releasing', 'unknown', 'released'].includes(resource.release_state)) {
+      if (
+        resource &&
+        ['release_closing', 'release_unknown', 'contained', 'released'].includes(
+          resource.lifecycle_state
+        )
+      ) {
         return readArchivedWorkerOutput({
           db,
           dispatchId: params.dispatch,

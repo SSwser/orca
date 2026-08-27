@@ -15,6 +15,16 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   return { promise, resolve }
 }
 
+const localHostScope = {
+  kind: 'local' as const,
+  hostId: 'local' as const,
+  restartCustody: {
+    kind: 'windows_daemon_job' as const,
+    daemonPid: 4000,
+    daemonStartedAtMs: 1_786_000_000_000,
+    daemonLaunchNonce: 'release-test-daemon'
+  }
+}
 describe('orchestration worker release', () => {
   let db: OrchestrationDb
   let dbOpen = false
@@ -22,6 +32,7 @@ describe('orchestration worker release', () => {
   let ctx: RpcContext
   let activeRunId: string
   let inspectProcessLiveness: ReturnType<typeof vi.fn>
+  let workerHandle: string
 
   const coordinatorPaneKey = 'tab_coord:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
   const workerPaneKey = 'tab_worker:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -31,6 +42,7 @@ describe('orchestration worker release', () => {
     dbOpen = true
     runtime = new OrcaRuntimeService()
     runtime.setOrchestrationDb(db)
+    workerHandle = 'term_worker'
     inspectProcessLiveness = vi.fn().mockResolvedValue('live')
     ;(
       runtime as unknown as {
@@ -40,20 +52,22 @@ describe('orchestration worker release', () => {
     vi.spyOn(runtime, 'getTerminalPaneKey').mockImplementation((handle) =>
       handle === 'term_coord'
         ? coordinatorPaneKey
-        : handle === 'term_worker' || handle === 'term_reminted'
+        : handle === workerHandle || handle === 'term_worker' || handle === 'term_reminted'
           ? workerPaneKey
           : null
     )
     vi.spyOn(runtime, 'getTerminalProcessIncarnation').mockImplementation((handle) =>
-      handle === 'term_worker' || handle === 'term_reminted' ? 'runtime_test:term_worker:1' : null
+      handle === workerHandle || handle === 'term_worker' || handle === 'term_reminted'
+        ? 'runtime_test:term_worker:1'
+        : null
     )
     vi.spyOn(runtime, 'getOrchestrationDispatchAuthority').mockImplementation((handle) =>
-      handle === 'term_worker' || handle === 'term_reminted'
+      handle === workerHandle || handle === 'term_worker' || handle === 'term_reminted'
         ? ({
             terminalHandle: handle,
             paneKey: workerPaneKey,
             processIncarnation: 'runtime_test:term_worker:1',
-            hostScope: { kind: 'local', hostId: 'local' }
+            hostScope: localHostScope
           } as never)
         : null
     )
@@ -64,38 +78,38 @@ describe('orchestration worker release', () => {
     vi.spyOn(runtime, 'showManagedTerminalWorkspace').mockResolvedValue({
       id: 'repo::worktree'
     } as never)
-    vi.spyOn(runtime, 'createTerminal').mockResolvedValue({
-      handle: 'term_worker',
-      worktreeId: 'repo::worktree',
-      title: 'worker'
+    vi.spyOn(runtime, 'createTerminal').mockImplementation(async (_selector, options) => {
+      workerHandle = options?.preAllocatedHandle ?? 'term_worker'
+      return { handle: workerHandle, worktreeId: 'repo::worktree', title: 'worker' }
     })
-    vi.spyOn(runtime, 'waitForTerminal').mockResolvedValue({
-      handle: 'term_worker',
+    vi.spyOn(runtime, 'waitForTerminal').mockImplementation(async (handle) => ({
+      handle,
       condition: 'tui-idle',
       satisfied: true,
       status: 'running',
       exitCode: null
-    })
+    }))
     vi.spyOn(runtime, 'getTerminalOrchestrationCliCommand').mockReturnValue('orca')
-    vi.spyOn(runtime, 'sendTerminalAgentPrompt').mockResolvedValue({
-      handle: 'term_worker',
+    vi.spyOn(runtime, 'sendTerminalAgentPrompt').mockImplementation(async (handle) => ({
+      handle,
       accepted: true,
-      bytesWritten: 1
-    })
+      bytesWritten: 1,
+      semanticObservedAt: Date.now()
+    }))
     vi.spyOn(runtime, 'isTerminalRunningAgent').mockResolvedValue(true)
     vi.spyOn(runtime, 'getExactWorkerProviderSession').mockReturnValue(null)
-    vi.spyOn(runtime, 'readTerminal').mockResolvedValue({
-      handle: 'term_worker',
+    vi.spyOn(runtime, 'readTerminal').mockImplementation(async (handle) => ({
+      handle,
       status: 'running',
       tail: ['worker output line 1', 'worker output line 2'],
       truncated: false,
       nextCursor: '2'
-    })
-    vi.spyOn(runtime, 'closeTerminal').mockResolvedValue({
-      handle: 'term_worker',
+    }))
+    vi.spyOn(runtime, 'closeTerminal').mockImplementation(async (handle) => ({
+      handle,
       tabId: 'tab-worker',
       ptyKilled: true
-    } as never)
+    }))
     vi.spyOn(runtime, 'notifyMessageArrived').mockImplementation(() => {})
     activeRunId = db.createRun({
       objective: 'Release test Run',
@@ -165,9 +179,8 @@ describe('orchestration worker release', () => {
     const { dispatchId } = await startWorker()
     const resource = db.getWorkerTerminalResourceByOwner(dispatchId)
     expect(resource).toMatchObject({
-      ownership_state: 'owned',
-      release_state: 'not_requested',
-      terminal_handle: 'term_worker',
+      lifecycle_state: 'owned',
+      terminal_handle: workerHandle,
       pane_key: workerPaneKey,
       process_incarnation: 'runtime_test:term_worker:1'
     })
@@ -189,10 +202,9 @@ describe('orchestration worker release', () => {
       archive: { source: 'terminal', status: 'captured' }
     })
     expect(runtime.closeTerminal).toHaveBeenCalledTimes(1)
-    expect(runtime.closeTerminal).toHaveBeenCalledWith('term_worker')
+    expect(runtime.closeTerminal).toHaveBeenCalledWith(workerHandle)
     const resource = db.getWorkerTerminalResourceByOwner(dispatchId)
-    expect(resource?.release_state).toBe('released')
-    expect(resource?.ownership_state).toBe('released')
+    expect(resource?.lifecycle_state).toBe('released')
     // Outcome is untouched by release.
     expect(db.getWorkerDispatch(dispatchId)?.state).toBe('succeeded')
   })
@@ -205,6 +217,39 @@ describe('orchestration worker release', () => {
     }
     expect(receipt.state).toBe('released')
     expect(db.getWorkerDispatch(dispatchId)?.state).toBe('failed')
+  })
+
+  it('archives before stop-owned close and releases exact exit without another process action', async () => {
+    setup()
+    const { dispatchId } = await startWorker()
+
+    const stopped = (await call('orchestration.workerStop', { dispatch: dispatchId })) as {
+      state: string
+      archive: { source: string | null; status: string | null } | null
+    }
+    expect(stopped).toMatchObject({
+      state: 'stopped',
+      archive: { source: 'terminal', status: 'captured' }
+    })
+    expect(vi.mocked(runtime.readTerminal).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(runtime.closeTerminal).mock.invocationCallOrder[0]!
+    )
+    expect(db.getWorkerTerminalArchive(dispatchId)).toBeDefined()
+
+    inspectProcessLiveness.mockClear()
+    inspectProcessLiveness.mockResolvedValue('unverifiable')
+    const released = await call('orchestration.workerRelease', { dispatch: dispatchId })
+    const replayed = await call('orchestration.workerRelease', { dispatch: dispatchId })
+
+    expect(released).toMatchObject({
+      state: 'released',
+      processAction: 'none',
+      archive: { source: 'terminal', status: 'captured' }
+    })
+    expect(replayed).toMatchObject({ state: 'already_released', processAction: 'none' })
+    expect(inspectProcessLiveness).not.toHaveBeenCalled()
+    expect(runtime.closeTerminal).toHaveBeenCalledTimes(1)
+    expect(db.getWorkerTerminalResourceByOwner(dispatchId)?.lifecycle_state).toBe('released')
   })
 
   it('is idempotent: a duplicate release returns already_released without another close', async () => {
@@ -226,7 +271,7 @@ describe('orchestration worker release', () => {
       /only a settled worker can release/
     )
     expect(runtime.closeTerminal).not.toHaveBeenCalled()
-    expect(db.getWorkerTerminalResourceByOwner(dispatchId)?.release_state).toBe('not_requested')
+    expect(db.getWorkerTerminalResourceByOwner(dispatchId)?.lifecycle_state).toBe('owned')
   })
 
   it('retains an explicitly reused external terminal without closing it', async () => {
@@ -240,22 +285,22 @@ describe('orchestration worker release', () => {
     expect(runtime.closeTerminal).not.toHaveBeenCalled()
   })
 
-  it('reconciles a dead external terminal without closing a process', async () => {
+  it('does not settle an external terminal from process absence', async () => {
     setup()
     const { dispatchId } = await startSettledWorker('succeeded', { terminal: 'term_worker' })
     inspectProcessLiveness.mockResolvedValue('exited')
 
     await expect(
       call('orchestration.workerRelease', { dispatch: dispatchId })
-    ).resolves.toMatchObject({ state: 'released', processAction: 'none' })
-    expect(inspectProcessLiveness).toHaveBeenCalledWith(
-      'runtime_test:term_worker:1',
-      JSON.stringify({ kind: 'local', hostId: 'local' })
-    )
+    ).resolves.toMatchObject({
+      state: 'retained',
+      reason: 'external_terminal',
+      processAction: 'none'
+    })
+    expect(inspectProcessLiveness).not.toHaveBeenCalled()
     expect(runtime.closeTerminal).not.toHaveBeenCalled()
     expect(db.getWorkerTerminalResourceByOwner(dispatchId)).toMatchObject({
-      ownership_state: 'released',
-      release_state: 'released'
+      lifecycle_state: 'external'
     })
   })
 
@@ -275,7 +320,7 @@ describe('orchestration worker release', () => {
       call('orchestration.workerRelease', { dispatch: dispatchId })
     ).resolves.toMatchObject({ state: 'retained', processAction: 'none' })
     expect(runtime.closeTerminal).not.toHaveBeenCalled()
-    expect(db.getWorkerTerminalResourceByOwner(dispatchId)?.release_state).not.toBe('released')
+    expect(db.getWorkerTerminalResourceByOwner(dispatchId)?.lifecycle_state).not.toBe('released')
   })
 
   it('retains a user-taken-over terminal durably', async () => {
@@ -291,10 +336,10 @@ describe('orchestration worker release', () => {
     }
     expect(receipt).toMatchObject({ state: 'retained', reason: 'user_takeover' })
     expect(runtime.closeTerminal).not.toHaveBeenCalled()
-    expect(db.getWorkerTerminalResourceByOwner(dispatchId)?.ownership_state).toBe('user_owned')
+    expect(db.getWorkerTerminalResourceByOwner(dispatchId)?.lifecycle_state).toBe('user_owned')
   })
 
-  it('reconciles a dead user-taken-over terminal without closing a process', async () => {
+  it('does not settle a user-taken-over terminal from process absence', async () => {
     setup()
     const { dispatchId } = await startSettledWorker()
     await call('orchestration.workerTerminalUserInput', { paneKey: workerPaneKey })
@@ -302,41 +347,13 @@ describe('orchestration worker release', () => {
 
     await expect(
       call('orchestration.workerRelease', { dispatch: dispatchId })
-    ).resolves.toMatchObject({ state: 'released', processAction: 'none' })
-    expect(inspectProcessLiveness).toHaveBeenCalledWith(
-      'runtime_test:term_worker:1',
-      JSON.stringify({ kind: 'local', hostId: 'local' })
-    )
+    ).resolves.toMatchObject({ state: 'retained', reason: 'user_takeover' })
+    expect(inspectProcessLiveness).not.toHaveBeenCalled()
     expect(runtime.closeTerminal).not.toHaveBeenCalled()
     expect(db.getWorkerTerminalResourceByOwner(dispatchId)).toMatchObject({
-      ownership_state: 'released',
-      release_state: 'released'
+      lifecycle_state: 'user_owned'
     })
   })
-
-  it.each(['stopped', 'abandoned'] as const)(
-    'reconciles a dead %s worker without closing a process',
-    async (state) => {
-      setup()
-      const { dispatchId } = await startWorker()
-      if (state === 'stopped') {
-        db.beginWorkerStop(dispatchId, runtime.getRuntimeId())
-        db.settleWorkerStop(dispatchId)
-      } else {
-        db.abandonWorkerDispatch(dispatchId)
-      }
-      inspectProcessLiveness.mockResolvedValue('exited')
-
-      await expect(
-        call('orchestration.workerRelease', { dispatch: dispatchId })
-      ).resolves.toMatchObject({ state: 'released', processAction: 'none' })
-      expect(runtime.closeTerminal).not.toHaveBeenCalled()
-      expect(db.getWorkerTerminalResourceByOwner(dispatchId)).toMatchObject({
-        ownership_state: 'released',
-        release_state: 'released'
-      })
-    }
-  )
 
   it('lets user takeover cancel a release while output capture is pending', async () => {
     setup()
@@ -398,11 +415,11 @@ describe('orchestration worker release', () => {
     await expect(
       call('orchestration.workerRetain', { dispatch: dispatchId })
     ).resolves.toMatchObject({ state: 'release_pending' })
-    expect(db.getWorkerTerminalResourceByOwner(dispatchId)?.release_state).toBe('releasing')
+    expect(db.getWorkerTerminalResourceByOwner(dispatchId)?.lifecycle_state).toBe('release_closing')
     pendingClose.resolve({ handle: 'term_worker', tabId: 'tab-worker', ptyKilled: true })
 
     await expect(release).resolves.toMatchObject({ state: 'released' })
-    expect(db.getWorkerTerminalResourceByOwner(dispatchId)?.release_state).toBe('released')
+    expect(db.getWorkerTerminalResourceByOwner(dispatchId)?.lifecycle_state).toBe('released')
   })
 
   it('never marks takeover for panes without an owned resource', async () => {
@@ -421,7 +438,7 @@ describe('orchestration worker release', () => {
     })) as { changed: number }
 
     expect(changed.changed).toBe(1)
-    expect(db.getWorkerTerminalResourceByOwner(dispatchId)?.ownership_state).toBe('user_owned')
+    expect(db.getWorkerTerminalResourceByOwner(dispatchId)?.lifecycle_state).toBe('user_owned')
   })
 
   it('retains when the exact process identity changed instead of closing', async () => {
@@ -480,28 +497,6 @@ describe('orchestration worker release', () => {
     expect(runtime.closeTerminal).not.toHaveBeenCalled()
   })
 
-  it('returns release_unknown when the terminal no longer resolves, then completes a retry', async () => {
-    setup()
-    const { dispatchId } = await startSettledWorker()
-    vi.mocked(runtime.showTerminal).mockRejectedValue(new Error('terminal_handle_stale'))
-    const receipt = (await call('orchestration.workerRelease', { dispatch: dispatchId })) as {
-      state: string
-      recovery?: string
-    }
-    expect(receipt.state).toBe('release_unknown')
-    expect(receipt.recovery).toContain('worker-show')
-    expect(runtime.closeTerminal).not.toHaveBeenCalled()
-
-    vi.mocked(runtime.showTerminal).mockImplementation(
-      async (handle) => ({ handle, worktreeId: 'repo::worktree', status: 'running' }) as never
-    )
-    const retry = (await call('orchestration.workerRelease', { dispatch: dispatchId })) as {
-      state: string
-    }
-    expect(retry.state).toBe('released')
-    expect(runtime.closeTerminal).toHaveBeenCalledTimes(1)
-  })
-
   it('retains the live terminal when output capture fails', async () => {
     setup()
     const { dispatchId } = await startSettledWorker()
@@ -511,7 +506,9 @@ describe('orchestration worker release', () => {
     )
     expect(runtime.closeTerminal).not.toHaveBeenCalled()
     // Durable intent survives for recovery.
-    expect(db.getWorkerTerminalResourceByOwner(dispatchId)?.release_state).toBe('requested')
+    expect(db.getWorkerTerminalResourceByOwner(dispatchId)?.lifecycle_state).toBe(
+      'release_requested'
+    )
   })
 
   it('marks release_unknown when the close itself fails', async () => {
@@ -523,7 +520,7 @@ describe('orchestration worker release', () => {
       lastError?: string
     }
     expect(receipt.state).toBe('release_unknown')
-    expect(db.getWorkerTerminalResourceByOwner(dispatchId)?.release_state).toBe('unknown')
+    expect(db.getWorkerTerminalResourceByOwner(dispatchId)?.lifecycle_state).toBe('release_unknown')
   })
 
   it('records an explicitly empty archive for an already-exited worker process', async () => {
@@ -705,7 +702,7 @@ describe('orchestration worker release', () => {
     setup()
     const first = await startSettledWorker('succeeded')
     const originalResource = db.getWorkerTerminalResourceByOwner(first.dispatchId)
-    expect(originalResource?.ownership_state).toBe('owned')
+    expect(originalResource?.lifecycle_state).toBe('owned')
 
     const second = await startWorker({ terminal: 'term_reminted' })
     const transferred = db.getWorkerTerminalResourceByOwner(second.dispatchId)
@@ -729,7 +726,7 @@ describe('orchestration worker release', () => {
     expect(runtime.closeTerminal).toHaveBeenCalledWith('term_reminted')
   })
 
-  it('reconciles dead transferred ownership after the current owner settles', async () => {
+  it('does not let a prior owner settle transferred ownership from process absence', async () => {
     setup()
     const first = await startSettledWorker('succeeded')
     const second = await startWorker({ terminal: 'term_reminted' })
@@ -738,15 +735,15 @@ describe('orchestration worker release', () => {
 
     await expect(
       call('orchestration.workerRelease', { dispatch: first.dispatchId })
-    ).resolves.toMatchObject({ state: 'released', processAction: 'none' })
-    expect(inspectProcessLiveness).toHaveBeenCalledWith(
-      'runtime_test:term_worker:1',
-      JSON.stringify({ kind: 'local', hostId: 'local' })
-    )
+    ).resolves.toMatchObject({
+      state: 'retained',
+      reason: 'ownership_transferred',
+      processAction: 'none'
+    })
+    expect(inspectProcessLiveness).not.toHaveBeenCalled()
     expect(runtime.closeTerminal).not.toHaveBeenCalled()
     expect(db.getWorkerTerminalResourceByOwner(second.dispatchId)).toMatchObject({
-      ownership_state: 'released',
-      release_state: 'released'
+      lifecycle_state: 'owned'
     })
   })
 
@@ -781,17 +778,13 @@ describe('orchestration worker release', () => {
       .prepare(
         `INSERT INTO worker_terminal_resources (
            id, origin_dispatch_id, owner_dispatch_id, terminal_handle, pane_key,
-           process_incarnation, host_scope, ownership_state, release_state, retained_reason
+           process_incarnation, host_scope, lifecycle_state, retained_reason
          ) VALUES (
            'wtr_conflict', 'ctx_conflict', 'ctx_conflict', 'term_reminted', ?, ?, ?,
-           'external', 'retained', 'legacy_ambiguous'
+           'external', 'legacy_ambiguous'
          )`
       )
-      .run(
-        workerPaneKey,
-        'runtime_test:term_worker:1',
-        JSON.stringify({ kind: 'local', hostId: 'local' })
-      )
+      .run(workerPaneKey, 'runtime_test:term_worker:1', JSON.stringify(localHostScope))
 
     await expect(
       call('orchestration.workerRelease', { dispatch: dispatchId })
@@ -807,7 +800,7 @@ describe('orchestration worker release', () => {
       reason?: string
     }
     expect(retained).toMatchObject({ state: 'retained', reason: 'user_requested' })
-    expect(db.getWorkerTerminalResourceByOwner(dispatchId)?.release_state).toBe('retained')
+    expect(db.getWorkerTerminalResourceByOwner(dispatchId)?.lifecycle_state).toBe('retained')
 
     const release = (await call('orchestration.workerRelease', { dispatch: dispatchId })) as {
       state: string
@@ -865,8 +858,7 @@ describe('orchestration worker release', () => {
     await expect(
       call('orchestration.workerRelease', { dispatch: dispatchId })
     ).resolves.toMatchObject({
-      state: 'retained',
-      reason: 'identity_unproven',
+      state: 'release_unknown',
       processAction: 'none'
     })
     expect(runtime.closeTerminal).not.toHaveBeenCalled()
@@ -876,11 +868,10 @@ describe('orchestration worker release', () => {
     setup()
     const { dispatchId } = await startSettledWorker()
     const shown = (await call('orchestration.workerShow', { dispatch: dispatchId })) as {
-      terminalResource: { ownershipState: string; releaseState: string } | null
+      terminalResource: { lifecycleState: string } | null
     }
     expect(shown.terminalResource).toMatchObject({
-      ownershipState: 'owned',
-      releaseState: 'not_requested'
+      lifecycleState: 'owned'
     })
   })
 })

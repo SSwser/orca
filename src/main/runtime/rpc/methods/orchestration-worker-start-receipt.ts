@@ -18,13 +18,23 @@ export function failWorkerStartWithReceipt(args: {
 }): unknown {
   const reason = args.error instanceof Error ? args.error.message : String(args.error)
   const unknown = isUnknownWorkerStartOutcome(args.error, args.failedStage)
+  const exactConflict =
+    args.error &&
+    typeof args.error === 'object' &&
+    (args.error as { code?: unknown }).code === 'request_mismatch'
+  const currentWorker = args.db.getWorkerDispatch(args.dispatchId)
+  const reconciling = currentWorker?.state === 'start_unknown'
   const worker = unknown
-    ? args.db.markWorkerStartUnknown(args.dispatchId, args.failedStage, reason)
-    : args.db.failWorkerStart(args.dispatchId, args.failedStage, reason, {
-        // Why (#16095): the preamble is written before submission is verified, so a stalled
-        // verdict never means the worker lacks its task — keep the authority its report needs.
-        retainCapability: isAgentPromptStalledError(args.error)
-      })
+    ? reconciling
+      ? currentWorker
+      : args.db.markWorkerStartUnknown(args.dispatchId, args.failedStage, reason)
+    : exactConflict && reconciling
+      ? args.db.failWorkerStartReconciliation(args.dispatchId, args.failedStage, reason)
+      : args.db.failWorkerStart(args.dispatchId, args.failedStage, reason, {
+          // Why (#16095): the preamble is written before submission is verified, so a stalled
+          // verdict never means the worker lacks its task — keep the authority its report needs.
+          retainCapability: isAgentPromptStalledError(args.error)
+        })
   return {
     runId: args.runId,
     taskId: args.taskId,
