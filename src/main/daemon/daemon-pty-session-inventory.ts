@@ -36,16 +36,18 @@ export abstract class DaemonPtySessionInventory extends DaemonPtyProcessInspecti
       // wedged handshake cannot burn the whole teardown budget before the list issues.
       const result = await this.withDaemonRetry(async () => {
         await this.ensureConnected(opts?.deadlineMs)
-        return this.client.request<ListSessionsResult>(
+        const daemonIdentity = this.client.getDaemonIdentity()
+        const inventory = await this.client.request<ListSessionsResult>(
           'listSessions',
           undefined,
           remainingDaemonRequestTimeoutMs(opts?.deadlineMs)
         )
+        return { inventory, daemonIdentity }
       })
       const admission = new PtyProcessListAdmission()
       const processes: PtyProcessInfo[] = []
       const aliveSessionIds = new Set<string>()
-      for (const session of result.sessions) {
+      for (const session of result.inventory.sessions) {
         if (!session.isAlive) {
           continue
         }
@@ -55,6 +57,7 @@ export abstract class DaemonPtySessionInventory extends DaemonPtyProcessInspecti
           admission.admit({
             id: session.sessionId,
             ...(session.incarnationId ? { incarnationId: session.incarnationId } : {}),
+            ...this.restartCustodyResult(session, result.daemonIdentity),
             // Why: OSC 7 may not arrive before cleanup; spawn cwd is authoritative until the daemon reports a live cwd.
             cwd: session.cwd ?? this.initialCwds.get(session.sessionId) ?? '',
             title: 'shell',

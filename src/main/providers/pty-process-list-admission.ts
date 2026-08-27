@@ -2,6 +2,7 @@ import { isAgentSessionOwnerBinding } from '../../shared/agent-session-host-auth
 import { MAX_CLAIMED_AGENT_PTY_OWNER_ENTRIES } from '../../shared/claimed-agent-pty-owner'
 import { cloneAgentSessionOwnerBinding } from '../../shared/claimed-agent-pty-owner-snapshot'
 import { isPtyIncarnationId } from '../../shared/pty-incarnation'
+import { parsePtyRestartCustody } from '../../shared/pty-restart-custody'
 import type { PtyProcessInfo } from './types'
 
 export const MAX_AGGREGATED_PTY_PROCESS_LIST_ENTRIES = 4096
@@ -53,6 +54,11 @@ export class PtyProcessListAdmission {
     const terminalHandleBytes = retainedOptionalStringBytes(value.terminalHandle)
     const wslDistroBytes =
       value.wslDistro === null ? 0 : retainedOptionalStringBytes(value.wslDistro)
+    const restartCustody =
+      value.restartCustody === undefined ? undefined : parsePtyRestartCustody(value.restartCustody)
+    const restartCustodyBytes = restartCustody
+      ? Buffer.byteLength(restartCustody.daemonLaunchNonce, 'utf8')
+      : 0
     if (
       idBytes === null ||
       cwdBytes === null ||
@@ -60,6 +66,7 @@ export class PtyProcessListAdmission {
       worktreeIdBytes === null ||
       terminalHandleBytes === null ||
       wslDistroBytes === null ||
+      (value.restartCustody !== undefined && !restartCustody) ||
       (value.incarnationId !== undefined && !isPtyIncarnationId(value.incarnationId)) ||
       (value.agentSessionOwners !== undefined && !Array.isArray(value.agentSessionOwners))
     ) {
@@ -91,6 +98,7 @@ export class PtyProcessListAdmission {
       worktreeIdBytes +
       terminalHandleBytes +
       wslDistroBytes +
+      restartCustodyBytes +
       ownerBytes
     if (
       nextEntries > MAX_AGGREGATED_PTY_PROCESS_LIST_ENTRIES ||
@@ -108,6 +116,7 @@ export class PtyProcessListAdmission {
       cwd: value.cwd,
       title: value.title,
       ...(value.incarnationId !== undefined ? { incarnationId: value.incarnationId } : {}),
+      ...(restartCustody ? { restartCustody } : {}),
       ...(value.worktreeId !== undefined ? { worktreeId: value.worktreeId } : {}),
       ...(value.terminalHandle !== undefined ? { terminalHandle: value.terminalHandle } : {}),
       ...(value.wslDistro !== undefined ? { wslDistro: value.wslDistro } : {}),

@@ -61,4 +61,26 @@ describe('host-initiated terminal creation under an attached window', () => {
     expect(pty?.connected).toBe(true)
     expect(pty?.runtimeSessionOwned).toBe(true)
   })
+
+  it('retains restart custody in the terminal dispatch authority', async () => {
+    const { runtime, spawn } = createRuntimeWithAttachedWindow()
+    const restartCustody = {
+      kind: 'windows_daemon_job' as const,
+      daemonPid: 4242,
+      daemonStartedAtMs: 1_725_000_000_000,
+      daemonLaunchNonce: 'daemon-launch-nonce'
+    }
+    spawn.mockResolvedValueOnce({
+      id: 'repo-1::/tmp/wt-cli@@a1b2c3d4',
+      incarnationId: 'incarnation-with-custody',
+      restartCustody
+    })
+
+    const terminal = await runtime.createTerminal('id:repo-1::/tmp/wt-cli', {})
+
+    expect(runtime.getOrchestrationDispatchAuthority(terminal.handle)).toMatchObject({
+      processIncarnation: expect.stringContaining('incarnation-with-custody'),
+      hostScope: { kind: 'local', hostId: 'local', restartCustody }
+    })
+  })
 })

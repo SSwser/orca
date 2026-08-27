@@ -10,10 +10,17 @@ import {
 } from './session-termination-controller'
 import type { SubprocessHandle } from './session-subprocess-handle'
 import type { JobTerminationOutcome } from '../windows/windows-pty-job'
+import { OPERATOR_CLOSE_EXIT_CAUSE, type TerminalExitCause } from '../../shared/terminal-exit-cause'
 import type { SessionOptions } from './session-options'
 import type { TuiAgent } from '../../shared/tui-agent'
 import { randomUUID } from 'node:crypto'
 import { PtyStartupIngress } from '../../shared/pty-startup-ingress'
+import type {
+  WorkerPromptOperationIdentity,
+  WorkerPromptOperationInspection,
+  WorkerPromptOperationRequest
+} from '../../shared/worker-prompt-operation'
+import { SessionWorkerPromptOperationLedger } from './session-worker-prompt-operation'
 
 import type {
   SessionState,
@@ -21,7 +28,6 @@ import type {
   TakePendingOutputResult,
   TerminalSnapshot
 } from './types'
-import type { TerminalExitCause } from '../../shared/terminal-exit-cause'
 
 export class Session {
   readonly sessionId: string
@@ -29,6 +35,7 @@ export class Session {
   readonly terminalHandle: string | null
   readonly launchAgent: TuiAgent | null
   readonly wslDistro: string | null
+  readonly hostCrashContained: boolean
   private _state: SessionState = 'running'
   private _exitCode: number | null = null
   private _disposed = false
@@ -39,6 +46,7 @@ export class Session {
   private readonly shellReady: SessionShellReadyBarrier
   private readonly termination: SessionTerminationController
   private readonly startupIngress: PtyStartupIngress
+  private readonly workerPromptOperations = new SessionWorkerPromptOperationLedger()
   private readonly recoveryBarrier: TerminalShellRecoveryBarrier
 
   constructor(opts: SessionOptions) {
@@ -47,6 +55,7 @@ export class Session {
     this.launchAgent = opts.launchAgent ?? null
     this.wslDistro = opts.wslDistro ?? null
     this.subprocess = opts.subprocess
+    this.hostCrashContained = this.subprocess.hostCrashContained === true
     this.onSessionExit = opts.onExit
     const pipeline = createSessionOutputPipeline({
       cols: opts.cols,
@@ -126,18 +135,14 @@ export class Session {
 
   /** Claims termination synchronously so attach/re-entry cannot race async
    * teardown preparation. Returns false when another owner already claimed it. */
-  beginTermination(): boolean {
-    return this.termination.beginTermination()
-  }
+  beginTermination = (): boolean => this.termination.beginTermination()
 
   get pid(): number {
     return this.subprocess.pid
   }
 
   /** Terminate this session's pty job object. `unavailable` is not proof of death. */
-  terminateOwnedTree(): JobTerminationOutcome {
-    return this.subprocess.terminateOwnedTree()
-  }
+  terminateOwnedTree = (): JobTerminationOutcome => this.subprocess.terminateOwnedTree()
 
   write(data: string): void {
     if (this._state === 'exited' || this._disposed) {
@@ -159,6 +164,25 @@ export class Session {
     this.subprocess.write(data)
   }
 
+  writeWorkerPromptOperation(request: WorkerPromptOperationRequest): { accepted: boolean } {
+    return this.workerPromptOperations.write(
+      request,
+      this._state !== 'exited' &&
+        !this._disposed &&
+        request.sessionIncarnationId === this.incarnationId &&
+        request.terminalHandle === this.terminalHandle &&
+        !this.shellReady.isGatingWrites &&
+        this.subprocess.writeAcknowledged !== undefined,
+      (data) => this.subprocess.writeAcknowledged?.(data) === true
+    )
+  }
+
+  inspectWorkerPromptOperation(
+    identity: WorkerPromptOperationIdentity
+  ): WorkerPromptOperationInspection {
+    return this.workerPromptOperations.inspect(identity)
+  }
+
   resize(cols: number, rows: number): void {
     if (this._state === 'exited' || this._disposed || !isValidPtySize(cols, rows)) {
       return
@@ -176,23 +200,15 @@ export class Session {
     this.producerPause.pause()
   }
 
-  resumeProducer(): void {
-    this.producerPause.release({ resume: true })
-  }
+  resumeProducer = (): void => this.producerPause.release({ resume: true })
 
-  kill(): void {
-    this.termination.kill()
-  }
+  kill = (): void => this.termination.kill()
 
   /** Signals a root whose descendant snapshot has completed. */
-  signalTerminationRoot(): void {
-    this.termination.signalTerminationRoot()
-  }
+  signalTerminationRoot = (): void => this.termination.signalTerminationRoot()
 
   /** Starts the graceful-kill deadline when a coordinator owns the snapshot-first portion of teardown. */
-  scheduleForceDisposeFallback(): void {
-    this.termination.scheduleForceDisposeFallback()
-  }
+  scheduleForceDisposeFallback = (): void => this.termination.scheduleForceDisposeFallback()
 
   async forceKillAndWaitForExit(
     timeoutMs = IMMEDIATE_KILL_PHYSICAL_EXIT_TIMEOUT_MS
@@ -200,13 +216,11 @@ export class Session {
     await this.termination.forceKillAndWaitForExit(timeoutMs)
   }
 
-  signal(sig: string): void {
-    this.termination.signal(sig)
-  }
+  confirmOwnedTreeTerminated = (): void => this.handleSubprocessExit(-1, OPERATOR_CLOSE_EXIT_CAUSE)
 
-  attachClient(client: Omit<AttachedClient, 'token'>): symbol {
-    return this.output.attachClient(client)
-  }
+  signal = (sig: string): void => this.termination.signal(sig)
+
+  attachClient = (client: Omit<AttachedClient, 'token'>): symbol => this.output.attachClient(client)
 
   detachClient(token: symbol): void {
     this.output.detachClient(token)
@@ -226,13 +240,9 @@ export class Session {
     return this.output.getSnapshot(opts)
   }
 
-  getPartialEscapeTailAnsi(): string {
-    return this.output.getPartialEscapeTailAnsi()
-  }
+  getPartialEscapeTailAnsi = (): string => this.output.getPartialEscapeTailAnsi()
 
-  getAppliedSize(): { cols: number; rows: number } | null {
-    return this.output.getAppliedSize()
-  }
+  getAppliedSize = (): { cols: number; rows: number } | null => this.output.getAppliedSize()
 
   takePendingOutput(
     includeSnapshot: boolean,
@@ -248,13 +258,9 @@ export class Session {
     )
   }
 
-  getCwd(): string | null {
-    return this.output.getCwd()
-  }
+  getCwd = (): string | null => this.output.getCwd()
 
-  getForegroundProcess(): string | null {
-    return this.subprocess.getForegroundProcess()
-  }
+  getForegroundProcess = (): string | null => this.subprocess.getForegroundProcess()
 
   async confirmForegroundProcess(): Promise<string | null> {
     return this.subprocess.confirmForegroundProcess?.() ?? this.subprocess.getForegroundProcess()
@@ -356,7 +362,7 @@ export class Session {
 
   private handleSubprocessExit(code: number, cause?: TerminalExitCause): void {
     this.termination.markPhysicalExit()
-    if (this._disposed) {
+    if (this._disposed || this._state === 'exited') {
       return
     }
 
@@ -389,7 +395,5 @@ export class Session {
     this.onSessionExit?.(code)
   }
 
-  closeStartupQueryAuthority(): number {
-    return this.startupIngress.closeQueryAuthority()
-  }
+  closeStartupQueryAuthority = (): number => this.startupIngress.closeQueryAuthority()
 }

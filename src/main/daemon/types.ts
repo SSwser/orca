@@ -18,10 +18,15 @@ import type { TuiAgent } from '../../shared/tui-agent'
 import type { PtyStartupIngressIntent } from '../../shared/pty-startup-ingress'
 import type {
   AgentSessionExecutionClaim,
-  AgentSessionOwnerBinding,
   AgentSessionSurfaceBinding
 } from '../../shared/agent-session-host-authority'
 import type * as HistorySeedProtocol from './terminal-history-seed-transfer-protocol'
+import type {
+  InspectWorkerPromptOperationRequest,
+  WriteWorkerPromptOperationRequest
+} from './daemon-worker-prompt-operation-request'
+import type { SessionInfo } from './daemon-session-info'
+export type { SessionInfo } from './daemon-session-info'
 export type { TerminalModes } from './terminal-modes'
 import type { TerminalSnapshot } from './terminal-snapshot'
 export type { TerminalSnapshot } from './terminal-snapshot'
@@ -33,6 +38,8 @@ export {
   COMPLETION_PROCESS_INSPECTION_PROTOCOL_VERSION,
   GET_FOREGROUND_PROCESS_PROTOCOL_VERSION,
   GIT_CREDENTIAL_GUARD_HOST_PROTOCOL_VERSION,
+  WINDOWS_HOST_CRASH_CONTAINMENT_DAEMON_PROTOCOL_VERSION,
+  WORKER_PROMPT_OPERATION_DAEMON_PROTOCOL_VERSION,
   PREVIOUS_DAEMON_PROTOCOL_VERSIONS,
   PROTOCOL_VERSION,
   PTY_STARTUP_INGRESS_PROTOCOL_VERSION,
@@ -91,6 +98,8 @@ export type CreateOrAttachRequest = {
     /** Server-side fence that prevents a client timeout from publishing an orphan PTY. */
     cancelAfterMs?: number
     startupIngress?: PtyStartupIngressIntent
+    /** Fresh supervised Windows workers require daemon-death containment before spawn. */
+    requireHostCrashContainment?: true
     agentSessionEnsure?: {
       claim: AgentSessionExecutionClaim
       surface: AgentSessionSurfaceBinding
@@ -306,6 +315,8 @@ export type DaemonRequest =
   | HistorySeedProtocol.TerminalHistorySeedTransferRequest
   | CancelCreateOrAttachRequest
   | WriteRequest
+  | WriteWorkerPromptOperationRequest
+  | InspectWorkerPromptOperationRequest
   | ResizeRequest
   | PausePtyRequest
   | ResumePtyRequest
@@ -363,22 +374,6 @@ export type SystemResolverHealth = 'healthy' | 'unhealthy' | 'unknown'
 
 export type SystemResolverHealthResult = {
   health: SystemResolverHealth
-}
-
-export type SessionInfo = {
-  sessionId: string
-  incarnationId?: string
-  state: SessionState
-  shellState: ShellReadyState
-  isAlive: boolean
-  terminalHandle?: string
-  wslDistro?: string | null
-  pid: number | null
-  cwd: string | null
-  cols: number
-  rows: number
-  createdAt: number
-  agentSessionOwners?: AgentSessionOwnerBinding[]
 }
 
 // Why: SessionInfo + source protocol version, so the Manage Sessions UI can

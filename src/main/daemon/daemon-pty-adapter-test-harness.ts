@@ -41,6 +41,7 @@ export function createMockSubprocess(dataOnSubscribe?: string): SubprocessHandle
     getForegroundProcess: vi.fn(() => null),
     confirmShellForeground: vi.fn(async () => false),
     write: vi.fn(),
+    writeAcknowledged: vi.fn(() => true),
     resize: vi.fn(),
     pause: vi.fn<() => void>(),
     resume: vi.fn<() => void>(),

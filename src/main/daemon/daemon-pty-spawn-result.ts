@@ -1,8 +1,12 @@
 import { isAgentSessionClaimedSpawnResult } from '../../shared/agent-session-host-authority'
-import { parseTerminalKittyKeyboardFlags } from '../../shared/terminal-kitty-keyboard-flags'
-import { DaemonPtySpawnRequest, type DaemonPtySpawnContext } from './daemon-pty-spawn-request'
+import {
+  DaemonPtySpawnRequest,
+  type DaemonPtyCreateOrAttachResponse,
+  type DaemonPtySpawnContext
+} from './daemon-pty-spawn-request'
 import { providerSequenceFromCreateOrAttach } from './daemon-pty-provider-sequence'
 import { takeHistoryRecoveryFreeze } from './daemon-history-recovery-freeze'
+import { buildDaemonPtyReattachSpawnResult } from './daemon-pty-reattach-spawn-result'
 import { getRecoveredHistorySeedSegments } from './terminal-history-seed-segments'
 import { SessionNotFoundError, type CreateOrAttachResult } from './types'
 import type { PtySpawnResult } from '../providers/types'
@@ -10,7 +14,7 @@ import type { PtySpawnResult } from '../providers/types'
 export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
   protected async finishSpawn(
     context: DaemonPtySpawnContext,
-    initialResult: CreateOrAttachResult
+    initialResponse: DaemonPtyCreateOrAttachResponse
   ): Promise<PtySpawnResult> {
     const {
       opts,
@@ -31,7 +35,7 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
       })
       return this.createOrAttachSpawn(context, historySeedSegments)
     }
-    let result = initialResult
+    let { result, daemonIdentity: resultDaemonIdentity } = initialResponse
     let historySeedSegments = restoreInfo ? getRecoveredHistorySeedSegments(restoreInfo) : null
     const adoptSpawnResultSession = async (spawnResult: CreateOrAttachResult): Promise<void> => {
       const requestedSessionId = sessionId
@@ -67,7 +71,12 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
     // Both ids: adoptSpawnResultSession may have rewritten sessionId to the claim owner.
     this.clearSessionAwaitingDaemonRecovery(requestedSessionId)
     this.clearSessionAwaitingDaemonRecovery(sessionId)
-    const exitedResult = this.resultForExitBeforeSpawnReply(sessionId, result, operation)
+    const exitedResult = this.resultForExitBeforeSpawnReply(
+      sessionId,
+      result,
+      resultDaemonIdentity,
+      operation
+    )
     if (exitedResult) {
       return exitedResult
     }
@@ -78,6 +87,7 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
       result.agentSessionEnsure ? { agentSessionEnsure: result.agentSessionEnsure } : {}
     const incarnationResult = (): Pick<PtySpawnResult, 'incarnationId'> | Record<string, never> =>
       result.incarnationId ? { incarnationId: result.incarnationId } : {}
+    const restartCustodyResult = () => this.restartCustodyResult(result, resultDaemonIdentity)
     let providerWslDistro = result.wslDistro === undefined ? wslDistro : result.wslDistro
     // Why: explicit null from a current daemon overrides the caller's WSL preference; undefined keeps compatibility with older daemons.
     wslDistro = providerWslDistro ?? undefined
@@ -113,6 +123,7 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
       return {
         id: sessionId,
         ...incarnationResult(),
+        ...restartCustodyResult(),
         pid,
         ...claimResult(),
         ...launchIdentity(),
@@ -138,9 +149,15 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
         effectiveCwd = restoreInfo.cwd
         effectiveCols = restoreInfo.cols
         effectiveRows = restoreInfo.rows
-        result = await createOrAttach(historySeedSegments)
+        ;({ result, daemonIdentity: resultDaemonIdentity } =
+          await createOrAttach(historySeedSegments))
         await adoptSpawnResultSession(result)
-        const exitedRetryResult = this.resultForExitBeforeSpawnReply(sessionId, result, operation)
+        const exitedRetryResult = this.resultForExitBeforeSpawnReply(
+          sessionId,
+          result,
+          resultDaemonIdentity,
+          operation
+        )
         if (exitedRetryResult) {
           return exitedRetryResult
         }
@@ -207,6 +224,7 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
         return {
           id: sessionId,
           ...incarnationResult(),
+          ...restartCustodyResult(),
           pid,
           ...claimResult(),
           ...launchIdentity(),
@@ -219,6 +237,7 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
       return {
         id: sessionId,
         ...incarnationResult(),
+        ...restartCustodyResult(),
         pid,
         ...claimResult(),
         ...launchIdentity(),
@@ -267,6 +286,7 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
       return {
         id: sessionId,
         ...incarnationResult(),
+        ...restartCustodyResult(),
         pid,
         ...claimResult(),
         ...launchIdentity(),
@@ -277,53 +297,14 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
     }
 
     const reattachSnapshot = await this.overlayDurableRestoreSnapshot(sessionId, result.snapshot)
-    const reattachProviderSequence =
-      typeof reattachSnapshot.outputSequence === 'number'
-        ? { value: reattachSnapshot.outputSequence, generation: 'continued' as const }
-        : providerSequence
-    const isAltScreen = reattachSnapshot.modes.alternateScreen
-    const snapshotPrefix = reattachSnapshot.scrollbackAnsi + reattachSnapshot.rehydrateSequences
-    const snapshotFrame = reattachSnapshot.snapshotAnsi
-    const snapshotPayload = snapshotPrefix + snapshotFrame
-    // Why kitty flags ride beside the payload, not inside it: the snapshot reaches renderer xterms where POST_REPLAY_REATTACH_RESET's kitty reset must win (terminal-query-authority.md §kitty).
-    // Why known `0` is no longer dropped: the pane tracker must be able to tell
-    // "the app negotiated nothing" from "this reattach proved nothing".
-    const kittyKeyboardFlags = parseTerminalKittyKeyboardFlags(
-      reattachSnapshot.modes.kittyKeyboardFlags
-    )
-    return {
-      id: sessionId,
-      ...incarnationResult(),
+    return buildDaemonPtyReattachSpawnResult({
+      sessionId,
+      result,
+      restartCustody: restartCustodyResult(),
       pid,
-      ...claimResult(),
-      ...launchIdentity(),
-      ...(providerWslDistro !== undefined ? { wslDistro: providerWslDistro } : {}),
-      snapshot: snapshotPayload,
-      snapshotCols: reattachSnapshot.cols,
-      snapshotRows: reattachSnapshot.rows,
-      // Why only for an alt frame: normal history remains safe to replay at its capture grid.
-      ...(isAltScreen && snapshotFrame && reattachSnapshot.frameRestoreAnsi
-        ? {
-            snapshotPrefixAnsi: snapshotPrefix,
-            snapshotFrameAnsi: snapshotFrame,
-            snapshotFrameRestoreAnsi: reattachSnapshot.frameRestoreAnsi
-          }
-        : {}),
-      ...(reattachProviderSequence ? { providerSequence: reattachProviderSequence } : {}),
-      ...(kittyKeyboardFlags !== undefined
-        ? { snapshotKittyKeyboardFlags: kittyKeyboardFlags }
-        : {}),
-      ...(reattachSnapshot.terminalOwner
-        ? { snapshotTerminalOwner: reattachSnapshot.terminalOwner }
-        : {}),
-      isReattach: true,
-      isAlternateScreen: isAltScreen,
-      // Why: the snapshot ANSI has no title frame; carry lastTitle beside it so main can seed title records after a relaunch.
-      ...(reattachSnapshot.lastTitle ? { lastTitle: reattachSnapshot.lastTitle } : {}),
-      // Why: carry the mid-escape tail so the renderer writes it after the reattach reset, else a split escape renders literally (#7329).
-      ...(reattachSnapshot.pendingEscapeTailAnsi
-        ? { pendingEscapeTailAnsi: reattachSnapshot.pendingEscapeTailAnsi }
-        : {})
-    }
+      providerWslDistro,
+      providerSequence,
+      snapshot: reattachSnapshot
+    })
   }
 }

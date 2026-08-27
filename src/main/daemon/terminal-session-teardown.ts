@@ -58,11 +58,22 @@ export class TerminalSessionTeardown {
       // Why: forceKillAndWaitForExit claims termination synchronously; awaiting the sweep
       // ahead of it would leave attach open on a doomed session for the taskkill's duration.
       session.beginTermination()
-      await killWithDescendantSweep(session.pid, () => {}, {
+      const result = await killWithDescendantSweep(session.pid, () => {}, {
         // Why: the descendant tree is only ours while this Session still owns the live root PID.
         ownsRoot: () => this.sessions.get(sessionId) === session && session.isAlive,
         terminateOwnedTree: () => session.terminateOwnedTree()
       })
+      if (result === 'owned_tree_terminated') {
+        if (session.isAlive) {
+          try {
+            session.signalTerminationRoot()
+          } catch {
+            // The Job already proved process exit; Session completion releases the native handle.
+          }
+        }
+        session.confirmOwnedTreeTerminated()
+        return
+      }
     }
     await session.forceKillAndWaitForExit()
   }
@@ -125,7 +136,14 @@ export class TerminalSessionTeardown {
     )
     // Why: descendant capture completion only proves signals were requested;
     // destructive callers must retain the native owner until OS-confirmed exit.
-    const operation = sweep.then(() => entry.rootCompletion)
+    const operation = sweep.then((result) => {
+      if (result === 'owned_tree_terminated') {
+        // The kernel job is the exact process-tree owner. Complete the Session even when
+        // ConPTY drops node-pty's exit callback, otherwise listSessions publishes a ghost.
+        session.confirmOwnedTreeTerminated()
+      }
+      return entry.rootCompletion
+    })
     entry.promise = operation
     this.operations.set(sessionId, entry)
     const clearOperation = (): void => {

@@ -4,7 +4,10 @@ import type {
   HistoryRecoveryContext,
   PendingDaemonSpawnOperation
 } from './daemon-pty-runtime-state'
-import { STABLE_PANE_ATTACH_ONLY_DAEMON_PROTOCOL_VERSION } from './daemon-protocol-version'
+import {
+  STABLE_PANE_ATTACH_ONLY_DAEMON_PROTOCOL_VERSION,
+  WINDOWS_HOST_CRASH_CONTAINMENT_DAEMON_PROTOCOL_VERSION
+} from './daemon-protocol-version'
 import { TerminalKilledError } from './daemon-pty-lifecycle-errors'
 import { DaemonPtySpawnResult } from './daemon-pty-spawn-result'
 import type { DaemonPtySpawnContext } from './daemon-pty-spawn-request'
@@ -14,6 +17,7 @@ import { CODEX_SHELL_READY_TIMEOUT_MS } from './session-shell-ready-barrier'
 import { supportsPtyStartupBarrier } from './shell-ready'
 import { getRecoveredHistorySeedSegments } from './terminal-history-seed-segments'
 import { AGENT_SESSION_CLAIM_DAEMON_PROTOCOL_VERSION, type CreateOrAttachResult } from './types'
+import type { DaemonEndpointIdentity } from './daemon-hello-protocol'
 import { normalizeWslColdRestoreCwd } from './wsl-cold-restore-cwd'
 import { resolveWslSessionContext } from './wsl-session-context'
 import { resolveSafePtyDefaultCwd } from '../providers/pty-default-cwd'
@@ -108,6 +112,12 @@ export abstract class DaemonPtySessionSpawn extends DaemonPtySpawnResult {
       this.protocolVersion < AGENT_SESSION_CLAIM_DAEMON_PROTOCOL_VERSION
     ) {
       throw new Error('agent_session_claim_unavailable')
+    }
+    if (
+      opts.requireHostCrashContainment &&
+      this.protocolVersion < WINDOWS_HOST_CRASH_CONTAINMENT_DAEMON_PROTOCOL_VERSION
+    ) {
+      throw new Error('daemon_crash_containment_unavailable')
     }
     const requestedSessionId = opts.sessionId!
     // Why: v30 daemons survive upgrades; reject their accidental create result before publication.
@@ -245,13 +255,14 @@ export abstract class DaemonPtySessionSpawn extends DaemonPtySpawnResult {
       detectColdRestore
     }
     activeSpawnContext = context
-    const result = await this.createOrAttachSpawn(context, context.historySeedSegments)
-    return this.finishSpawn(context, result)
+    const response = await this.createOrAttachSpawn(context, context.historySeedSegments)
+    return this.finishSpawn(context, response)
   }
 
   protected resultForExitBeforeSpawnReply(
     sessionId: string,
     result: CreateOrAttachResult,
+    daemonIdentity: DaemonEndpointIdentity | null,
     operation: PendingDaemonSpawnOperation
   ): PtySpawnResult | null {
     const matchingExit = (operation.exitsBySessionId.get(sessionId) ?? []).some(
@@ -269,6 +280,7 @@ export abstract class DaemonPtySessionSpawn extends DaemonPtySpawnResult {
       id: sessionId,
       exitedBeforeSpawnReply: true,
       ...(result.incarnationId ? { incarnationId: result.incarnationId } : {}),
+      ...this.restartCustodyResult(result, daemonIdentity),
       ...(result.agentSessionEnsure ? { agentSessionEnsure: result.agentSessionEnsure } : {}),
       ...(!result.isNew ? { isReattach: true } : {})
     }

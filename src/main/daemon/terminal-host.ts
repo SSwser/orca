@@ -19,8 +19,18 @@ import { resolveTerminalHostSessionCwd } from './terminal-host-session-cwd'
 import { TerminalHostTombstones } from './terminal-host-tombstones'
 import { listLiveTerminalHostSessions } from './terminal-host-session-listing'
 import { createOrAttachTerminalSession } from './terminal-host-session-create'
+import {
+  confirmTerminalHostShellForeground,
+  getSettledTerminalHostSnapshot,
+  getTerminalHostSnapshot
+} from './terminal-host-shell-ownership'
 import { isShellProcess } from '../../shared/agent-detection'
 import { TerminalAttachCanceledError } from './daemon-errors'
+import type {
+  WorkerPromptOperationIdentity,
+  WorkerPromptOperationInspection,
+  WorkerPromptOperationRequest
+} from '../../shared/worker-prompt-operation'
 
 export type { CreateOrAttachOptions, CreateOrAttachResult } from './terminal-host-create-contract'
 
@@ -142,6 +152,20 @@ export class TerminalHost {
     this.getAliveSession(sessionId).write(data)
   }
 
+  writeWorkerPromptOperation(
+    sessionId: string,
+    request: WorkerPromptOperationRequest
+  ): { accepted: boolean } {
+    return this.getAliveSession(sessionId).writeWorkerPromptOperation(request)
+  }
+
+  inspectWorkerPromptOperation(
+    sessionId: string,
+    identity: WorkerPromptOperationIdentity
+  ): WorkerPromptOperationInspection {
+    return this.getAliveSession(sessionId).inspectWorkerPromptOperation(identity)
+  }
+
   closeStartupQueryAuthority(sessionId: string): number {
     return this.getAliveSession(sessionId).closeStartupQueryAuthority()
   }
@@ -234,42 +258,21 @@ export class TerminalHost {
   }
 
   async confirmShellForeground(sessionId: string): Promise<boolean> {
-    const session = this.sessions.get(sessionId)
-    if (session?.isAlive !== true) {
-      return false
-    }
-    const confirmed = await session.confirmShellForeground()
-    // Why the recheck: proof for a session that exited or was replaced during
-    // the await is stale; the caller would bind it to the successor's stream.
-    return confirmed && this.sessions.get(sessionId) === session && session.isAlive
+    return confirmTerminalHostShellForeground(this.sessions, sessionId)
   }
 
-  clearScrollback(sessionId: string): void {
-    this.getAliveSession(sessionId).clearScrollback()
-  }
+  clearScrollback = (sessionId: string): void => this.getAliveSession(sessionId).clearScrollback()
 
   // Why: null-not-throw (unlike getAliveSession) — checkpoint is best-effort against a session that may have just exited.
   getSnapshot(sessionId: string, opts: { scrollbackRows?: number } = {}): TerminalSnapshot | null {
-    const session = this.sessions.get(sessionId)
-    if (!session || !session.isAlive) {
-      return null
-    }
-    return session.getSnapshot(opts)
+    return getTerminalHostSnapshot(this.sessions, sessionId, opts)
   }
 
   async getSettledSnapshot(
     sessionId: string,
     opts: { scrollbackRows?: number } = {}
   ): Promise<TerminalSnapshot | null> {
-    const session = this.sessions.get(sessionId)
-    if (!session || !session.isAlive) {
-      return null
-    }
-    await session.settleShellOwnershipConfirmation()
-    // Why no liveness recheck: the sync path returned the pre-exit snapshot when
-    // a session died a beat after the call; a disposal during the settle yields
-    // null naturally from the plane's own guard.
-    return session.getSnapshot(opts)
+    return getSettledTerminalHostSnapshot(this.sessions, sessionId, opts)
   }
 
   // Why: scan-authority handoff seed (null-not-throw like getSnapshot) — emulator's dangling incomplete escape at the stream position.

@@ -96,6 +96,7 @@ export async function commitRuntimePtySpawn(ctx: RuntimePtySpawnState) {
     return {
       id: ctx.result.id,
       ...(ctx.result.incarnationId ? { incarnationId: ctx.result.incarnationId } : {}),
+      ...(ctx.result.restartCustody ? { restartCustody: ctx.result.restartCustody } : {}),
       agentSessionEnsure: ctx.result.agentSessionEnsure
     }
   }
@@ -287,6 +288,7 @@ export async function commitRuntimePtySpawn(ctx: RuntimePtySpawnState) {
   const response = {
     id: ctx.result.id,
     ...(ctx.result.incarnationId ? { incarnationId: ctx.result.incarnationId } : {}),
+    ...(ctx.result.restartCustody ? { restartCustody: ctx.result.restartCustody } : {}),
     ...(ctx.stablePaneOwner && (ctx.stablePaneOwner.handle || args.preAllocatedHandle)
       ? {
           stablePaneOwner: {

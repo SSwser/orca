@@ -4,6 +4,8 @@ import type { JobTerminationOutcome } from '../windows/windows-pty-job'
 
 export type SubprocessHandle = {
   pid: number
+  /** The Windows daemon owns this process through its kill-on-close host Job. */
+  hostCrashContained?: true
   /** Live foreground process name of the PTY (node-pty's `.process`), e.g.
    *  'claude' / 'codex' / 'zsh'. Null once the child has exited. */
   getForegroundProcess(): string | null
@@ -22,6 +24,8 @@ export type SubprocessHandle = {
    *  Absent on handles with no POSIX slave to read (ConPTY, tests). */
   slavePath?: string
   write(data: string): void
+  /** True only when the live native PTY accepted this synchronous write call. */
+  writeAcknowledged?(data: string): boolean
   resize(cols: number, rows: number): void
   /** Stop reading the PTY fd (node-pty pause()) so a flooding child blocks on write. Optional:
    *  handles that cannot pause omit it and flow control degrades to a no-op. */

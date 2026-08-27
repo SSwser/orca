@@ -72,6 +72,14 @@ export class DaemonRequestRouter {
         }
       case 'write':
         return this.write(client, request.payload.sessionId, request.payload.data)
+      case 'writeWorkerPromptOperation': {
+        const { sessionId, ...operation } = request.payload
+        return this.options.host.writeWorkerPromptOperation(sessionId, operation)
+      }
+      case 'inspectWorkerPromptOperation': {
+        const { sessionId, ...identity } = request.payload
+        return this.options.host.inspectWorkerPromptOperation(sessionId, identity)
+      }
       case 'resize':
         return this.resize(
           client,

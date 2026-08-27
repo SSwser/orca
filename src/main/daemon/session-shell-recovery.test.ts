@@ -39,6 +39,66 @@ function createSubprocess() {
 }
 
 describe('Session shell-owned recovery through the output barrier', () => {
+  it('does not confirm shell ownership from historical replay bytes', () => {
+    const sub = createSubprocess()
+    const session = new Session({
+      sessionId: 'historical-replay',
+      cols: 80,
+      rows: 24,
+      subprocess: sub.handle,
+      shellReadySupported: false,
+      historySeedChunks: ['\x1b[?1049hOLD-TUI\x1b]133;D;137\x07old-shell-marker']
+    } as never)
+
+    expect(sub.confirmShellForeground).not.toHaveBeenCalled()
+    expect(session.getSnapshot()?.terminalOwner).toBeUndefined()
+    session.dispose()
+  })
+
+  it('answers concurrent runtime confirmations from one episode inspection', async () => {
+    const sub = createSubprocess()
+    const session = new Session({
+      sessionId: 'concurrent-confirmations',
+      cols: 80,
+      rows: 24,
+      subprocess: sub.handle,
+      shellReadySupported: false
+    } as never)
+
+    await expect(session.confirmShellForeground()).resolves.toBe(false)
+    expect(sub.confirmShellForeground).not.toHaveBeenCalled()
+
+    sub.emit('\x1b[?1049hTUI\x1b]133;D;137\x07')
+    const first = session.confirmShellForeground()
+    const second = session.confirmShellForeground()
+    expect(sub.confirmShellForeground).toHaveBeenCalledTimes(1)
+    sub.confirm(true)
+
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true])
+    expect(sub.confirmShellForeground).toHaveBeenCalledTimes(1)
+    session.dispose()
+  })
+
+  it('reuses parser confirmation for a concurrent runtime request', async () => {
+    const sub = createSubprocess()
+    const session = new Session({
+      sessionId: 'parser-confirmation',
+      cols: 80,
+      rows: 24,
+      subprocess: sub.handle,
+      shellReadySupported: false
+    } as never)
+
+    sub.emit('\x1b[?1049hTUI\x1b]133;D;137\x07shell-marker')
+    const runtimeConfirmation = session.confirmShellForeground()
+    expect(sub.confirmShellForeground).toHaveBeenCalledTimes(1)
+    sub.confirm(true)
+
+    await expect(runtimeConfirmation).resolves.toBe(true)
+    await vi.waitFor(() => expect(session.getSnapshot()?.terminalOwner).toBe('shell'))
+    session.dispose()
+  })
+
   it('delivers post-kill shell output into the normalized snapshot instead of the discarded alt buffer', async () => {
     const sub = createSubprocess()
     const session = new Session({

@@ -2152,7 +2152,9 @@ const BRACKETED_PASTE_QUIET_MS = 1500
 // redraw cadence, and a shorter window submits mid-redraw.
 const AGENT_PROMPT_RENDER_TIMEOUT_MS = 8000
 const AGENT_PROMPT_RENDER_QUIET_MS = 1500
-// Why: Claude and Codex emit show-cursor after accepting bracketed paste.
+// Codex can paint paste placeholders before its submit handler leaves paste state.
+const CODEX_PROMPT_RENDER_QUIET_MS = 5000
+// Why: Claude and Codex emit show-cursor while rendering bracketed paste.
 const AGENT_PROMPT_RENDER_MARKER = '\x1b[?25h'
 
 function assertAgentPromptRequestActive(signal?: AbortSignal): void {
@@ -20408,9 +20410,12 @@ export class OrcaRuntimeService {
     wait: () => Promise<void>
     dispose: () => void
   } | null {
-    if (!isTerminalSendSettlementAgent(this.getPtyAgent(ptyId))) {
+    const settlementAgent = this.getPtyAgent(ptyId)
+    if (!isTerminalSendSettlementAgent(settlementAgent)) {
       return null
     }
+    const renderQuietMs =
+      settlementAgent === 'codex' ? CODEX_PROMPT_RENDER_QUIET_MS : AGENT_PROMPT_RENDER_QUIET_MS
     let armed = false
     let canSettle = false
     let settled = false
@@ -20458,7 +20463,7 @@ export class OrcaRuntimeService {
       if (quietTimer) {
         clearTimeout(quietTimer)
       }
-      quietTimer = setTimeout(finish, AGENT_PROMPT_RENDER_QUIET_MS)
+      quietTimer = setTimeout(finish, renderQuietMs)
     }
     const armHardTimer = (): void => {
       if (hardTimer) {

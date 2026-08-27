@@ -14,6 +14,8 @@ export type TerminalHostOptions = {
     command?: string
     startupCommandDelivery?: StartupCommandDelivery
     launchAgent?: TuiAgent
+    /** Refuse a Windows spawn unless daemon death will reap the PTY tree. */
+    requireHostCrashContainment?: boolean
     shellOverride?: string
     terminalWindowsWslDistro?: string | null
     terminalWindowsPowerShellImplementation?: 'auto' | 'powershell.exe' | 'pwsh.exe'

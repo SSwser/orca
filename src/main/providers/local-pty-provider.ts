@@ -478,6 +478,9 @@ export class LocalPtyProvider implements IPtyProvider {
     if (args.attachOnly) {
       throw new SessionNotFoundError(args.sessionId ?? '')
     }
+    if (args.requireHostCrashContainment && process.platform === 'win32') {
+      throw new Error('daemon_crash_containment_unavailable')
+    }
     const id = allocatePtyId(reattachId ?? undefined)
     const incarnationId = randomUUID()
 

@@ -97,6 +97,24 @@ export class DaemonPtyRouter implements IPtyProvider {
     return this.adapterFor(id).writeWithSettlement(id, data)
   }
 
+  supportsWorkerPromptOperations(id: string): boolean {
+    return this.adapterFor(id).supportsWorkerPromptOperations()
+  }
+
+  writeWorkerPromptOperation(
+    id: string,
+    operation: Parameters<DaemonPtyAdapter['writeWorkerPromptOperation']>[1]
+  ): ReturnType<DaemonPtyAdapter['writeWorkerPromptOperation']> {
+    return this.adapterFor(id).writeWorkerPromptOperation(id, operation)
+  }
+
+  inspectWorkerPromptOperation(
+    id: string,
+    identity: Parameters<DaemonPtyAdapter['inspectWorkerPromptOperation']>[1]
+  ): ReturnType<DaemonPtyAdapter['inspectWorkerPromptOperation']> {
+    return this.adapterFor(id).inspectWorkerPromptOperation(id, identity)
+  }
+
   resize(id: string, cols: number, rows: number): void {
     this.adapterFor(id).resize(id, cols, rows)
   }

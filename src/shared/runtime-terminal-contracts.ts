@@ -24,6 +24,8 @@ export type RuntimeTerminalSummary = {
   title: string | null
   connected: boolean
   writable: boolean
+  /** A durable orchestration fence; connectivity does not grant execution or close custody. */
+  custodyState?: 'release_unknown' | 'contained'
   lastOutputAt: number | null
   preview: string
   /** Host-resolved agent identity for action consumers; absent when unknown or unsupported. */
@@ -202,6 +204,10 @@ export type RuntimeTerminalSend = {
   accepted: boolean
   bytesWritten: number
   refusedReason?: 'no-agent' | 'permission'
+}
+
+export type RuntimeTerminalAgentPromptSend = RuntimeTerminalSend & {
+  semanticObservedAt: number
 }
 
 export type RuntimeTerminalAgentStatusState = 'working' | 'permission' | 'idle' | null

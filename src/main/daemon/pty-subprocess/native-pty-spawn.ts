@@ -13,6 +13,7 @@ export type SpawnedDaemonPty = {
   startupCommandDeliveredInShellArgs?: boolean
   /** False when a wrapper owns the reported status, so no exit code may be read from it. */
   reportsChildExitStatus: boolean
+  hostCrashContained: boolean
 }
 
 /** Walks the Windows PowerShell -> cmd.exe fallback chain when ConPTY rejects the primary shell. */
@@ -24,14 +25,19 @@ export function spawnNativeDaemonPty(args: {
   cols: number
   rows: number
   windowsFallbackAttempts: WindowsShellSpawnAttempt[]
+  requireHostCrashContainment?: boolean
   onMacosTccSpawnStrategy?: (strategy: 'wrapped' | 'direct') => void
 }): SpawnedDaemonPty {
   let reportsChildExitStatus = true
+  let hostCrashContained = false
   const spawnAt = (shellPath: string, shellArgs: string[], cwd: string): pty.IPty => {
     const wrapped = wrapShellSpawnForMacosTccAttribution(shellPath, shellArgs, args.env)
     // Why: children inherit job membership, so the host job must exist before the first Windows PTY.
     if (process.platform === 'win32') {
-      assignHostProcessToKillOnCloseJob()
+      hostCrashContained = assignHostProcessToKillOnCloseJob()
+      if (args.requireHostCrashContainment && !hostCrashContained) {
+        throw new Error('daemon_crash_containment_unavailable')
+      }
     }
     const proc = pty.spawn(wrapped.file, wrapped.args, {
       name: args.env.TERM ?? 'xterm-256color',
@@ -53,7 +59,8 @@ export function spawnNativeDaemonPty(args: {
       process: process_,
       shellPath: args.shellPath,
       spawnCwd: args.spawnCwd,
-      reportsChildExitStatus
+      reportsChildExitStatus,
+      hostCrashContained
     }
   } catch (primaryErr) {
     if (process.platform !== 'win32') {
@@ -71,7 +78,8 @@ export function spawnNativeDaemonPty(args: {
           shellPath: attempt.shellPath,
           spawnCwd: attempt.effectiveCwd,
           startupCommandDeliveredInShellArgs: attempt.startupCommandDeliveredInShellArgs,
-          reportsChildExitStatus
+          reportsChildExitStatus,
+          hostCrashContained
         }
       } catch {
         // This fallback shell also failed -- try the next link in the chain.

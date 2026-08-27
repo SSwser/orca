@@ -3,6 +3,7 @@ import type { TuiAgent } from '../../shared/tui-agent'
 import type { AgentSessionClaimedSpawnResult } from '../../shared/agent-session-host-authority'
 import type { PtyIncarnationId } from '../../shared/pty-incarnation'
 import type { PtySourceReceivingActivation } from '../../shared/pty-source-receiving-activation'
+import type { PtyRestartCustody } from '../../shared/pty-restart-custody'
 import type { TerminalOwner } from '../../shared/terminal-owner'
 
 export type PtySpawnResult = {
@@ -12,6 +13,8 @@ export type PtySpawnResult = {
   id: string
   /** Opaque provider-owned identity for this process behind a reusable PTY id. */
   incarnationId?: PtyIncarnationId
+  /** Exact daemon custody whose exit reaps this PTY tree. */
+  restartCustody?: PtyRestartCustody
   /** Relay source identity installed before adjacent source frames are decoded. */
   sourceActivation?: PtySourceReceivingActivation
   /** The provider observed this exact spawn exit before its control reply settled. */

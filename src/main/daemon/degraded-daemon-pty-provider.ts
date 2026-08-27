@@ -19,6 +19,7 @@ import {
 } from './degraded-daemon-session-routing'
 import { DegradedDaemonFreshSpawnRouter } from './degraded-daemon-fresh-spawn-routing'
 import { DegradedDaemonOwnerRecovery } from './degraded-daemon-owner-recovery'
+import * as PromptOperations from './worker-prompt-operation-provider-routing'
 
 export class DegradedDaemonPtyProvider implements IPtyProvider {
   readonly isDegraded = true
@@ -119,6 +120,17 @@ export class DegradedDaemonPtyProvider implements IPtyProvider {
       : provider.write(id, data) !== false
   }
 
+  supportsWorkerPromptOperations = (id: string) =>
+    PromptOperations.supports(this.providerFor(id), id)
+  writeWorkerPromptOperation = (
+    id: string,
+    operation: Parameters<NonNullable<IPtyProvider['writeWorkerPromptOperation']>>[1]
+  ) => PromptOperations.write(this.providerFor(id), id, operation)
+  inspectWorkerPromptOperation = (
+    id: string,
+    identity: Parameters<NonNullable<IPtyProvider['inspectWorkerPromptOperation']>>[1]
+  ) => PromptOperations.inspect(this.providerFor(id), id, identity)
+
   resize(id: string, cols: number, rows: number): void {
     this.providerFor(id).resize(id, cols, rows)
   }
@@ -179,13 +191,10 @@ export class DegradedDaemonPtyProvider implements IPtyProvider {
     this.providerFor(id).acknowledgeDataEvent(id, charCount)
   }
 
-  async hasChildProcesses(id: string): Promise<boolean> {
-    return this.providerFor(id).hasChildProcesses(id)
-  }
+  hasChildProcesses = (id: string): Promise<boolean> => this.providerFor(id).hasChildProcesses(id)
 
-  async getForegroundProcess(id: string): Promise<string | null> {
-    return this.providerFor(id).getForegroundProcess(id)
-  }
+  getForegroundProcess = (id: string): Promise<string | null> =>
+    this.providerFor(id).getForegroundProcess(id)
   inspectProcess(id: string) {
     return this.hasPty(id)
       ? inspectPtyProviderProcess(this.providerFor(id), id)
@@ -328,17 +337,11 @@ export class DegradedDaemonPtyProvider implements IPtyProvider {
     await Promise.all(this.allDaemonAdapters().map((adapter) => adapter.disconnectOnly()))
   }
 
-  getCurrentAdapter(): DaemonPtyAdapter {
-    return this.current
-  }
+  getCurrentAdapter = (): DaemonPtyAdapter => this.current
 
-  getLegacyAdapters(): readonly DaemonPtyAdapter[] {
-    return this.legacy
-  }
+  getLegacyAdapters = (): readonly DaemonPtyAdapter[] => this.legacy
 
-  getAllAdapters(): readonly DaemonPtyAdapter[] {
-    return this.allDaemonAdapters()
-  }
+  getAllAdapters = (): readonly DaemonPtyAdapter[] => this.allDaemonAdapters()
 
   private providerFor(sessionId: string): IPtyProvider {
     return (

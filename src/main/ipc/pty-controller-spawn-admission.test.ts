@@ -232,6 +232,39 @@ describe('registerPtyHandlers', () => {
       expect.objectContaining({ sessionId: 'serve-stable-session', isNewSession: true })
     )
   })
+  it('publishes daemon restart custody through a fresh runtime spawn commit', async () => {
+    const restartCustody = {
+      kind: 'windows_daemon_job' as const,
+      daemonPid: 4242,
+      daemonStartedAtMs: 1_725_000_000_000,
+      daemonLaunchNonce: 'daemon-launch-nonce'
+    }
+    const provider = createAgentClaimProvider({
+      spawn: vi.fn(async (options: { sessionId?: string }) => ({
+        id: options.sessionId ?? 'unexpected-spawn',
+        incarnationId: 'incarnation-with-custody',
+        restartCustody
+      }))
+    })
+    setLocalPtyProvider(provider as never)
+    const recordPtyRestartCustody = vi.fn()
+    const controller = registerAgentClaimController({ recordPtyRestartCustody })
+
+    await expect(
+      controller.spawn({
+        cols: 80,
+        rows: 24,
+        cwd: '/tmp/runtime-custody',
+        worktreeId: 'repo::/tmp/runtime-custody',
+        requireHostCrashContainment: true
+      })
+    ).resolves.toMatchObject({
+      incarnationId: 'incarnation-with-custody',
+      restartCustody
+    })
+    expect(recordPtyRestartCustody).toHaveBeenCalledOnce()
+    expect(recordPtyRestartCustody).toHaveBeenCalledWith(expect.any(String), restartCustody)
+  })
   it('clears a fresh runtime session when host-env setup fails', async () => {
     const provider = createAgentClaimProvider({ spawn: vi.fn() })
     setLocalPtyProvider(provider as never)

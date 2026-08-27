@@ -19,6 +19,7 @@ export function createDaemonPtySubprocessHandle(args: {
   env: Record<string, string>
   startupCommandDeliveredInShellArgs: boolean
   reportsChildExitStatus: boolean
+  hostCrashContained: boolean
   requestedCwd?: string
   sessionId: string
   startupAgentRecognition: RecognizedAgentProcess | null
@@ -60,8 +61,21 @@ export function createDaemonPtySubprocessHandle(args: {
   })
 
   const slavePath = readPtySlavePath(proc)
+  const writeAcknowledged = (data: string): boolean => {
+    if (dead) {
+      return false
+    }
+    try {
+      proc.write(data)
+      return true
+    } catch {
+      dead = true
+      return false
+    }
+  }
   return {
     pid: proc.pid,
+    ...(args.hostCrashContained ? { hostCrashContained: true } : {}),
     shellPath: args.shellPath,
     shellCwd: args.spawnCwd,
     shellPathEnv: args.env.PATH,
@@ -72,16 +86,8 @@ export function createDaemonPtySubprocessHandle(args: {
     getForegroundProcess: foreground.getForegroundProcess,
     confirmForegroundProcess: foreground.confirmForegroundProcess,
     confirmShellForeground: foreground.confirmShellForeground,
-    write: (data) => {
-      if (dead) {
-        return
-      }
-      try {
-        proc.write(data)
-      } catch {
-        dead = true
-      }
-    },
+    write: (data) => void writeAcknowledged(data),
+    writeAcknowledged,
     resize: (cols, rows) => {
       if (dead || !isValidPtySize(cols, rows)) {
         return

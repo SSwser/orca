@@ -17,6 +17,7 @@ import {
   AGENT_SESSION_CREATE_OPERATION_DAEMON_PROTOCOL_VERSION,
   GIT_CREDENTIAL_GUARD_HOST_PROTOCOL_VERSION,
   PROTOCOL_VERSION,
+  WORKER_PROMPT_OPERATION_DAEMON_PROTOCOL_VERSION,
   supportsMode2031UnsubscribeFact,
   supportsPtyStartupIngress,
   type TakePendingOutputResult
@@ -28,7 +29,7 @@ import {
   type HistoryRecoveryFreeze
 } from './history-manager'
 import { HistoryReader } from './history-reader'
-import type { PtyBackgroundStreamEvent } from '../providers/types'
+import type { PtyBackgroundStreamEvent, PtySpawnResult } from '../providers/types'
 import type { PtyIncarnationId } from '../../shared/pty-incarnation'
 import type { TerminalExitCause } from '../../shared/terminal-exit-cause'
 
@@ -256,5 +257,26 @@ export abstract class DaemonPtyRuntimeState {
 
   supportsAgentSessionCreateOperations(): boolean {
     return this.protocolVersion >= AGENT_SESSION_CREATE_OPERATION_DAEMON_PROTOCOL_VERSION
+  }
+
+  supportsWorkerPromptOperations(): boolean {
+    return this.protocolVersion >= WORKER_PROMPT_OPERATION_DAEMON_PROTOCOL_VERSION
+  }
+
+  protected restartCustodyResult(
+    result: { hostCrashContained?: true },
+    daemonIdentity: DaemonEndpointIdentity | null
+  ): Pick<PtySpawnResult, 'restartCustody'> | Record<string, never> {
+    if (result.hostCrashContained !== true || !daemonIdentity) {
+      return {}
+    }
+    return {
+      restartCustody: {
+        kind: 'windows_daemon_job',
+        daemonPid: daemonIdentity.pid,
+        daemonStartedAtMs: daemonIdentity.startedAtMs,
+        daemonLaunchNonce: daemonIdentity.launchNonce
+      }
+    }
   }
 }

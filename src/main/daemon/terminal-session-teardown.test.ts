@@ -16,6 +16,7 @@ function createPlainShellSession(overrides: Partial<Session> = {}): Session {
     beginTermination: vi.fn(() => true),
     kill: vi.fn(),
     terminateOwnedTree: vi.fn(() => 'terminated' as const),
+    confirmOwnedTreeTerminated: vi.fn(),
     scheduleForceDisposeFallback: vi.fn(),
     signalTerminationRoot: vi.fn(),
     ...overrides
@@ -28,7 +29,7 @@ describe('TerminalSessionTeardown plain-shell teardown', () => {
   beforeEach(() => {
     platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
     killWithDescendantSweepMock.mockReset()
-    killWithDescendantSweepMock.mockResolvedValue(undefined)
+    killWithDescendantSweepMock.mockResolvedValue('root_signaled')
   })
 
   afterEach(() => {
@@ -56,9 +57,10 @@ describe('TerminalSessionTeardown plain-shell teardown', () => {
       expect.objectContaining({ ownsRoot: expect.any(Function) })
     )
     expect(session.forceKillAndWaitForExit).toHaveBeenCalled()
-    // The sweep owns the taskkill; the killRoot callback is a no-op so force-kill drives exit.
+    // The fallback retains the existing force-close path.
     const killRoot = killWithDescendantSweepMock.mock.calls[0][1] as () => void
     expect(() => killRoot()).not.toThrow()
+    expect(session.signalTerminationRoot).not.toHaveBeenCalled()
   })
 
   it('win32 immediate kill claims termination before awaiting the sweep', async () => {
@@ -85,8 +87,11 @@ describe('TerminalSessionTeardown plain-shell teardown', () => {
     const teardown = new TerminalSessionTeardown(sessions)
 
     await teardown.killSession('s1', session, true)
-    const ownsRoot = (killWithDescendantSweepMock.mock.calls[0][2] as { ownsRoot: () => boolean })
-      .ownsRoot
+    const ownsRoot = (
+      killWithDescendantSweepMock.mock.calls[0][2] as {
+        ownsRoot: () => boolean
+      }
+    ).ownsRoot
     expect(ownsRoot()).toBe(true)
 
     // A natural exit or reap must stop us from taskkilling a recycled PID.
@@ -129,9 +134,12 @@ describe('pty job ownership reaches the daemon teardown path', () => {
 
   beforeEach(() => {
     platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
-    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+    Object.defineProperty(process, 'platform', {
+      configurable: true,
+      value: 'win32'
+    })
     killWithDescendantSweepMock.mockReset()
-    killWithDescendantSweepMock.mockResolvedValue(undefined)
+    killWithDescendantSweepMock.mockResolvedValue('root_signaled')
   })
 
   afterEach(() => {
@@ -159,5 +167,48 @@ describe('pty job ownership reaches the daemon teardown path', () => {
 
     expect(sweepTerminateOwnedTree()()).toBe('terminated')
     expect(session.terminateOwnedTree).toHaveBeenCalled()
+  })
+
+  it('reaps an agent ghost when the Windows job proves the whole tree terminated', async () => {
+    killWithDescendantSweepMock.mockResolvedValue('owned_tree_terminated')
+    const session = createPlainShellSession({
+      launchAgent: { agent: 'codex' } as unknown as Session['launchAgent']
+    })
+    const teardown = new TerminalSessionTeardown(new Map([['s1', session]]))
+
+    await teardown.killSession('s1', session, false)
+
+    expect(session.confirmOwnedTreeTerminated).toHaveBeenCalledOnce()
+  })
+
+  it('reaps a plain-shell ghost when the Windows job proves the whole tree terminated', async () => {
+    killWithDescendantSweepMock.mockImplementation(async (_pid, killRoot) => {
+      killRoot()
+      return 'owned_tree_terminated'
+    })
+    const session = createPlainShellSession({
+      signalTerminationRoot: vi.fn(() => {
+        throw new Error('root already exited')
+      })
+    })
+    const teardown = new TerminalSessionTeardown(new Map([['s1', session]]))
+
+    await teardown.killSession('s1', session, true)
+
+    expect(session.signalTerminationRoot).toHaveBeenCalledOnce()
+    expect(session.confirmOwnedTreeTerminated).toHaveBeenCalledOnce()
+    expect(session.forceKillAndWaitForExit).not.toHaveBeenCalled()
+  })
+
+  it('does not synthesize exit when only a root signal was issued', async () => {
+    killWithDescendantSweepMock.mockResolvedValue('root_signaled')
+    const session = createPlainShellSession({
+      launchAgent: { agent: 'codex' } as unknown as Session['launchAgent']
+    })
+    const teardown = new TerminalSessionTeardown(new Map([['s1', session]]))
+
+    await teardown.killSession('s1', session, false)
+
+    expect(session.confirmOwnedTreeTerminated).not.toHaveBeenCalled()
   })
 })

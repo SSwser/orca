@@ -15,6 +15,7 @@ export function listLiveTerminalHostSessions(
     result.push({
       sessionId: session.sessionId,
       incarnationId: session.incarnationId,
+      ...(session.hostCrashContained ? { hostCrashContained: true } : {}),
       state: session.state,
       shellState: session.shellState,
       isAlive: true,

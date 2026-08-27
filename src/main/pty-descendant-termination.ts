@@ -91,7 +91,10 @@ function readFreshProcessTable(
 export function createProcessTableSnapshotReader(
   readFresh: ProcessTableReader
 ): ProcessTableReader {
-  let queued: { promise: Promise<ProcessTableCapture>; started: boolean } | null = null
+  let queued: {
+    promise: Promise<ProcessTableCapture>
+    started: boolean
+  } | null = null
 
   return (timeoutMs) => {
     if (queued && !queued.started) {
@@ -256,34 +259,48 @@ export async function killWithDescendantSweep(
   rootPid: number,
   killRoot: () => void,
   deps: KillSweepDeps = {}
-): Promise<void> {
+): Promise<'owned_tree_terminated' | 'root_signaled'> {
   const platform = deps.platform ?? process.platform
   if (platform === 'win32') {
+    let ownedTreeTerminated = false
+    let sweepFailure: { error: unknown } | null = null
     try {
       if ((deps.ownsRoot?.() ?? true) && Number.isInteger(rootPid) && rootPid > 0) {
         // Why first: the job names the tree Orca created, so it is immune to the
         // pid recycling the probe below exists to guard against, and it reaches
         // descendants that reparented away from the shell.
         if (deps.terminateOwnedTree?.() === 'terminated') {
-          return
-        }
-        // Why: ownsRoot() is JS state only, and node-pty's ConPTY exit watcher closes
-        // the last shell handle before it queues the JS exit callback — Windows may
-        // already have recycled this PID while the map still looks live. taskkill /T /F
-        // on a recycled PID force-kills an unrelated tree, so demand OS identity first.
-        const verify = deps.verifyTreeKillTarget ?? verifyWindowsTreeKillTarget
-        const target = await verify(rootPid).catch((): WindowsTreeKillTarget => 'unknown')
-        // Re-check ownership: the identity query awaits, so exit can land meanwhile.
-        if (target === 'own' && (deps.ownsRoot?.() ?? true)) {
-          const killTree = deps.killWindowsTree ?? terminateWindowsProcessTree
-          // Why: taskkill may race an already-exited tree; never block killRoot on that.
-          await killTree(rootPid).catch(() => {})
+          ownedTreeTerminated = true
+        } else {
+          // Why: ownsRoot() is JS state only, and node-pty's ConPTY exit watcher closes
+          // the last shell handle before it queues the JS exit callback — Windows may
+          // already have recycled this PID while the map still looks live. taskkill /T /F
+          // on a recycled PID force-kills an unrelated tree, so demand OS identity first.
+          const verify = deps.verifyTreeKillTarget ?? verifyWindowsTreeKillTarget
+          const target = await verify(rootPid).catch((): WindowsTreeKillTarget => 'unknown')
+          // Re-check ownership: the identity query awaits, so exit can land meanwhile.
+          if (target === 'own' && (deps.ownsRoot?.() ?? true)) {
+            const killTree = deps.killWindowsTree ?? terminateWindowsProcessTree
+            // Why: taskkill may race an already-exited tree; never block killRoot on that.
+            await killTree(rootPid).catch(() => {})
+          }
         }
       }
-    } finally {
-      killRoot()
+    } catch (error) {
+      sweepFailure = { error }
     }
-    return
+    // The job kills the tree; the root signal still closes the native PTY handle.
+    try {
+      killRoot()
+    } catch (error) {
+      if (!ownedTreeTerminated) {
+        throw error
+      }
+    }
+    if (sweepFailure) {
+      throw sweepFailure.error
+    }
+    return ownedTreeTerminated ? 'owned_tree_terminated' : 'root_signaled'
   }
 
   const snapshot = await captureDescendantSnapshot(rootPid, deps)
@@ -296,6 +313,7 @@ export async function killWithDescendantSweep(
   } finally {
     killRoot()
   }
+  return 'root_signaled'
 }
 
 function defaultSendSignal(pid: number, signal: NodeJS.Signals): void {

@@ -110,6 +110,7 @@ export class DaemonTerminalAdmission {
         shellReadySupported: payload.shellReadySupported,
         historySeedChunks,
         startupIngress: parsePtyStartupIngressIntent(payload.startupIngress),
+        ...(payload.requireHostCrashContainment ? { requireHostCrashContainment: true } : {}),
         ...(payload.shellReadyTimeoutMs !== undefined
           ? { shellReadyTimeoutMs: payload.shellReadyTimeoutMs }
           : {}),
@@ -161,6 +162,7 @@ export class DaemonTerminalAdmission {
       ...(result.launchAgent ? { launchAgent: result.launchAgent } : {}),
       wslDistro: result.wslDistro,
       ...(result.historySeeded !== undefined ? { historySeeded: result.historySeeded } : {}),
+      ...(result.hostCrashContained ? { hostCrashContained: true } : {}),
       ...(result.agentSessionEnsure ? { agentSessionEnsure: result.agentSessionEnsure } : {})
     }
   }

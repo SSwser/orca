@@ -98,6 +98,7 @@ async function spawnAndPublishSession(
     command: opts.command,
     startupCommandDelivery: opts.startupCommandDelivery,
     ...(opts.launchAgent ? { launchAgent: opts.launchAgent } : {}),
+    ...(opts.requireHostCrashContainment ? { requireHostCrashContainment: true } : {}),
     shellOverride: opts.shellOverride,
     terminalWindowsWslDistro: opts.terminalWindowsWslDistro,
     terminalWindowsPowerShellImplementation: opts.terminalWindowsPowerShellImplementation,

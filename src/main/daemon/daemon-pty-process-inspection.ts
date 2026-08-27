@@ -1,5 +1,9 @@
 import { isShellProcess } from '../../shared/agent-detection'
+import { parsePtyRestartCustody, type PtyRestartCustody } from '../../shared/pty-restart-custody'
 import { DaemonPtyBufferSnapshots } from './daemon-pty-buffer-snapshots'
+import { sameEndpointIdentity } from './daemon-endpoint-incarnation'
+import { probeDaemonProcessIdentity } from './daemon-incarnation-evidence'
+import type { DaemonEndpointIdentity } from './daemon-hello-protocol'
 import { parsePtySessionId } from './pty-session-id'
 import {
   COMPLETION_PROCESS_INSPECTION_PROTOCOL_VERSION,
@@ -10,6 +14,29 @@ import {
 import type { PtyProcessInspection } from '../providers/pty-process-inspection'
 
 export abstract class DaemonPtyProcessInspection extends DaemonPtyBufferSnapshots {
+  async inspectRestartCustody(
+    value: PtyRestartCustody
+  ): Promise<'live' | 'exited' | 'unverifiable'> {
+    const custody = parsePtyRestartCustody(value)
+    if (!custody || process.platform !== 'win32') {
+      return 'unverifiable'
+    }
+    const identity: DaemonEndpointIdentity = {
+      pid: custody.daemonPid,
+      startedAtMs: custody.daemonStartedAtMs,
+      launchNonce: custody.daemonLaunchNonce
+    }
+    const currentIdentity = this.client.isConnected() ? this.client.getDaemonIdentity() : null
+    if (currentIdentity && sameEndpointIdentity(identity, currentIdentity)) {
+      return 'live'
+    }
+    const evidence = await probeDaemonProcessIdentity(
+      { identity },
+      { socketPath: this.socketPath, tokenPath: this.tokenPath }
+    )
+    return evidence.state === 'gone' ? 'exited' : 'unverifiable'
+  }
+
   // Why: daemon-backed PTYs can host long-lived agents while detached; cleanup prompts must not treat them as idle shells.
   protected hasChildProcessesFromForeground(foregroundProcess: string | null): boolean {
     return foregroundProcess !== null && !isShellProcess(foregroundProcess)

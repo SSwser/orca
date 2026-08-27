@@ -7,6 +7,7 @@ import {
   type SnapshotCheckpointResult
 } from './daemon-pty-runtime-state'
 import { isDaemonGoneError } from './daemon-endpoint-errors'
+import type { DaemonEndpointIdentity } from './daemon-hello-protocol'
 import { HISTORY_SEED_TRANSFER_PROTOCOL_VERSION } from './daemon-protocol-version'
 import type { ColdRestoreInfo } from './history-reader'
 import { NdjsonLineTooLongError } from './ndjson'
@@ -36,6 +37,11 @@ export type DaemonPtySpawnContext = {
   shellReadyTimeoutMs: number | undefined
   historySeedSegments: readonly string[] | null
   detectColdRestore(options?: { ignoreCleanEnd?: boolean }): Promise<ColdRestoreInfo | null>
+}
+
+export type DaemonPtyCreateOrAttachResponse = {
+  result: CreateOrAttachResult
+  daemonIdentity: DaemonEndpointIdentity | null
 }
 
 export abstract class DaemonPtySpawnRequest extends DaemonPtyRuntimeState {
@@ -85,6 +91,7 @@ export abstract class DaemonPtySpawnRequest extends DaemonPtyRuntimeState {
   protected abstract resultForExitBeforeSpawnReply(
     sessionId: string,
     result: CreateOrAttachResult,
+    daemonIdentity: DaemonEndpointIdentity | null,
     operation: PendingDaemonSpawnOperation
   ): PtySpawnResult | null
   protected abstract buildColdRestorePayload(
@@ -99,8 +106,8 @@ export abstract class DaemonPtySpawnRequest extends DaemonPtyRuntimeState {
   protected async createOrAttachSpawn(
     context: DaemonPtySpawnContext,
     historySeedSegments: readonly string[] | null
-  ): Promise<CreateOrAttachResult> {
-    const requestCreateOrAttach = (
+  ): Promise<DaemonPtyCreateOrAttachResponse> {
+    const requestCreateOrAttach = async (
       historySeed: string | undefined,
       historySeedTransferId: string | undefined
     ) => {
@@ -135,20 +142,25 @@ export abstract class DaemonPtySpawnRequest extends DaemonPtyRuntimeState {
           : {}),
         ...(!context.attachOnly && opts.agentSessionEnsure
           ? { agentSessionEnsure: opts.agentSessionEnsure }
+          : {}),
+        ...(!context.attachOnly && opts.requireHostCrashContainment
+          ? { requireHostCrashContainment: true }
           : {})
       }
-      return opts.signal
+      const daemonIdentity = this.client.getDaemonIdentity()
+      const result = await (opts.signal
         ? this.client.request<CreateOrAttachResult>(
             'createOrAttach',
             payload,
             undefined,
             opts.signal
           )
-        : this.client.request<CreateOrAttachResult>('createOrAttach', payload)
+        : this.client.request<CreateOrAttachResult>('createOrAttach', payload))
+      return { result, daemonIdentity }
     }
 
     let historySeedUnavailable = false
-    const deliverSeedAndCreate = async (): Promise<CreateOrAttachResult> => {
+    const deliverSeedAndCreate = async (): Promise<DaemonPtyCreateOrAttachResponse> => {
       if (!historySeedSegments || historySeedSegments.length === 0) {
         return requestCreateOrAttach(undefined, undefined)
       }
@@ -194,9 +206,9 @@ export abstract class DaemonPtySpawnRequest extends DaemonPtyRuntimeState {
       }
       return requestCreateOrAttach(undefined, transferId)
     }
-    const result = await deliverSeedAndCreate()
-    return historySeedUnavailable && result.historySeeded === undefined
-      ? { ...result, historySeeded: false }
-      : result
+    const response = await deliverSeedAndCreate()
+    return historySeedUnavailable && response.result.historySeeded === undefined
+      ? { ...response, result: { ...response.result, historySeeded: false } }
+      : response
   }
 }

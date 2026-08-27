@@ -111,6 +111,19 @@ describe('createPtySubprocess', () => {
     expect(proc.write).toHaveBeenCalledWith('ls\n')
   })
 
+  it('acknowledges only a write accepted by the live node-pty handle', async () => {
+    const proc = mockPtyProcess()
+    spawnMock.mockReturnValue(proc)
+    const handle = await createPtySubprocess({ sessionId: 'test', cols: 80, rows: 24 })
+
+    expect(handle.writeAcknowledged?.('prompt')).toBe(true)
+    proc.write.mockImplementationOnce(() => {
+      throw new Error('native write rejected')
+    })
+    expect(handle.writeAcknowledged?.('\r')).toBe(false)
+    expect(handle.writeAcknowledged?.('after-death')).toBe(false)
+  })
+
   it('forwards resize calls', async () => {
     const proc = mockPtyProcess()
     spawnMock.mockReturnValue(proc)

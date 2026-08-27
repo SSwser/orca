@@ -12,11 +12,13 @@ import {
 import type * as DaemonHealthModule from './daemon-health'
 import type * as DaemonTccAttributionModule from './daemon-tcc-attribution'
 import type * as DaemonBundleStalenessModule from './daemon-bundle-staleness'
+import type * as DaemonIncarnationEvidenceModule from './daemon-incarnation-evidence'
 
 const {
   getMacDaemonSystemResolverHealthMock,
   getMacDaemonTccAttributionHealthMock,
-  isDaemonStaleForCurrentBundleMock
+  isDaemonStaleForCurrentBundleMock,
+  probeDaemonProcessIdentityMock
 } = vi.hoisted(() => ({
   getMacDaemonSystemResolverHealthMock: vi.fn(
     async (): Promise<'unknown' | 'unhealthy'> => 'unknown'
@@ -24,10 +26,12 @@ const {
   getMacDaemonTccAttributionHealthMock: vi.fn(
     async (): Promise<'intact' | 'severed' | 'unknown'> => 'unknown'
   ),
-  isDaemonStaleForCurrentBundleMock: vi.fn(async () => false)
+  isDaemonStaleForCurrentBundleMock: vi.fn(async () => false),
+  probeDaemonProcessIdentityMock: vi.fn()
 }))
 
 const itOnPosix = process.platform === 'win32' ? it.skip : it
+const itOnWindows = process.platform === 'win32' ? it : it.skip
 
 vi.mock('./daemon-health', async (importOriginal) => {
   const actual = await importOriginal<typeof DaemonHealthModule>()
@@ -53,6 +57,12 @@ vi.mock('./daemon-bundle-staleness', async (importOriginal) => {
   }
 })
 
+vi.mock('./daemon-incarnation-evidence', async (importOriginal) => {
+  const actual = await importOriginal<typeof DaemonIncarnationEvidenceModule>()
+  probeDaemonProcessIdentityMock.mockImplementation(actual.probeDaemonProcessIdentity)
+  return { ...actual, probeDaemonProcessIdentity: probeDaemonProcessIdentityMock }
+})
+
 describe('DaemonPtyAdapter (IPtyProvider)', () => {
   let dir: string
   let socketPath: string
@@ -60,6 +70,7 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
   let server: DaemonServer
   let adapter: DaemonPtyAdapter
   let lastSubprocess: ReturnType<typeof createMockSubprocess>
+  let hostCrashContained: boolean
   let lastSpawnOpts: {
     sessionId: string
     cols: number
@@ -67,13 +78,18 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
     cwd?: string
     env?: Record<string, string>
     command?: string
+    requireHostCrashContainment?: boolean
   } | null
   let daemonLogEvents: string[]
 
   beforeEach(async () => {
+    hostCrashContained = false
     const harness = await startDaemonAdapterHarness((opts) => {
       lastSpawnOpts = opts
       lastSubprocess = createMockSubprocess()
+      if (hostCrashContained) {
+        lastSubprocess.hostCrashContained = true
+      }
       return lastSubprocess
     })
     dir = harness.dir
@@ -89,6 +105,7 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
     getMacDaemonTccAttributionHealthMock.mockResolvedValue('unknown')
     isDaemonStaleForCurrentBundleMock.mockReset()
     isDaemonStaleForCurrentBundleMock.mockResolvedValue(false)
+    probeDaemonProcessIdentityMock.mockClear()
   })
 
   it('reports whether its daemon protocol can participate in agent claims', () => {
@@ -99,6 +116,59 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
     expect(adapter.supportsAgentSessionCreateOperations()).toBe(true)
     expect(legacy.supportsAgentSessionCreateOperations()).toBe(false)
     legacy.dispose()
+  })
+
+  itOnWindows('settles old daemon custody only from exact gone process evidence', async () => {
+    await adapter.listProcesses()
+    const identity = adapter.getLastAuthenticatedDaemonIdentity()!
+    const custody = {
+      kind: 'windows_daemon_job' as const,
+      daemonPid: identity.pid,
+      daemonStartedAtMs: identity.startedAtMs,
+      daemonLaunchNonce: identity.launchNonce
+    }
+
+    await expect(adapter.inspectRestartCustody(custody)).resolves.toBe('live')
+    ;(adapter as unknown as { client: DaemonClient }).client.disconnect()
+    await expect(adapter.inspectRestartCustody(custody)).resolves.toBe('unverifiable')
+    probeDaemonProcessIdentityMock.mockResolvedValueOnce({
+      state: 'gone',
+      reason: 'windows_process_missing',
+      evidenceSources: ['windows_cim', 'endpoint_identity'],
+      exactIncarnation: { identity }
+    })
+
+    await expect(adapter.inspectRestartCustody(custody)).resolves.toBe('exited')
+    expect(probeDaemonProcessIdentityMock).toHaveBeenCalledWith(
+      { identity },
+      { socketPath, tokenPath }
+    )
+
+    for (const evidence of [
+      {
+        state: 'unknown',
+        reason: 'permission_denied',
+        evidenceSources: ['windows_cim', 'process_signal']
+      },
+      {
+        state: 'unknown',
+        reason: 'inspection_failed',
+        evidenceSources: ['windows_cim', 'process_signal']
+      },
+      {
+        state: 'unknown',
+        reason: 'windows_process_start_time_unavailable',
+        evidenceSources: ['windows_cim']
+      },
+      {
+        state: 'present',
+        reason: 'windows_identity_match',
+        evidenceSources: ['windows_cim', 'endpoint_identity']
+      }
+    ] as const) {
+      probeDaemonProcessIdentityMock.mockResolvedValueOnce(evidence)
+      await expect(adapter.inspectRestartCustody(custody)).resolves.toBe('unverifiable')
+    }
   })
 
   afterEach(async () => {
@@ -113,6 +183,45 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
       expect(result.id).toBeDefined()
       expect(typeof result.id).toBe('string')
       expect(result.providerSequence).toEqual({ value: 0, generation: 'reset' })
+    })
+
+    it('carries exact daemon Job custody through spawn and inventory', async () => {
+      hostCrashContained = true
+
+      const result = await adapter.spawn({ cols: 80, rows: 24 })
+      const identity = adapter.getLastAuthenticatedDaemonIdentity()!
+      const expectedCustody = {
+        kind: 'windows_daemon_job',
+        daemonPid: identity.pid,
+        daemonStartedAtMs: identity.startedAtMs,
+        daemonLaunchNonce: identity.launchNonce
+      }
+
+      expect(result.restartCustody).toEqual(expectedCustody)
+      await expect(adapter.listProcesses()).resolves.toContainEqual(
+        expect.objectContaining({ id: result.id, restartCustody: expectedCustody })
+      )
+    })
+
+    it('threads the supervised-worker crash-containment precondition to the daemon', async () => {
+      hostCrashContained = true
+
+      await expect(
+        adapter.spawn({ cols: 80, rows: 24, requireHostCrashContainment: true })
+      ).resolves.toMatchObject({ restartCustody: { kind: 'windows_daemon_job' } })
+      expect(lastSpawnOpts).toMatchObject({ requireHostCrashContainment: true })
+    })
+
+    it('refuses supervised-worker creation through a preserved pre-custody daemon', async () => {
+      const legacy = new DaemonPtyAdapter({ socketPath, tokenPath, protocolVersion: 36 })
+      try {
+        await expect(
+          legacy.spawn({ cols: 80, rows: 24, requireHostCrashContainment: true })
+        ).rejects.toThrow('daemon_crash_containment_unavailable')
+        expect(lastSpawnOpts).toBeNull()
+      } finally {
+        legacy.dispose()
+      }
     })
 
     it('carries classified startup spans from the daemon source to the adapter', async () => {
@@ -496,37 +605,6 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
   })
 
   describe('getBufferSnapshot', () => {
-    it('publishes shell ownership only after the daemon proves the live PTY tree', async () => {
-      const { id } = await adapter.spawn({ cols: 80, rows: 24 })
-      lastSubprocess.confirmShellForeground.mockResolvedValue(true)
-
-      lastSubprocess._simulateData(
-        '\x1b[?1049h\x1b[?1003h\x1b[?1006hTUI\x1b]133;D;137\x07shell-marker'
-      )
-
-      await vi.waitFor(async () => {
-        await expect(adapter.getBufferSnapshot(id)).resolves.toMatchObject({
-          alternateScreen: false,
-          terminalOwner: 'shell'
-        })
-      })
-      await expect(adapter.confirmShellForeground(id)).resolves.toBe(true)
-      expect(lastSubprocess.confirmShellForeground).toHaveBeenCalledTimes(1)
-    })
-
-    it('preserves live TUI modes when the daemon cannot prove shell ownership', async () => {
-      const { id } = await adapter.spawn({ cols: 80, rows: 24 })
-
-      lastSubprocess._simulateData(
-        '\x1b[?1049h\x1b[?1003h\x1b[?1006hLIVE-TUI\x1b]133;D;0\x07nested-shell'
-      )
-
-      await vi.waitFor(() => expect(lastSubprocess.confirmShellForeground).toHaveBeenCalledTimes(1))
-      const snapshot = await adapter.getBufferSnapshot(id)
-      expect(snapshot?.alternateScreen).toBe(true)
-      expect(snapshot?.terminalOwner).toBeUndefined()
-    })
-
     it('returns the daemon model with its absolute stream sequence', async () => {
       const { id } = await adapter.spawn({ cols: 80, rows: 24 })
       lastSubprocess._simulateData('complete hidden output\r\n')

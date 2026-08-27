@@ -67,7 +67,12 @@ describe('parseProcessTable', () => {
     )
     expect(rows).toEqual([
       { pid: 101, ppid: 1, pgid: 101, startedAt: 'Mon Jul 13 12:54:47 2026' },
-      { pid: 42017, ppid: 101, pgid: 42017, startedAt: 'Tue Jul 14 01:02:03 2026' }
+      {
+        pid: 42017,
+        ppid: 101,
+        pgid: 42017,
+        startedAt: 'Tue Jul 14 01:02:03 2026'
+      }
     ])
   })
 })
@@ -88,6 +93,35 @@ describe('collectDescendantRows', () => {
     expect(snapshot.rootPgid).toBe(10)
     expect(snapshot.descendants.map((r) => r.pid)).toEqual([20, 30, 31])
     expect(snapshot.capturedAtMs).toBe(CAPTURED_AT_MS)
+  })
+
+  it('contains the observed worker toolchain without crossing into unrelated processes', () => {
+    const workerTree = [
+      { name: 'node', process: row(100, 1, 100) },
+      { name: 'codex', process: row(110, 100, 110) },
+      { name: 'powershell', process: row(120, 110, 120) },
+      { name: 'playwright-mcp', process: row(130, 110, 130) },
+      { name: 'code-mode-host', process: row(140, 130, 140) },
+      { name: 'repl', process: row(150, 140, 150) },
+      { name: 'unrelated-user-process', process: row(900, 1, 900) }
+    ]
+
+    const captured = collectDescendantRows(
+      100,
+      workerTree.map((entry) => entry.process),
+      CAPTURED_AT_MS
+    )
+    const capturedNames = captured.descendants.map(
+      (process) => workerTree.find((entry) => entry.process.pid === process.pid)!.name
+    )
+
+    expect(capturedNames).toEqual([
+      'codex',
+      'powershell',
+      'playwright-mcp',
+      'code-mode-host',
+      'repl'
+    ])
   })
 
   it('sweeps nothing when the root row is already gone (a vacated PID has no findable tree)', () => {
@@ -137,7 +171,10 @@ describe('captureDescendantSnapshot', () => {
     const readTable = vi
       .fn()
       .mockResolvedValue(tableCapture([row(501, 500, 500), row(502, 500, 500), row(503, 500, 500)]))
-    const result = await captureDescendantSnapshot(500, { readTable, platform: 'darwin' })
+    const result = await captureDescendantSnapshot(500, {
+      readTable,
+      platform: 'darwin'
+    })
     expect(result?.descendants).toEqual([])
     const sendSignal = vi.fn()
     terminateDescendantSnapshot(result!, { sendSignal })
@@ -260,7 +297,10 @@ describe('terminateDescendantSnapshot', () => {
   it('never escalates when the identity re-read fails', async () => {
     const sendSignal = vi.fn()
     const readTable = vi.fn().mockRejectedValue(new Error('ps exploded'))
-    terminateDescendantSnapshot(snapshot([row(20, 10, 20)]), { sendSignal, readTable })
+    terminateDescendantSnapshot(snapshot([row(20, 10, 20)]), {
+      sendSignal,
+      readTable
+    })
     sendSignal.mockClear()
     await vi.advanceTimersByTimeAsync(DESCENDANT_KILL_GRACE_MS)
     expect(sendSignal).not.toHaveBeenCalled()
@@ -405,7 +445,7 @@ describe('killWithDescendantSweep', () => {
     const verifyTreeKillTarget = vi.fn(async () => 'own' as const)
     const killRoot = vi.fn(() => events.push('root-kill'))
 
-    await killWithDescendantSweep(4242, killRoot, {
+    const result = await killWithDescendantSweep(4242, killRoot, {
       platform: 'win32',
       terminateOwnedTree,
       killWindowsTree,
@@ -415,8 +455,21 @@ describe('killWithDescendantSweep', () => {
     expect(terminateOwnedTree).toHaveBeenCalledOnce()
     expect(verifyTreeKillTarget).not.toHaveBeenCalled()
     expect(killWindowsTree).not.toHaveBeenCalled()
+    expect(result).toBe('owned_tree_terminated')
     // killRoot still runs: the job kills processes, the handle still needs closing.
     expect(events).toEqual(['job-kill', 'root-kill'])
+  })
+
+  it('keeps exact Job proof when closing the dead root handle throws', async () => {
+    await expect(
+      killWithDescendantSweep(
+        4242,
+        () => {
+          throw new Error('root already exited')
+        },
+        { platform: 'win32', terminateOwnedTree: () => 'terminated' }
+      )
+    ).resolves.toBe('owned_tree_terminated')
   })
 
   it('on Windows falls back to the probe when the pty has no job', async () => {
@@ -578,7 +631,7 @@ describe('killWithDescendantSweep', () => {
         killWindowsTree,
         verifyTreeKillTarget: async () => 'own'
       })
-    ).resolves.toBeUndefined()
+    ).resolves.toBe('root_signaled')
     expect(killRoot).toHaveBeenCalledOnce()
   })
 

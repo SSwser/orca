@@ -4,90 +4,21 @@ import { SESSION_FORCE_KILL_RETRY_MS } from './session-termination-controller'
 import { HeadlessEmulator } from './headless-emulator'
 import type { SessionState, ShellReadyState } from './types'
 import type { TuiAgent } from '../../shared/tui-agent'
+import { createMockSubprocess, type MockSubprocess } from './session-test-fixture'
+
+const SEMANTIC_BASELINE = {
+  observedAt: 1,
+  permissionSequence: 0,
+  workingSequence: 0,
+  explicitWorkingStartedAt: null,
+  outputSequence: 0,
+  status: 'idle' as const
+}
 
 const killWithDescendantSweepMock = vi.hoisted(() => vi.fn())
 vi.mock('../pty-descendant-termination', () => ({
   killWithDescendantSweep: killWithDescendantSweepMock
 }))
-
-// Stub the subprocess — Session talks to it via an interface, not child_process directly.
-function createMockSubprocess() {
-  const written: string[] = []
-  const signals: string[] = []
-  let onData: ((data: string) => void) | null = null
-  let onExit: ((code: number) => void) | null = null
-  let killed = false
-  let clearCalls = 0
-  let pid = 12345
-  let pauseCalls = 0
-  let resumeCalls = 0
-
-  return {
-    written,
-    signals,
-    get killed() {
-      return killed
-    },
-    get pid() {
-      return pid
-    },
-    get pauseCalls() {
-      return pauseCalls
-    },
-    get resumeCalls() {
-      return resumeCalls
-    },
-    foregroundProcess: null as string | null,
-    getForegroundProcess(): string | null {
-      return this.foregroundProcess
-    },
-    confirmShellForeground: vi.fn(async () => true),
-    write(data: string) {
-      written.push(data)
-    },
-    resize(_cols: number, _rows: number) {},
-    pause() {
-      pauseCalls++
-    },
-    resume() {
-      resumeCalls++
-    },
-    get clearCalls() {
-      return clearCalls
-    },
-    clear() {
-      clearCalls++
-    },
-    kill() {
-      killed = true
-      // Simulate async exit
-      setTimeout(() => onExit?.(0), 5)
-    },
-    terminateOwnedTree: () => 'terminated' as const,
-    forceKill() {
-      killed = true
-    },
-    signal(sig: string) {
-      signals.push(sig)
-    },
-    onData(cb: (data: string) => void) {
-      onData = cb
-    },
-    onExit(cb: (code: number) => void) {
-      onExit = cb
-    },
-    dispose() {},
-    // Helpers for tests to simulate subprocess events
-    simulateData(data: string) {
-      onData?.(data)
-    },
-    simulateExit(code: number) {
-      onExit?.(code)
-    }
-  }
-}
-
-type MockSubprocess = ReturnType<typeof createMockSubprocess>
 
 describe('Session', () => {
   let session: Session
@@ -116,8 +47,8 @@ describe('Session', () => {
     }
     ownerBackend?: 'posix-pty' | 'windows-conpty' | 'windows-wsl'
     wslDistro?: string
+    terminalHandle?: string
     reportReadinessEvent?: (event: string, details: Record<string, unknown>) => void
-    historySeedChunks?: readonly string[]
   }): Session {
     session = new Session({
       sessionId: 'test-session',
@@ -125,9 +56,9 @@ describe('Session', () => {
       cols: opts?.cols ?? 80,
       rows: opts?.rows ?? 24,
       ...(opts?.launchAgent ? { launchAgent: opts.launchAgent } : {}),
+      ...(opts?.terminalHandle ? { terminalHandle: opts.terminalHandle } : {}),
       wslDistro: opts?.wslDistro,
       subprocess,
-      historySeedChunks: opts?.historySeedChunks,
       ...(opts?.ownerBackend ? { ownerBackend: opts.ownerBackend } : {}),
       shellReadySupported: opts?.shellReadySupported ?? false,
       ...(opts?.startupIngress ? { startupIngress: opts.startupIngress } : {}),
@@ -152,7 +83,7 @@ describe('Session', () => {
     })
 
     it('transitions to exited when subprocess exits', () => {
-      createSession()
+      createSession({ terminalHandle: 'term_worker' })
       subprocess.simulateExit(0)
       expect(session.state).toBe('exited' satisfies SessionState)
       expect(session.isAlive).toBe(false)
@@ -163,54 +94,147 @@ describe('Session', () => {
       subprocess.simulateExit(42)
       expect(session.exitCode).toBe(42)
     })
+
+    it('terminalizes an exactly terminated Windows job without waiting for a lost ConPTY exit', () => {
+      createSession()
+      const exits: { code: number; cause: unknown }[] = []
+      session.attachClient({
+        onData: () => {},
+        onExit: (code, _incarnationId, cause) => exits.push({ code, cause })
+      })
+
+      session.confirmOwnedTreeTerminated()
+      subprocess.simulateExit(0)
+
+      expect(session.isAlive).toBe(false)
+      expect(exits).toEqual([{ code: -1, cause: { kind: 'operator_close' } }])
+    })
   })
 
   describe('data flow', () => {
-    it('does not confirm shell ownership from historical replay bytes', () => {
-      createSession({
-        historySeedChunks: ['\x1b[?1049hOLD-TUI\x1b]133;D;137\x07old-shell-marker']
+    it('does not start a worker prompt operation when the subprocess rejects the write', () => {
+      createSession()
+      Object.assign(subprocess, { writeAcknowledged: () => false })
+      const identity = {
+        operationId: 'prompt-operation',
+        payloadFingerprint: 'prompt-fingerprint',
+        sessionIncarnationId: session.incarnationId,
+        terminalHandle: 'term_worker'
+      }
+
+      expect(
+        session.writeWorkerPromptOperation({
+          ...identity,
+          step: { kind: 'paste', index: 0, count: 1, data: 'prompt' }
+        })
+      ).toEqual({ accepted: false })
+      expect(session.inspectWorkerPromptOperation(identity)).toEqual({ verdict: 'not_started' })
+    })
+
+    it('completes one exact worker prompt operation and replays it without another write', () => {
+      createSession({ terminalHandle: 'term_worker' })
+      const writeAcknowledged = vi.fn(() => true)
+      Object.assign(subprocess, { writeAcknowledged })
+      const identity = {
+        operationId: 'prompt-operation',
+        payloadFingerprint: 'prompt-fingerprint',
+        sessionIncarnationId: session.incarnationId,
+        terminalHandle: 'term_worker'
+      }
+
+      expect(
+        session.writeWorkerPromptOperation({
+          ...identity,
+          step: { kind: 'paste', index: 0, count: 1, data: 'prompt' }
+        })
+      ).toEqual({ accepted: true })
+      expect(
+        session.writeWorkerPromptOperation({
+          ...identity,
+          step: { kind: 'submit', data: '\r', semanticBaseline: SEMANTIC_BASELINE }
+        })
+      ).toEqual({ accepted: true })
+      expect(session.inspectWorkerPromptOperation(identity)).toMatchObject({
+        verdict: 'completed',
+        receipt: { ...identity, semanticBaseline: SEMANTIC_BASELINE }
       })
 
-      expect(subprocess.confirmShellForeground).not.toHaveBeenCalled()
-      expect(session.getSnapshot()?.terminalOwner).toBeUndefined()
+      expect(
+        session.writeWorkerPromptOperation({
+          ...identity,
+          step: { kind: 'submit', data: '\r', semanticBaseline: SEMANTIC_BASELINE }
+        })
+      ).toEqual({ accepted: true })
+      expect(writeAcknowledged).toHaveBeenCalledTimes(2)
+      expect(
+        session.inspectWorkerPromptOperation({
+          ...identity,
+          payloadFingerprint: 'different-prompt'
+        })
+      ).toEqual({ verdict: 'conflict' })
     })
 
-    it('answers concurrent runtime confirmations from one episode inspection', async () => {
-      let resolveConfirmation: ((confirmed: boolean) => void) | undefined
-      subprocess.confirmShellForeground.mockImplementation(
-        () => new Promise((resolve) => void (resolveConfirmation = resolve))
-      )
-      createSession()
+    it('allows a later worker operation while retaining bounded exact replay history', () => {
+      createSession({ terminalHandle: 'term_worker' })
+      const writeAcknowledged = vi.fn(() => true)
+      Object.assign(subprocess, { writeAcknowledged })
+      const first = {
+        operationId: 'prompt-operation-1',
+        payloadFingerprint: 'prompt-fingerprint-1',
+        sessionIncarnationId: session.incarnationId,
+        terminalHandle: 'term_worker'
+      }
+      const second = {
+        ...first,
+        operationId: 'prompt-operation-2',
+        payloadFingerprint: 'prompt-fingerprint-2'
+      }
 
-      // Why no inspection without a candidate: the RPC reads the barrier's
-      // settled verdict; it must never mint proof the byte stream didn't ask for.
-      await expect(session.confirmShellForeground()).resolves.toBe(false)
-      expect(subprocess.confirmShellForeground).not.toHaveBeenCalled()
+      for (const identity of [first, second]) {
+        expect(
+          session.writeWorkerPromptOperation({
+            ...identity,
+            step: { kind: 'paste', index: 0, count: 1, data: identity.operationId }
+          })
+        ).toEqual({ accepted: true })
+        expect(
+          session.writeWorkerPromptOperation({
+            ...identity,
+            step: { kind: 'submit', data: '\r', semanticBaseline: SEMANTIC_BASELINE }
+          })
+        ).toEqual({ accepted: true })
+      }
 
-      subprocess.simulateData('\x1b[?1049hTUI\x1b]133;D;137\x07')
-      const first = session.confirmShellForeground()
-      const second = session.confirmShellForeground()
-      expect(subprocess.confirmShellForeground).toHaveBeenCalledTimes(1)
-      resolveConfirmation?.(true)
-
-      await expect(Promise.all([first, second])).resolves.toEqual([true, true])
-      expect(subprocess.confirmShellForeground).toHaveBeenCalledTimes(1)
+      expect(session.inspectWorkerPromptOperation(first)).toMatchObject({ verdict: 'completed' })
+      expect(session.inspectWorkerPromptOperation(second)).toMatchObject({ verdict: 'completed' })
+      expect(
+        session.writeWorkerPromptOperation({
+          ...first,
+          step: { kind: 'submit', data: '\r', semanticBaseline: SEMANTIC_BASELINE }
+        })
+      ).toEqual({ accepted: true })
+      expect(writeAcknowledged).toHaveBeenCalledTimes(4)
     })
 
-    it('reuses the parser confirmation for a concurrent runtime request', async () => {
-      let resolveConfirmation: ((confirmed: boolean) => void) | undefined
-      subprocess.confirmShellForeground.mockImplementation(
-        () => new Promise((resolve) => void (resolveConfirmation = resolve))
-      )
-      createSession()
+    it('rejects a worker prompt operation while shell readiness would queue input', () => {
+      createSession({ shellReadySupported: true, terminalHandle: 'term_worker' })
+      const writeAcknowledged = vi.fn(() => true)
+      Object.assign(subprocess, { writeAcknowledged })
+      const identity = {
+        operationId: 'prompt-operation',
+        payloadFingerprint: 'prompt-fingerprint',
+        sessionIncarnationId: session.incarnationId,
+        terminalHandle: 'term_worker'
+      }
 
-      subprocess.simulateData('\x1b[?1049hTUI\x1b]133;D;137\x07shell-marker')
-      const runtimeConfirmation = session.confirmShellForeground()
-      expect(subprocess.confirmShellForeground).toHaveBeenCalledTimes(1)
-      resolveConfirmation?.(true)
-
-      await expect(runtimeConfirmation).resolves.toBe(true)
-      await vi.waitFor(() => expect(session.getSnapshot()?.terminalOwner).toBe('shell'))
+      expect(
+        session.writeWorkerPromptOperation({
+          ...identity,
+          step: { kind: 'paste', index: 0, count: 1, data: 'prompt' }
+        })
+      ).toEqual({ accepted: false })
+      expect(writeAcknowledged).not.toHaveBeenCalled()
+      expect(session.inspectWorkerPromptOperation(identity)).toEqual({ verdict: 'not_started' })
     })
 
     it('forwards subprocess data to attached clients', () => {
@@ -242,8 +266,14 @@ describe('Session', () => {
       createSession()
       const received1: string[] = []
       const received2: string[] = []
-      session.attachClient({ onData: (d) => received1.push(d), onExit: () => {} })
-      session.attachClient({ onData: (d) => received2.push(d), onExit: () => {} })
+      session.attachClient({
+        onData: (d) => received1.push(d),
+        onExit: () => {}
+      })
+      session.attachClient({
+        onData: (d) => received2.push(d),
+        onExit: () => {}
+      })
 
       subprocess.simulateData('broadcast')
       expect(received1).toEqual(['broadcast'])
@@ -632,7 +662,10 @@ describe('Session', () => {
 
       expect(events).toHaveLength(1)
       expect(events[0]?.event).toBe('shell-ready-timeout')
-      expect(events[0]?.details).toMatchObject({ sessionId: 'test-session', timeoutMs: 15_000 })
+      expect(events[0]?.details).toMatchObject({
+        sessionId: 'test-session',
+        timeoutMs: 15_000
+      })
       // Why a basename: the shell path can carry a home dir, and the basename is
       // all a diagnosis needs.
       expect(String(events[0]?.details.shell)).not.toContain('/')

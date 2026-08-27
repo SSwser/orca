@@ -1,66 +1,32 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { connect, type Server, type Socket } from 'node:net'
+import { connect, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { DaemonServer } from './daemon-server'
-import type { ConnectedDaemonClient } from './daemon-client-connections'
 import { DaemonClient } from './client'
 import { encodeNdjson } from './ndjson'
-import { PROTOCOL_VERSION, type DaemonRequest } from './types'
-import type { SubprocessHandle } from './session-subprocess-handle'
+import { PROTOCOL_VERSION } from './types'
 import { getDaemonPidPath, getDaemonSocketPath, serializeDaemonPidFile } from './daemon-spawner'
 import { waitForEndpointUnreachable } from './daemon-endpoint-reachability-test-harness'
+import {
+  confirmForegroundProcessMock,
+  connectRawHello as connectRawHelloFixture,
+  createMockSubprocess,
+  type DaemonServerPrivate
+} from './daemon-server-test-fixture'
 
-const confirmForegroundProcessMock = vi.fn(async () => 'droid')
+const SEMANTIC_BASELINE = {
+  observedAt: 1,
+  permissionSequence: 0,
+  workingSequence: 0,
+  explicitWorkingStartedAt: null,
+  outputSequence: 0,
+  status: 'idle' as const
+}
 
 function createTestDir(): string {
   return mkdtempSync(join(tmpdir(), 'daemon-server-test-'))
-}
-
-function createMockSubprocess(): SubprocessHandle & {
-  _simulateData: (data: string) => void
-  _simulateExit: (code: number) => void
-} {
-  let onDataCb: ((data: string) => void) | null = null
-  let onExitCb: ((code: number) => void) | null = null
-  return {
-    pid: 55555,
-    getForegroundProcess: vi.fn(() => null),
-    confirmForegroundProcess: confirmForegroundProcessMock,
-    write: vi.fn(),
-    resize: vi.fn(),
-    kill: vi.fn(() => setTimeout(() => onExitCb?.(0), 5)),
-    terminateOwnedTree: () => 'unavailable' as const,
-    forceKill: vi.fn(() => onExitCb?.(137)),
-    signal: vi.fn(),
-    onData(cb) {
-      onDataCb = cb
-    },
-    onExit(cb) {
-      onExitCb = cb
-    },
-    dispose: vi.fn(),
-    _simulateData(data: string) {
-      onDataCb?.(data)
-    },
-    _simulateExit(code: number) {
-      onExitCb?.(code)
-    }
-  }
-}
-
-type DaemonServerPrivate = {
-  lifecycle: { server: Server | null }
-  preparations: { pending: Map<string, Set<unknown>> }
-  host: {
-    kill: (sessionId: string, opts?: { immediate?: boolean }) => void | Promise<void>
-    dispose: () => Promise<void>
-  }
-  connections: { clients: Map<string, ConnectedDaemonClient> }
-  requestRouter: {
-    route(clientId: string, request: DaemonRequest): Promise<unknown>
-  }
 }
 
 describe('DaemonServer', () => {
@@ -103,39 +69,7 @@ describe('DaemonServer', () => {
   }
 
   async function connectRawHello(role: 'control' | 'stream', clientId: string): Promise<Socket> {
-    const socket = connect(socketPath)
-    await new Promise<void>((resolve) => socket.once('connect', resolve))
-    socket.write(
-      encodeNdjson({
-        type: 'hello',
-        version: PROTOCOL_VERSION,
-        token: readFileSync(tokenPath, 'utf-8').trim(),
-        clientId,
-        role
-      })
-    )
-    await new Promise<void>((resolve, reject) => {
-      const cleanup = (): void => {
-        socket.off('data', onData)
-        socket.off('error', onError)
-      }
-      const onData = (data: Buffer): void => {
-        cleanup()
-        const parsed = JSON.parse(data.toString().trim()) as { ok?: boolean; error?: string }
-        if (parsed.ok) {
-          resolve()
-          return
-        }
-        reject(new Error(parsed.error ?? 'hello rejected'))
-      }
-      const onError = (error: Error): void => {
-        cleanup()
-        reject(error)
-      }
-      socket.on('data', onData)
-      socket.on('error', onError)
-    })
-    return socket
+    return await connectRawHelloFixture(socketPath, tokenPath, role, clientId)
   }
 
   async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
@@ -451,6 +385,68 @@ describe('DaemonServer', () => {
 
       // Give the server time to process
       await new Promise((r) => setTimeout(r, 50))
+    })
+
+    it('retains a completed worker prompt operation when the submit reply is lost', async () => {
+      let subprocess!: ReturnType<typeof createMockSubprocess>
+      server = new DaemonServer({
+        socketPath,
+        tokenPath,
+        spawnSubprocess: () => {
+          subprocess = createMockSubprocess()
+          return subprocess
+        }
+      })
+      await server.start()
+      const firstClient = await connectClient()
+      const created = await firstClient.request<{ incarnationId: string }>('createOrAttach', {
+        sessionId: 'test-session',
+        cols: 80,
+        rows: 24,
+        env: { ORCA_TERMINAL_HANDLE: 'term_worker' }
+      })
+      const identity = {
+        operationId: 'prompt-operation',
+        payloadFingerprint: 'prompt-fingerprint',
+        sessionIncarnationId: created.incarnationId,
+        terminalHandle: 'term_worker'
+      }
+      const lostReplySocket = await connectRawHello('control', 'lost-prompt-reply')
+      lostReplySocket.on('data', () => {})
+      lostReplySocket.write(
+        encodeNdjson({
+          id: 'prompt-paste',
+          type: 'writeWorkerPromptOperation',
+          payload: {
+            sessionId: 'test-session',
+            ...identity,
+            step: { kind: 'paste', index: 0, count: 1, data: 'prompt' }
+          }
+        })
+      )
+      await vi.waitFor(() => expect(subprocess.writeAcknowledged).toHaveBeenCalledOnce())
+      lostReplySocket.write(
+        encodeNdjson({
+          id: 'prompt-submit',
+          type: 'writeWorkerPromptOperation',
+          payload: {
+            sessionId: 'test-session',
+            ...identity,
+            step: { kind: 'submit', data: '\r', semanticBaseline: SEMANTIC_BASELINE }
+          }
+        })
+      )
+      await vi.waitFor(() => expect(subprocess.writeAcknowledged).toHaveBeenCalledTimes(2))
+      lostReplySocket.destroy()
+      firstClient.disconnect()
+
+      const reconnected = await connectClient()
+      await expect(
+        reconnected.request('inspectWorkerPromptOperation', {
+          sessionId: 'test-session',
+          ...identity
+        })
+      ).resolves.toMatchObject({ verdict: 'completed', receipt: identity })
     })
 
     it('handles resize', async () => {

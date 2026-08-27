@@ -26,6 +26,8 @@ export type PtySubprocessOptions = {
   command?: string
   startupCommandDelivery?: StartupCommandDelivery
   launchAgent?: TuiAgent
+  /** Refuse a Windows spawn unless daemon death will reap the PTY tree. */
+  requireHostCrashContainment?: boolean
   /** Explicit shell executable path/basename requested by the renderer. */
   shellOverride?: string
   terminalWindowsWslDistro?: string | null
@@ -90,6 +92,7 @@ export async function createPtySubprocess(opts: PtySubprocessOptions): Promise<S
       cols: size.cols,
       rows: size.rows,
       windowsFallbackAttempts: launch.windowsFallbackAttempts,
+      requireHostCrashContainment: opts.requireHostCrashContainment,
       onMacosTccSpawnStrategy: opts.onMacosTccSpawnStrategy
     })
   } catch (error) {
@@ -107,6 +110,7 @@ export async function createPtySubprocess(opts: PtySubprocessOptions): Promise<S
     startupCommandDeliveredInShellArgs:
       spawned.startupCommandDeliveredInShellArgs ?? launch.startupCommandDeliveredInShellArgs,
     reportsChildExitStatus: spawned.reportsChildExitStatus,
+    hostCrashContained: spawned.hostCrashContained,
     requestedCwd: opts.cwd,
     sessionId: opts.sessionId,
     startupAgentRecognition: launch.startupAgentRecognition

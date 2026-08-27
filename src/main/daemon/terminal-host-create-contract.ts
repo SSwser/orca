@@ -30,6 +30,7 @@ export type CreateOrAttachOptions = {
   shellReadyTimeoutMs?: number
   historySeedChunks?: readonly string[]
   startupIngress?: PtyStartupIngressIntent
+  requireHostCrashContainment?: true
   agentSessionEnsure?: {
     claim: AgentSessionExecutionClaim
     surface: AgentSessionSurfaceBinding
@@ -53,5 +54,6 @@ export type CreateOrAttachResult = {
   wslDistro: string | null
   attachToken: symbol
   incarnationId: PtyIncarnationId
+  hostCrashContained?: true
   agentSessionEnsure?: AgentSessionClaimedSpawnResult
 }

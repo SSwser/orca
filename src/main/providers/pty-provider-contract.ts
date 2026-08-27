@@ -11,6 +11,7 @@ import type {
 } from '../../shared/agent-session-host-authority'
 import type { PtyProcessInfo } from './pty-process-info'
 import type { TerminalExitCause } from '../../shared/terminal-exit-cause'
+import type { PtyRestartCustody } from '../../shared/pty-restart-custody'
 import type { TerminalOwner } from '../../shared/terminal-owner'
 
 export type {
@@ -98,6 +99,8 @@ export type PtySpawnOptions = {
   terminalWindowsPowerShellImplementation?: 'auto' | 'powershell.exe' | 'pwsh.exe'
   /** Fresh-spawn-only source authority installed before any PTY output is released. */
   startupIngress?: PtyStartupIngressIntent
+  /** Refuse a native Windows spawn without durable daemon-death containment. */
+  requireHostCrashContainment?: true
   agentSessionEnsure?: {
     claim: AgentSessionExecutionClaim
     surface: AgentSessionSurfaceBinding
@@ -111,6 +114,11 @@ export type PtySpawnOptions = {
 }
 
 export type { PtyProcessInfo, PtySpawnResult }
+import type {
+  WorkerPromptOperationIdentity,
+  WorkerPromptOperationInspection,
+  WorkerPromptOperationRequest
+} from '../../shared/worker-prompt-operation'
 
 type PtyProbeOptions = { signal?: AbortSignal }
 
@@ -139,8 +147,21 @@ export type IPtyProvider = {
   hasPty?: (id: string) => boolean
   /** Exact provider readback: false only when the provider answered that the PTY is absent. */
   probePtyLiveness?: (id: string) => Promise<boolean | null>
+  /** Exact daemon Job custody; absence or mismatch never proves process exit. */
+  inspectRestartCustody?: (
+    custody: PtyRestartCustody
+  ) => Promise<'live' | 'exited' | 'unverifiable'>
   write(id: string, data: string): boolean | void
   writeWithSettlement?: (id: string, data: string) => Promise<boolean>
+  supportsWorkerPromptOperations?: (id: string) => boolean
+  writeWorkerPromptOperation?: (
+    id: string,
+    operation: WorkerPromptOperationRequest
+  ) => Promise<{ accepted: boolean }>
+  inspectWorkerPromptOperation?: (
+    id: string,
+    identity: WorkerPromptOperationIdentity
+  ) => Promise<WorkerPromptOperationInspection>
   resize(id: string, cols: number, rows: number): void
   /**
    * Producer-side flow control: stop/restart reading the underlying PTY so a
