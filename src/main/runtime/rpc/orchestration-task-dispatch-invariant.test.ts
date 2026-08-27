@@ -153,8 +153,7 @@ describe('Task/Dispatch state invariant', () => {
       })
       expect(readPersistedWorkerState(harness.dbPath, dispatch.id)).toEqual({
         workerState: dispatchStatus === 'pending' ? 'starting' : 'ready',
-        ownershipState: 'owned',
-        releaseState: 'not_requested'
+        lifecycleState: 'owned'
       })
       expect(
         harness.db.verifyDispatchCapability({
@@ -424,20 +423,18 @@ function readPersistedWorkerState(dbPath: string, dispatchId: string) {
   try {
     const row = sqlite
       .prepare(
-        `SELECT worker.state AS worker_state, resource.ownership_state, resource.release_state
+        `SELECT worker.state AS worker_state, resource.lifecycle_state
          FROM worker_dispatches worker
          JOIN worker_terminal_resources resource ON resource.owner_dispatch_id = worker.dispatch_id
          WHERE worker.dispatch_id = ?`
       )
       .get(dispatchId) as {
       worker_state: string
-      ownership_state: string
-      release_state: string
+      lifecycle_state: string
     }
     return {
       workerState: row.worker_state,
-      ownershipState: row.ownership_state,
-      releaseState: row.release_state
+      lifecycleState: row.lifecycle_state
     }
   } finally {
     sqlite.close()

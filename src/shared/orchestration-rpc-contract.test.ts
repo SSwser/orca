@@ -15,6 +15,7 @@ describe('orchestration RPC contract', () => {
     ['orchestration.taskUpdate', {}],
     ['orchestration.dispatch', {}],
     ['orchestration.workerStart', {}],
+    ['orchestration.workerRecover', {}],
     ['orchestration.workerStop', {}],
     ['orchestration.workerAbandon', {}],
     ['orchestration.ask', {}],

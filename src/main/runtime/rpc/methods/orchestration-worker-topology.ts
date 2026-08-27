@@ -2,43 +2,38 @@ import type { AgentLaunchPreferences } from '../../../../shared/agent-session-ho
 import type { TuiAgent } from '../../../../shared/tui-agent'
 import type { OrcaRuntimeService } from '../../orca-runtime'
 import type { OrchestrationDb } from '../../orchestration/db'
+import type { WorkerGenerationOperationIdentity } from './orchestration-worker-generation-identity'
+import type { WorkerEffect, WorkerSetupReceipt } from './orchestration-worker-start-effects'
 
-export type WorkerEffect = {
-  kind: 'worktree' | 'terminal' | 'setup' | 'dispatch_input'
-  action?: string
-  role?: string
-  id?: string
-  state?: string
-  tabId?: string
-  leafId?: string
-  requested?: string
-  effective?: string
-  source?: string
-  hookFound?: boolean
-  startupPolicy?: string
-  terminalId?: string
-  surface?: 'visible' | 'background'
-  warning?: string
+export type { WorkerEffect, WorkerSetupReceipt } from './orchestration-worker-start-effects'
+
+export function isUnknownWorkerStartOutcome(error: unknown, stage: string): boolean {
+  const code =
+    error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
+      ? (error as { code: string }).code
+      : ''
+  if (code === 'operation_unknown' || code === 'submission_unconfirmed') {
+    return true
+  }
+  if (stage !== 'worktree_create') {
+    return false
+  }
+  const message = error instanceof Error ? error.message : String(error)
+  return /connection|disconnect|timed?\s*out|runtime changed|outcome unknown/i.test(message)
 }
 
-export type WorkerSetupReceipt = {
-  requested: 'run' | 'skip' | 'inherit' | 'not_applicable'
-  effective: 'run' | 'skip' | 'inherit' | 'not_applicable'
-  source: string
-  hookFound: boolean
-  startupPolicy: 'start-immediately' | 'wait-for-setup'
-  state:
-    | 'running'
-    | 'succeeded'
-    | 'failed'
-    | 'skipped'
-    | 'not_configured'
-    | 'spawn_failed'
-    | 'not_applicable'
-}
-
-export function requireWorkerAuthority(runtime: OrcaRuntimeService, terminalHandle: string) {
+export function requireWorkerAuthority(
+  runtime: OrcaRuntimeService,
+  terminalHandle: string,
+  options: { requireNativeWindowsRestartCustody?: boolean } = {}
+) {
   const authority = runtime.getOrchestrationDispatchAuthority(terminalHandle)
+  if (
+    options.requireNativeWindowsRestartCustody &&
+    (!authority || (authority.hostScope.kind === 'local' && !authority.hostScope.restartCustody))
+  ) {
+    throw new Error('terminal_restart_custody_unavailable')
+  }
   const paneKey = authority?.paneKey ?? runtime.getTerminalPaneKey(terminalHandle)
   const processIncarnation =
     authority?.processIncarnation ?? runtime.getTerminalProcessIncarnation(terminalHandle)
@@ -59,6 +54,11 @@ export async function createExistingWorktreeWorkerTerminal(args: {
   agent: TuiAgent
   launchPreferences?: AgentLaunchPreferences
   taskId: string
+  operation?: WorkerGenerationOperationIdentity & {
+    terminalHandle: string
+    tabId: string
+    leafId: string
+  }
   effects: WorkerEffect[]
 }): Promise<{ handle: string; warning?: string }> {
   const terminal = await args.runtime.createTerminal(`id:${args.worktreeId}`, {
@@ -66,12 +66,24 @@ export async function createExistingWorktreeWorkerTerminal(args: {
     // desktop app while its CLI is `cursor-agent`. Let the runtime build the
     // configured launcher instead of executing the raw id.
     startupAgent: args.agent,
+    requireHostCrashContainment: true,
     ...(args.launchPreferences ? { launchPreferences: args.launchPreferences } : {}),
     title: `worker-${args.taskId}`,
+    ...(args.operation
+      ? {
+          preAllocatedHandle: args.operation.terminalHandle,
+          tabId: args.operation.tabId,
+          leafId: args.operation.leafId,
+          agentSessionCreateOperationId: args.operation.operationId
+        }
+      : {}),
     // Why: dispatching a worker is background work; it must not pull the sidebar
     // to the worker's workspace while the user is reading somewhere else.
     surfaceOwner: false
   })
+  if (args.operation && terminal.handle !== args.operation.terminalHandle) {
+    throw new Error('worker_generation_terminal_identity_conflict')
+  }
   args.effects.push({
     kind: 'terminal',
     role: 'agent',
@@ -121,6 +133,14 @@ export async function createWorkerWorktree(args: {
   }
   agent: TuiAgent
   launchPreferences?: AgentLaunchPreferences
+  operations?: {
+    worktree: WorkerGenerationOperationIdentity & { branchName: string }
+    terminal: WorkerGenerationOperationIdentity & {
+      terminalHandle: string
+      tabId: string
+      leafId: string
+    }
+  }
   effects: WorkerEffect[]
 }): Promise<{
   worktree: Awaited<ReturnType<OrcaRuntimeService['showManagedWorktree']>>
@@ -134,6 +154,7 @@ export async function createWorkerWorktree(args: {
     repoSelector: params.repo ?? coordinatorWorktree.repoId,
     name: params.name as string,
     baseBranch: params.baseBranch,
+    ...(args.operations ? { branchNameOverride: args.operations.worktree.branchName } : {}),
     displayName: params.displayName,
     comment: params.comment,
     // setupDecision runs setup without the legacy runHooks activation side effect.
@@ -143,6 +164,22 @@ export async function createWorkerWorktree(args: {
     observeSetupCompletion: true,
     createdWithAgent: args.agent,
     startupAgent: args.agent,
+    requireStartupHostCrashContainment: true,
+    ...(args.operations
+      ? {
+          workerGenerationOperation: {
+            operationId: args.operations.worktree.operationId,
+            payloadFingerprint: args.operations.worktree.payloadFingerprint
+          },
+          workerGenerationTerminalOperation: {
+            operationId: args.operations.terminal.operationId,
+            payloadFingerprint: args.operations.terminal.payloadFingerprint,
+            terminalHandle: args.operations.terminal.terminalHandle,
+            tabId: args.operations.terminal.tabId,
+            leafId: args.operations.terminal.leafId
+          }
+        }
+      : {}),
     ...(args.launchPreferences ? { startupLaunchPreferences: args.launchPreferences } : {}),
     activate: false,
     lineage: {
@@ -152,6 +189,9 @@ export async function createWorkerWorktree(args: {
     }
   })
   const terminalHandle = created.startupTerminal?.handle
+  if (args.operations && terminalHandle !== args.operations.terminal.terminalHandle) {
+    throw new Error('worker_generation_terminal_identity_conflict')
+  }
   effects.push({
     kind: 'worktree',
     action: requestedWorktree === 'new-child' ? 'created_child' : 'created_top_level',
@@ -264,19 +304,4 @@ export function monitorWorkerSetup(args: {
       args.runtime.notifyMessageArrived(message.to_handle, message.type)
     })
     .catch(() => undefined)
-}
-
-export function isUnknownWorkerStartOutcome(error: unknown, stage: string): boolean {
-  const code =
-    error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
-      ? (error as { code: string }).code
-      : ''
-  if (code === 'operation_unknown') {
-    return true
-  }
-  if (stage !== 'worktree_create') {
-    return false
-  }
-  const message = error instanceof Error ? error.message : String(error)
-  return /connection|disconnect|timed?\s*out|runtime changed|outcome unknown/i.test(message)
 }

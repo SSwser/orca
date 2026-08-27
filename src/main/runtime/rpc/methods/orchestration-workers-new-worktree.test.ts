@@ -15,12 +15,14 @@ describe('orchestration new-worktree workers', () => {
   let db: OrchestrationDb
   let runtime: OrcaRuntimeService
   let runId: string
+  let workerHandle: string
   const paths: string[] = []
 
   beforeEach(() => {
     db = new OrchestrationDb(':memory:')
     runtime = new OrcaRuntimeService()
     runtime.setOrchestrationDb(db)
+    workerHandle = 'term_worker'
     runId = db.createRun({
       objective: 'Test new-worktree workers',
       coordinatorHandle: 'term_coord',
@@ -29,12 +31,31 @@ describe('orchestration new-worktree workers', () => {
     vi.spyOn(runtime, 'getTerminalPaneKey').mockImplementation((handle) =>
       handle === 'term_coord'
         ? coordinatorPaneKey
-        : handle === 'term_worker'
+        : handle === workerHandle
           ? 'tab_worker:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
           : null
     )
     vi.spyOn(runtime, 'getTerminalProcessIncarnation').mockImplementation((handle) =>
-      handle === 'term_worker' ? 'runtime_test:term_worker:1' : null
+      handle === workerHandle ? 'runtime_test:term_worker:1' : null
+    )
+    vi.spyOn(runtime, 'getOrchestrationDispatchAuthority').mockImplementation((handle) =>
+      handle === workerHandle
+        ? ({
+            terminalHandle: handle,
+            paneKey: 'tab_worker:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            processIncarnation: 'runtime_test:term_worker:1',
+            hostScope: {
+              kind: 'local',
+              hostId: 'local',
+              restartCustody: {
+                kind: 'windows_daemon_job',
+                daemonPid: 4000,
+                daemonStartedAtMs: 1_786_000_000_000,
+                daemonLaunchNonce: 'new-worktree-test-daemon'
+              }
+            }
+          } as never)
+        : null
     )
     vi.spyOn(runtime, 'validateOrchestrationAgentLauncher').mockImplementation(() => {})
     vi.spyOn(runtime, 'showTerminal').mockResolvedValue({
@@ -51,28 +72,31 @@ describe('orchestration new-worktree workers', () => {
       kind: 'git'
     } as never)
     vi.spyOn(runtime, 'createTerminal')
-    vi.spyOn(runtime, 'listTerminals').mockResolvedValue({
-      terminals: [{ handle: 'term_worker', title: 'Codex' }],
-      totalCount: 1,
-      truncated: false
-    } as never)
-    vi.spyOn(runtime, 'waitForTerminal').mockResolvedValue({
-      handle: 'term_worker',
+    vi.spyOn(runtime, 'listTerminals').mockImplementation(
+      async () =>
+        ({
+          terminals: [{ handle: workerHandle, title: 'Codex' }],
+          totalCount: 1,
+          truncated: false
+        }) as never
+    )
+    vi.spyOn(runtime, 'waitForTerminal').mockImplementation(async (handle) => ({
+      handle,
       condition: 'tui-idle',
       satisfied: true,
       status: 'running',
       exitCode: null
-    })
+    }))
     vi.spyOn(runtime, 'waitForSetupTerminalCompletion').mockReturnValue(
       new Promise(() => undefined)
     )
     vi.spyOn(runtime, 'getTerminalOrchestrationCliCommand').mockReturnValue('orca')
-    vi.spyOn(runtime, 'sendTerminalAgentPrompt').mockResolvedValue({
-      handle: 'term_worker',
+    vi.spyOn(runtime, 'sendTerminalAgentPrompt').mockImplementation(async (handle) => ({
+      handle,
       accepted: true,
       bytesWritten: 1,
       semanticObservedAt: Date.now()
-    })
+    }))
   })
 
   afterEach(() => {
@@ -111,26 +135,29 @@ describe('orchestration new-worktree workers', () => {
   }) {
     const hookFound = options?.hookFound ?? true
     const state = options?.state ?? (hookFound ? 'running' : 'not_configured')
-    vi.spyOn(runtime, 'createManagedWorktree').mockResolvedValue({
-      worktree: { id: 'repo::created', repoId: 'repo' },
-      startupTerminal: { spawned: true, handle: 'term_worker' },
-      setupReceipt: {
-        requested: state === 'skipped' ? 'skip' : 'run',
-        hookFound,
-        startupPolicy: options?.startupPolicy ?? 'start-immediately',
-        state,
-        terminalHandle:
-          options?.setupTerminalHandle ??
-          options?.terminals?.find((terminal) => terminal.title === 'Setup')?.handle
-      }
-    } as never)
-    if (options?.terminals) {
-      vi.mocked(runtime.listTerminals).mockResolvedValue({
-        terminals: options.terminals,
-        totalCount: options.terminals.length,
-        truncated: false
-      } as never)
-    }
+    vi.spyOn(runtime, 'createManagedWorktree').mockImplementation(async (args) => {
+      workerHandle = args.workerGenerationTerminalOperation?.terminalHandle ?? 'term_worker'
+      return {
+        worktree: { id: 'repo::created', repoId: 'repo' },
+        startupTerminal: { spawned: true, handle: workerHandle },
+        setupReceipt: {
+          requested: state === 'skipped' ? 'skip' : 'run',
+          hookFound,
+          startupPolicy: options?.startupPolicy ?? 'start-immediately',
+          state,
+          terminalHandle:
+            options?.setupTerminalHandle ??
+            options?.terminals?.find((terminal) => terminal.title === 'Setup')?.handle
+        }
+      } as never
+    })
+    vi.mocked(runtime.listTerminals).mockImplementation(async () => {
+      const terminals = (options?.terminals ?? [{ handle: 'term_worker', title: 'Codex' }]).map(
+        (terminal) =>
+          terminal.handle === 'term_worker' ? { ...terminal, handle: workerHandle } : terminal
+      )
+      return { terminals, totalCount: terminals.length, truncated: false } as never
+    })
   }
 
   it('creates an independent top-level worktree and reuses its agent terminal', async () => {
@@ -159,7 +186,7 @@ describe('orchestration new-worktree workers', () => {
           kind: 'terminal',
           role: 'agent',
           action: 'reused_agent_terminal',
-          id: 'term_worker'
+          id: workerHandle
         })
       ])
     )
@@ -494,11 +521,11 @@ describe('orchestration new-worktree workers', () => {
       failedStage: 'agent_readiness',
       effects: expect.arrayContaining([
         expect.objectContaining({ kind: 'worktree', id: 'repo::created' }),
-        expect.objectContaining({ kind: 'terminal', id: 'term_worker' })
+        expect.objectContaining({ kind: 'terminal', id: workerHandle })
       ]),
       residualResources: expect.arrayContaining([
         expect.objectContaining({ kind: 'worktree', id: 'repo::created' }),
-        expect.objectContaining({ kind: 'terminal', id: 'term_worker' })
+        expect.objectContaining({ kind: 'terminal', id: workerHandle })
       ])
     })
   })
@@ -526,12 +553,12 @@ describe('orchestration new-worktree workers', () => {
   it('persists the retry request with the starting Dispatch before worktree effects', async () => {
     const task = db.createTask({ spec: 'atomic worker acceptance', runId })
     let finishCreate: ((value: CreateWorktreeResult) => void) | undefined
-    vi.spyOn(runtime, 'createManagedWorktree').mockImplementation(
-      async () =>
-        await new Promise((resolve) => {
-          finishCreate = resolve
-        })
-    )
+    vi.spyOn(runtime, 'createManagedWorktree').mockImplementation(async (args) => {
+      workerHandle = args.workerGenerationTerminalOperation?.terminalHandle ?? 'term_worker'
+      return await new Promise((resolve) => {
+        finishCreate = resolve
+      })
+    })
     const dispatcher = new RpcDispatcher({ runtime, methods: ORCHESTRATION_METHODS })
     const request: RpcRequest = {
       id: 'rpc_worker_start',
@@ -566,7 +593,7 @@ describe('orchestration new-worktree workers', () => {
 
     finishCreate?.({
       worktree: { id: 'repo::created', repoId: 'repo' },
-      startupTerminal: { spawned: true, handle: 'term_worker' },
+      startupTerminal: { spawned: true, handle: workerHandle },
       setupReceipt: {
         requested: 'run',
         hookFound: false,
@@ -657,7 +684,7 @@ describe('orchestration new-worktree workers', () => {
         failedStage: 'dispatch_input',
         residualResources: expect.arrayContaining([
           expect.objectContaining({ kind: 'worktree', id: 'repo::created' }),
-          expect.objectContaining({ kind: 'terminal', id: 'term_worker' })
+          expect.objectContaining({ kind: 'terminal', id: workerHandle })
         ]),
         mutation: { requestId: 'worker_start_request', replayed: false }
       }
@@ -707,7 +734,7 @@ describe('orchestration new-worktree workers', () => {
         state: 'starting',
         stage: 'terminal_readying',
         worktree_id: 'repo::created',
-        agent_terminal_handle: 'term_worker'
+        agent_terminal_handle: workerHandle
       })
     })
     const dispatch = db.getDispatchContext(db.listTasks()[0]!.id)!
@@ -743,4 +770,51 @@ describe('orchestration new-worktree workers', () => {
       stage: 'input_accepted'
     })
   })
+
+  it.each([
+    ['completed', 'ready'],
+    ['not_started', 'outcome_unknown'],
+    ['conflict', 'failed'],
+    ['unverifiable', 'outcome_unknown']
+  ] as const)(
+    'classifies an ambiguous prompt submit with immediate %s inspection',
+    async (verdict, expectedState) => {
+      mockCreatedWorktree({ hookFound: false })
+      vi.mocked(runtime.sendTerminalAgentPrompt).mockRejectedValueOnce(
+        Object.assign(new Error('prompt submit reply lost'), { code: 'operation_unknown' })
+      )
+      const inspect = vi.spyOn(runtime, 'inspectTerminalWorkerPromptOperation').mockResolvedValue(
+        verdict === 'completed'
+          ? ({
+              verdict,
+              receipt: {
+                operationId: 'prompt-operation',
+                payloadFingerprint: 'prompt-fingerprint',
+                sessionIncarnationId: 'new-daemon:pty:process',
+                terminalHandle: workerHandle,
+                completedAt: Date.now(),
+                semanticObservedAt: Date.now()
+              }
+            } as never)
+          : { verdict }
+      )
+
+      const { result } = await startWorker({ name: `inspect-${verdict}` })
+
+      expect(result).toMatchObject({
+        state: expectedState,
+        ...(verdict === 'conflict'
+          ? { lastError: expect.stringContaining('identity conflict') }
+          : verdict === 'completed'
+            ? {}
+            : { failedStage: 'dispatch_input' })
+      })
+      expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledOnce()
+      expect(inspect).toHaveBeenCalledOnce()
+      if (verdict === 'completed') {
+        const dispatchId = (result as { dispatchId: string }).dispatchId
+        expect(db.getDispatchContextById(dispatchId)?.capability_revoked_at).toBeNull()
+      }
+    }
+  )
 })

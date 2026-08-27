@@ -5,12 +5,15 @@ import type { OrchestrationDb } from '../../orchestration/db'
 import type { OrcaRuntimeService } from '../../orca-runtime'
 import { FLOATING_TERMINAL_WORKTREE_ID } from '../../../../shared/constants'
 
+const itOnWindows = process.platform === 'win32' ? it : it.skip
+
 describe('orchestration RPC methods', () => {
   const h = createOrchestrationRpcHarness()
   const { coordinatorPaneKey } = h
   let db: OrchestrationDb
   let runtime: OrcaRuntimeService
   let ctx: RpcContext
+  let createdWorkerHandle = 'term_worker'
 
   function setup(withBoundRun = true): void {
     ;({ db, runtime, ctx } = h.setup(withBoundRun))
@@ -26,10 +29,11 @@ describe('orchestration RPC methods', () => {
 
   describe('composed workers', () => {
     function mockCurrentWorkerStart(options?: { ready?: boolean }): void {
+      createdWorkerHandle = 'term_worker'
       vi.mocked(runtime.getTerminalPaneKey).mockImplementation((handle) =>
         handle === 'term_coord'
           ? coordinatorPaneKey
-          : handle === 'term_worker'
+          : handle === createdWorkerHandle || handle === 'term_worker'
             ? 'tab_worker:leaf_worker'
             : null
       )
@@ -43,10 +47,13 @@ describe('orchestration RPC methods', () => {
       vi.spyOn(runtime, 'showManagedTerminalWorkspace').mockResolvedValue({
         id: 'repo::worktree'
       } as never)
-      vi.spyOn(runtime, 'createTerminal').mockResolvedValue({
-        handle: 'term_worker',
-        worktreeId: 'repo::worktree',
-        title: 'worker'
+      vi.spyOn(runtime, 'createTerminal').mockImplementation(async (_selector, options) => {
+        createdWorkerHandle = options?.preAllocatedHandle ?? 'term_worker'
+        return {
+          handle: createdWorkerHandle,
+          worktreeId: 'repo::worktree',
+          title: 'worker'
+        }
       })
       vi.spyOn(runtime, 'waitForTerminal').mockResolvedValue({
         handle: 'term_worker',
@@ -56,7 +63,28 @@ describe('orchestration RPC methods', () => {
         exitCode: null
       })
       vi.mocked(runtime.getTerminalProcessIncarnation).mockImplementation((handle) =>
-        handle === 'term_worker' ? 'runtime_test:term_worker:1' : null
+        handle === createdWorkerHandle || handle === 'term_worker'
+          ? 'runtime_test:term_worker:1'
+          : null
+      )
+      vi.spyOn(runtime, 'getOrchestrationDispatchAuthority').mockImplementation((handle) =>
+        handle === createdWorkerHandle || handle === 'term_worker'
+          ? ({
+              terminalHandle: handle,
+              paneKey: 'tab_worker:leaf_worker',
+              processIncarnation: 'runtime_test:term_worker:1',
+              hostScope: {
+                kind: 'local',
+                hostId: 'local',
+                restartCustody: {
+                  kind: 'windows_daemon_job',
+                  daemonPid: 4000,
+                  daemonStartedAtMs: 1_786_000_000_000,
+                  daemonLaunchNonce: 'composed-workers-test-daemon'
+                }
+              }
+            } as never)
+          : null
       )
       vi.spyOn(runtime, 'getTerminalOrchestrationCliCommand').mockReturnValue('orca')
       vi.spyOn(runtime, 'sendTerminalAgentPrompt').mockResolvedValue({
@@ -155,13 +183,49 @@ describe('orchestration RPC methods', () => {
       // the tab without scrolling the sidebar to the worker's workspace.
       expect(runtime.createTerminal).toHaveBeenCalledWith('id:repo::worktree', {
         startupAgent: 'codex',
+        requireHostCrashContainment: true,
         title: `worker-${task.id}`,
-        surfaceOwner: false
+        surfaceOwner: false,
+        preAllocatedHandle: createdWorkerHandle,
+        tabId: expect.any(String),
+        leafId: expect.any(String),
+        agentSessionCreateOperationId: expect.any(String)
       })
       expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledWith(
-        'term_worker',
-        expect.stringContaining('--dispatch-capability dcap_')
+        createdWorkerHandle,
+        expect.stringContaining('--dispatch-capability dcap_'),
+        expect.objectContaining({
+          workerPromptOperation: {
+            operationId: expect.any(String),
+            payloadFingerprint: expect.any(String)
+          }
+        })
       )
+    })
+
+    itOnWindows('refuses a fresh native worker without restart-safe daemon custody', async () => {
+      setup()
+      mockCurrentWorkerStart()
+      vi.mocked(runtime.getOrchestrationDispatchAuthority).mockReturnValue({
+        terminalHandle: 'term_worker',
+        paneKey: 'tab_worker:leaf_worker',
+        processIncarnation: 'runtime_test:term_worker:1',
+        hostScope: { kind: 'local', hostId: 'local' }
+      } as never)
+      const task = db.createTask({ spec: 'unsafe restart custody' })
+
+      await expect(
+        call('orchestration.workerStart', {
+          task: task.id,
+          from: 'term_coord',
+          agent: 'codex'
+        })
+      ).resolves.toMatchObject({
+        state: 'failed',
+        failedStage: 'agent_readiness',
+        lastError: 'terminal_restart_custody_unavailable'
+      })
+      expect(runtime.sendTerminalAgentPrompt).not.toHaveBeenCalled()
     })
 
     it('applies and reports opaque per-invocation model preferences', async () => {
@@ -253,7 +317,16 @@ describe('orchestration RPC methods', () => {
         paneKey: 'tab_worker:leaf_worker',
         processIncarnation: 'runtime_test:term_worker:1',
         launchTokenHash: 'worker-launch-token-hash',
-        hostScope: { kind: 'local', hostId: 'local' }
+        hostScope: {
+          kind: 'local',
+          hostId: 'local',
+          restartCustody: {
+            kind: 'windows_daemon_job',
+            daemonPid: 4000,
+            daemonStartedAtMs: 1_786_000_000_000,
+            daemonLaunchNonce: 'composed-workers-test-daemon'
+          }
+        }
       })
       const task = db.createTask({ spec: 'persist worker identity' })
 
@@ -271,12 +344,15 @@ describe('orchestration RPC methods', () => {
     it('surfaces a worker terminal reveal failure without discarding the live worker', async () => {
       setup()
       mockCurrentWorkerStart()
-      vi.mocked(runtime.createTerminal).mockResolvedValue({
-        handle: 'term_worker',
-        worktreeId: 'repo::worktree',
-        title: 'worker',
-        surface: 'background',
-        warning: 'Terminal term_worker is running but could not be revealed.'
+      vi.mocked(runtime.createTerminal).mockImplementation(async (_selector, options) => {
+        createdWorkerHandle = options?.preAllocatedHandle ?? 'term_worker'
+        return {
+          handle: createdWorkerHandle,
+          worktreeId: 'repo::worktree',
+          title: 'worker',
+          surface: 'background',
+          warning: 'Terminal term_worker is running but could not be revealed.'
+        }
       })
       const task = db.createTask({ spec: 'keep working if reveal fails' })
 
@@ -423,7 +499,9 @@ describe('orchestration RPC methods', () => {
       })) as { state: string; failedStage: string; residualResources: { id: string }[] }
 
       expect(result).toMatchObject({ state: 'failed', failedStage: 'agent_readiness' })
-      expect(result.residualResources).toEqual([expect.objectContaining({ id: 'term_worker' })])
+      expect(result.residualResources).toEqual([
+        expect.objectContaining({ id: createdWorkerHandle })
+      ])
       expect(db.getTask(task.id)?.status).toBe('failed')
       expect(runtime.sendTerminalAgentPrompt).not.toHaveBeenCalled()
     })
@@ -443,6 +521,31 @@ describe('orchestration RPC methods', () => {
       expect(result).toMatchObject({
         state: 'failed',
         failedStage: 'terminal_create',
+        residualResources: []
+      })
+      expect(runtime.sendTerminalAgentPrompt).not.toHaveBeenCalled()
+    })
+
+    it('fails closed when terminal creation returns a different operation handle', async () => {
+      setup()
+      mockCurrentWorkerStart()
+      vi.mocked(runtime.createTerminal).mockResolvedValueOnce({
+        handle: 'term_conflicting_owner',
+        worktreeId: 'repo::worktree',
+        title: 'conflict'
+      })
+      const task = db.createTask({ spec: 'terminal operation identity conflict' })
+
+      const result = (await call('orchestration.workerStart', {
+        task: task.id,
+        from: 'term_coord',
+        agent: 'codex'
+      })) as { state: string; failedStage: string; lastError: string; residualResources: unknown[] }
+
+      expect(result).toMatchObject({
+        state: 'failed',
+        failedStage: 'terminal_create',
+        lastError: 'worker_generation_terminal_identity_conflict',
         residualResources: []
       })
       expect(runtime.sendTerminalAgentPrompt).not.toHaveBeenCalled()
@@ -468,7 +571,9 @@ describe('orchestration RPC methods', () => {
 
       expect(result).toMatchObject({ state: 'failed', failedStage: 'dispatch_input' })
       expect(result.residualResources).toEqual(
-        expect.arrayContaining([expect.objectContaining({ kind: 'terminal', id: 'term_worker' })])
+        expect.arrayContaining([
+          expect.objectContaining({ kind: 'terminal', id: createdWorkerHandle })
+        ])
       )
     })
 
@@ -513,26 +618,33 @@ describe('orchestration RPC methods', () => {
         id: 'repo',
         kind: 'git'
       } as never)
-      const create = vi.spyOn(runtime, 'createManagedWorktree').mockResolvedValue({
-        worktree: { id: 'repo::child', repoId: 'repo' },
-        startupTerminal: { spawned: true, handle: 'term_worker' },
-        setupReceipt: {
-          requested: 'run',
-          hookFound: true,
-          startupPolicy: 'start-immediately',
-          state: 'running',
-          terminalHandle: 'term_setup'
-        }
-      } as never)
-      vi.spyOn(runtime, 'listTerminals').mockResolvedValue({
-        terminals: [
-          { handle: 'term_worker', title: 'Codex' },
-          { handle: 'term_setup', title: 'Setup' },
-          { handle: 'term_logs', title: 'Logs' }
-        ],
-        totalCount: 3,
-        truncated: false
-      } as never)
+      const create = vi.spyOn(runtime, 'createManagedWorktree').mockImplementation(async (args) => {
+        createdWorkerHandle =
+          args.workerGenerationTerminalOperation?.terminalHandle ?? 'term_worker'
+        return {
+          worktree: { id: 'repo::child', repoId: 'repo' },
+          startupTerminal: { spawned: true, handle: createdWorkerHandle },
+          setupReceipt: {
+            requested: 'run',
+            hookFound: true,
+            startupPolicy: 'start-immediately',
+            state: 'running',
+            terminalHandle: 'term_setup'
+          }
+        } as never
+      })
+      vi.spyOn(runtime, 'listTerminals').mockImplementation(
+        async () =>
+          ({
+            terminals: [
+              { handle: createdWorkerHandle, title: 'Codex' },
+              { handle: 'term_setup', title: 'Setup' },
+              { handle: 'term_logs', title: 'Logs' }
+            ],
+            totalCount: 3,
+            truncated: false
+          }) as never
+      )
       const task = db.createTask({ spec: 'child worker' })
 
       const result = (await call('orchestration.workerStart', {
@@ -562,6 +674,7 @@ describe('orchestration RPC methods', () => {
           runHooks: false,
           setupDecision: 'run',
           startupAgent: 'codex',
+          requireStartupHostCrashContainment: true,
           activate: false,
           lineage: expect.objectContaining({ parentWorktree: 'repo::parent', noParent: false })
         })

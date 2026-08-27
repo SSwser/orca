@@ -81,6 +81,8 @@ export type RpcContext = {
   orchestrationCapability?: string
   // Why: long-lived mutations such as ask can durably expose acceptance before their waiter settles.
   recordMutationReceipt?: (receipt: unknown) => void
+  // Why: a domain progress receipt must remain resumable under the same durable mutation identity.
+  deferMutationCompletion?: () => void
   // Why: worker-start commits this identity with its starting Dispatch so crash recovery always has an inspectable operation.
   orchestrationMutation?: {
     callerFingerprint: string

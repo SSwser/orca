@@ -13,6 +13,7 @@ export type DurableMutationInvocation = {
     payloadHash: string
   }
   recordReceipt: (receipt: unknown) => void
+  deferCompletion: () => void
 }
 
 export class OrchestrationMutationExecutor {
@@ -47,6 +48,7 @@ export class OrchestrationMutationExecutor {
     const identity = { callerFingerprint, requestId, method: request.method, payloadHash }
     const atomicWorkerAcceptance =
       request.method === 'orchestration.workerStart' ||
+      request.method === 'orchestration.workerRecover' ||
       request.method === 'orchestration.federationAttachStart'
     const begun = atomicWorkerAcceptance
       ? (() => {
@@ -64,7 +66,8 @@ export class OrchestrationMutationExecutor {
         })()
       : db.beginMutationReceipt(identity)
     const resumedPendingMutation =
-      begun.disposition === 'pending' && request.method === 'orchestration.workerRelease'
+      begun.disposition === 'pending' &&
+      ['orchestration.workerRelease', 'orchestration.workerRecover'].includes(request.method)
 
     if (begun.disposition === 'completed') {
       const active = this.inFlight.get(key)
@@ -78,7 +81,10 @@ export class OrchestrationMutationExecutor {
       if (active) {
         return attachMutationReceipt(await active, requestId, true)
       }
-      if (request.method !== 'orchestration.workerRelease') {
+      if (
+        request.method !== 'orchestration.workerRelease' &&
+        request.method !== 'orchestration.workerRecover'
+      ) {
         const recovery = getPendingWorkerStartRecovery(request.method, begun.row.receipt)
         throw new OrchestrationError(
           'operation_unknown',
@@ -102,12 +108,20 @@ export class OrchestrationMutationExecutor {
         receipt: JSON.stringify(attachMutationReceipt(result, requestId, resumedPendingMutation))
       })
     }
-    const active = Promise.resolve().then(() => invoke({ identity, recordReceipt }))
+    let completionDeferred = false
+    const deferCompletion = (): void => {
+      completionDeferred = true
+    }
+    const active = Promise.resolve().then(() =>
+      invoke({ identity, recordReceipt, deferCompletion })
+    )
     this.inFlight.set(key, active)
     try {
       const result = await active
       const receipted = attachMutationReceipt(result, requestId, resumedPendingMutation)
-      db.completeMutationReceipt({ ...identity, receipt: JSON.stringify(receipted) })
+      if (!completionDeferred) {
+        db.completeMutationReceipt({ ...identity, receipt: JSON.stringify(receipted) })
+      }
       return receipted
     } catch (error) {
       if (!(error instanceof OrchestrationError && error.code === 'operation_unknown')) {

@@ -262,7 +262,10 @@ describe('durable orchestration mutation ledger', () => {
       method: 'orchestration.workerRelease',
       payloadHash
     })
-    const effect = vi.fn().mockReturnValue({ state: 'release_pending' })
+    const effect = vi.fn((_params, context) => {
+      context.deferMutationCompletion?.()
+      return { state: 'release_pending' }
+    })
     const dispatcher = new RpcDispatcher({
       runtime,
       methods: [
@@ -291,7 +294,7 @@ describe('durable orchestration mutation ledger', () => {
       }
     })
     expect(effect).toHaveBeenCalledTimes(1)
-    expect(db.getMutationReceipt(callerFingerprint, 'mutation_release')?.state).toBe('completed')
+    expect(db.getMutationReceipt(callerFingerprint, 'mutation_release')?.state).toBe('pending')
     db.close()
   })
 

@@ -123,6 +123,7 @@ export class RpcDispatcher {
           authenticatedCallerFingerprint:
             mutation?.identity.callerFingerprint ?? authenticatedCallerFingerprint,
           recordMutationReceipt: mutation?.recordReceipt,
+          deferMutationCompletion: mutation?.deferCompletion,
           orchestrationMutation: mutation?.identity,
           legacyCoordinatorRunId,
           legacyCoordinatorAuthority: legacyCoordinator?.authority,
@@ -237,6 +238,7 @@ export class RpcDispatcher {
             authenticatedCallerFingerprint:
               mutation?.identity.callerFingerprint ?? authenticatedCallerFingerprint,
             recordMutationReceipt: mutation?.recordReceipt,
+            deferMutationCompletion: mutation?.deferCompletion,
             orchestrationMutation: mutation?.identity,
             pairing: options?.pairing,
             sendBinary: options?.sendBinary,

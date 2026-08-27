@@ -49,6 +49,7 @@ type PromptContractHarness = {
   taskId: string
   submittedTurns: () => number
   startedTurns: () => number
+  prematurePastes: () => number
   prematureSubmits: () => number
   writes: string[]
 }
@@ -59,9 +60,17 @@ async function createPromptContractHarness(
   let composerReady = false
   let submittedTurns = 0
   let startedTurns = 0
+  let inputReady = false
+  let prematurePastes = 0
   let prematureSubmits = 0
-  const fixture = await createAgentPromptSubmissionRuntime((runtime, data) => {
+  const acceptPromptWrite: Parameters<typeof createAgentPromptSubmissionRuntime>[0] = (
+    runtime,
+    data
+  ) => {
     if (data.includes(AGENT_PROMPT_BRACKETED_PASTE_END)) {
+      if (!inputReady) {
+        prematurePastes += 1
+      }
       setTimeout(() => runtime.onPtyData('pty-prompt', 'partial composer frame', Date.now()), 650)
       setTimeout(() => runtime.onPtyData('pty-prompt', '\x1b[?25h', Date.now()), 750)
       setTimeout(() => {
@@ -81,9 +90,41 @@ async function createPromptContractHarness(
       startedTurns += 1
       runtime.onPtyData('pty-prompt', '\x1b]0;Codex working\x07', Date.now())
     }
-  }, 'codex')
+  }
+  const fixture = await createAgentPromptSubmissionRuntime(acceptPromptWrite, 'codex')
   const { runtime, handle } = fixture
+  runtime.setPtyController({
+    write: () => {
+      throw new Error('legacy write must not run')
+    },
+    supportsWorkerPromptOperations: () => true,
+    writeWorkerPromptOperation: async (_ptyId, operation) => {
+      fixture.writes.push(operation.step.data)
+      acceptPromptWrite(runtime, operation.step.data, fixture.writes.length)
+      return { accepted: true }
+    },
+    inspectWorkerPromptOperation: async () => ({ verdict: 'not_started' }),
+    kill: () => true,
+    getForegroundProcess: async () => null,
+    serializeProviderBuffer: async () => ({
+      data: [
+        ' >_ OpenAI Codex (v0.149.0)',
+        ' model:     gpt-5.6-sol high',
+        ' directory: /tmp/worktree-a',
+        ...(inputReady ? [] : [' Starting MCP servers (1/2): codex_apps']),
+        ' › Ask Codex to do anything'
+      ].join('\r\n'),
+      cols: 100,
+      rows: 30,
+      seq: 10_000,
+      source: 'headless',
+      alternateScreen: false
+    })
+  })
   runtime.onPtyData('pty-prompt', '\x1b]0;Codex idle\x07', Date.now())
+  setTimeout(() => {
+    inputReady = true
+  }, 500)
 
   const temporaryRoot = mkdtempSync(join(tmpdir(), 'orca-worker-prompt-contract-'))
   temporaryRoots.push(temporaryRoot)
@@ -108,10 +149,19 @@ async function createPromptContractHarness(
     candidate === handle ? `runtime_test:${handle}:1` : null
   )
   vi.spyOn(runtime, 'validateOrchestrationAgentLauncher').mockImplementation(() => {})
-  vi.spyOn(runtime, 'showTerminal').mockResolvedValue({
-    handle: 'term_coord',
-    worktreeId: 'repo::parent',
-    status: 'running'
+  vi.spyOn(runtime, 'showTerminal').mockImplementation(async (candidate) => {
+    if (candidate === 'term_coord' || candidate === handle) {
+      return {
+        handle: candidate,
+        worktreeId: AGENT_PROMPT_TEST_WORKTREE_ID,
+        status: 'running'
+      } as never
+    }
+    throw new Error(`Unknown fixture terminal: ${candidate}`)
+  })
+  vi.spyOn(runtime, 'showManagedTerminalWorkspace').mockResolvedValue({
+    id: AGENT_PROMPT_TEST_WORKTREE_ID,
+    repoId: 'repo-1'
   } as never)
   vi.spyOn(runtime, 'showManagedWorktree').mockResolvedValue({
     id: 'repo::parent',
@@ -143,15 +193,15 @@ async function createPromptContractHarness(
       params: {
         task: task.id,
         from: 'term_coord',
-        worktree: 'new-child',
-        name: `prompt-contract-${outcome}`,
-        agent: 'codex'
+        worktree: 'current',
+        terminal: handle
       }
     },
     requestId: `${REQUEST_ID}_${outcome}`,
     taskId: task.id,
     submittedTurns: () => submittedTurns,
     startedTurns: () => startedTurns,
+    prematurePastes: () => prematurePastes,
     prematureSubmits: () => prematureSubmits,
     writes: fixture.writes
   }
@@ -186,6 +236,9 @@ describe('orchestration worker-start prompt contract', () => {
 
     await vi.runAllTimersAsync()
     const response = await pending
+    if (!response.ok) {
+      throw new Error(`${response.error.code}: ${response.error.message}`)
+    }
     expect(response).toMatchObject({
       ok: true,
       result: {
@@ -197,12 +250,10 @@ describe('orchestration worker-start prompt contract', () => {
         ])
       }
     })
-    if (!response.ok) {
-      throw new Error(response.error.message)
-    }
     const dispatchId = (response.result as { dispatchId: string }).dispatchId
     expect(harness.submittedTurns()).toBe(1)
     expect(harness.startedTurns()).toBe(1)
+    expect(harness.prematurePastes()).toBe(0)
     expect(harness.prematureSubmits()).toBe(0)
     expect(harness.writes.filter((data) => data === '\r')).toHaveLength(1)
     const persisted = reopenPromptContractDb(harness)
@@ -227,38 +278,37 @@ describe('orchestration worker-start prompt contract', () => {
     })
   })
 
-  it('reports a swallowed Enter as stalled without sending a rescue Enter', async () => {
+  it('rejects transport-only daemon acceptance without sending a rescue Enter', async () => {
     vi.useFakeTimers()
     const harness = await createPromptContractHarness('swallowed')
     const pending = harness.dispatcher.dispatch(harness.request)
 
     await vi.runAllTimersAsync()
     const response = await pending
+    if (!response.ok) {
+      throw new Error(`${response.error.code}: ${response.error.message}`)
+    }
     expect(response).toMatchObject({
       ok: true,
       result: {
         state: 'failed',
+        stage: 'dispatch_input',
         failedStage: 'dispatch_input',
         lastError: 'agent_prompt_stalled',
         mutation: { requestId: harness.requestId, replayed: false }
       }
     })
-    if (!response.ok) {
-      throw new Error(response.error.message)
-    }
     const dispatchId = (response.result as { dispatchId: string }).dispatchId
     await vi.advanceTimersByTimeAsync(20_000)
     expect(harness.submittedTurns()).toBe(1)
     expect(harness.startedTurns()).toBe(0)
+    expect(harness.prematurePastes()).toBe(0)
     expect(harness.prematureSubmits()).toBe(0)
     expect(harness.writes.filter((data) => data === '\r')).toHaveLength(1)
     const persisted = reopenPromptContractDb(harness)
     expect(persisted.getTask(harness.taskId)?.status).toBe('failed')
-    // Why (#16095): the receipt still reports the failure, but Enter was written before it was
-    // verified — so the capability survives and the worker's own report can correct the record.
     expect(persisted.getDispatchContextById(dispatchId)).toMatchObject({
       status: 'failed',
-      last_failure: 'agent_prompt_stalled',
       capability_revoked_at: null
     })
     expect(persisted.getWorkerDispatch(dispatchId)).toMatchObject({
@@ -272,7 +322,7 @@ describe('orchestration worker-start prompt contract', () => {
     expect(JSON.parse(receipt?.receipt ?? 'null')).toMatchObject({
       dispatchId,
       state: 'failed',
-      failedStage: 'dispatch_input',
+      stage: 'dispatch_input',
       lastError: 'agent_prompt_stalled'
     })
   })
