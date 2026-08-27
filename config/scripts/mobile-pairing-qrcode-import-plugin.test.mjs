@@ -3,11 +3,9 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { oxlintPath } from './oxlint-executable.mjs'
 
 const pluginPath = path.resolve('config/oxlint-plugins/mobile-pairing-qrcode-import.mjs')
-const oxlintPath = path.resolve(
-  process.platform === 'win32' ? 'node_modules/.bin/oxlint.cmd' : 'node_modules/.bin/oxlint'
-)
 
 function lintSource(source) {
   const directory = mkdtempSync(path.join(tmpdir(), 'orca-qrcode-import-lint-'))
@@ -22,9 +20,11 @@ function lintSource(source) {
       rules: { 'mobile-pairing/no-eager-qrcode-import': 'error' }
     })
   )
-  const result = spawnSync(oxlintPath, ['--config', configPath, '--format', 'json', sourcePath], {
-    encoding: 'utf8'
-  })
+  const result = spawnSync(
+    process.execPath,
+    [oxlintPath, '--config', configPath, '--format', 'json', sourcePath],
+    { encoding: 'utf8' }
+  )
   if (result.error) {
     throw result.error
   }

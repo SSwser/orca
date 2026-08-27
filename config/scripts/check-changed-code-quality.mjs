@@ -4,6 +4,7 @@ import path from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 import { resolvePullRequestDiffBase } from './git-pull-request-diff-base.mjs'
+import { oxlintPath } from './oxlint-executable.mjs'
 
 const SOURCE_FILE_PATTERN = /\.(?:[cm]?[jt]sx?)$/
 export const OXLINT_SCANS = [
@@ -263,9 +264,13 @@ function printDiagnostic(diagnostic, root) {
   console.error(`${file}:${line} ${code}: ${diagnostic.message}`)
 }
 
+export function buildOxlintInvocation(args) {
+  return { command: process.execPath, args: [oxlintPath, ...args] }
+}
+
 function runOxlintScan(root, scan, files) {
-  const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
-  const result = spawnSync(pnpm, ['exec', 'oxlint', ...scan.args, '--format', 'json', ...files], {
+  const invocation = buildOxlintInvocation([...scan.args, '--format', 'json', ...files])
+  const result = spawnSync(invocation.command, invocation.args, {
     cwd: root,
     encoding: 'utf8',
     maxBuffer: 128 * 1024 * 1024

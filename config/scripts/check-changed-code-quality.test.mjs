@@ -1,11 +1,23 @@
 import { describe, expect, it } from 'vitest'
+import process from 'node:process'
 import {
   OXLINT_SCANS,
+  buildOxlintInvocation,
   diagnosticTouchesAddedLines,
   isMovedCode,
   overlapsAddedLines,
   parseAddedLineRanges
 } from './check-changed-code-quality.mjs'
+
+describe('Oxlint invocation', () => {
+  it('runs the workspace Oxlint entrypoint through Node without a pnpm subprocess', () => {
+    const invocation = buildOxlintInvocation(['--format', 'json', 'src/example.ts'])
+
+    expect(invocation.command).toBe(process.execPath)
+    expect(invocation.args[0]).toMatch(/[\\/]oxlint[\\/]bin[\\/]oxlint$/)
+    expect(invocation.args.slice(1)).toEqual(['--format', 'json', 'src/example.ts'])
+  })
+})
 
 describe('changed-code quality line matching', () => {
   it('parses added and replaced hunk ranges while ignoring deletions', () => {
