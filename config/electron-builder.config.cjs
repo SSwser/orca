@@ -140,6 +140,16 @@ module.exports = {
     // it is gitignored, but exclude it defensively so a stray local capture at
     // package time never bloats app.asar.
     '!pr-evidence{,/**/*}',
+    // Why: local packaging may target a nested dist/<candidate>/ directory; exclude
+    // every repository build output so older candidates cannot recurse into app.asar.
+    '!dist{,/**/*}',
+    // Why: plans, test reports, and Chromium's root debug log are local evidence,
+    // not runtime inputs, and must never leak into a user package.
+    '!plans{,/**/*}',
+    '!output{,/**/*}',
+    '!test-results{,/**/*}',
+    '!debug.log',
+    '!NUL',
     '!Casks{,/**/*}',
     '!{AGENTS.md,CLAUDE.md,DEVELOPING.md,bundle-size-progress.md,ORCHESTRATION_IMPLEMENTATION_CHECKLIST.md,ORCHESTRATION_STRUCTURED_OUTPUT_DESIGN.md}',
     '!out/**/*.test.js',

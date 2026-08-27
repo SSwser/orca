@@ -44,6 +44,12 @@ describe('electron-builder config', () => {
         '!tests{,/**/*}',
         '!examples{,/**/*}',
         '!pr-evidence{,/**/*}',
+        '!dist{,/**/*}',
+        '!plans{,/**/*}',
+        '!output{,/**/*}',
+        '!test-results{,/**/*}',
+        '!debug.log',
+        '!NUL',
         '!Casks{,/**/*}',
         '!{AGENTS.md,CLAUDE.md,DEVELOPING.md,bundle-size-progress.md,ORCHESTRATION_IMPLEMENTATION_CHECKLIST.md,ORCHESTRATION_STRUCTURED_OUTPUT_DESIGN.md}',
         '!out/**/*.test.js',
@@ -92,6 +98,25 @@ describe('electron-builder config', () => {
     // The real build outputs sit beside it under out/ and must still ship.
     expect(packs('out/main/index.js')).toBe(true)
     expect(packs('out/renderer/index.html')).toBe(true)
+  })
+
+  it('keeps local build and evidence outputs out of app.asar', () => {
+    const matcher = new FileMatcher('/app', '/dest', (value) => value, electronBuilderConfig.files)
+    matcher.prependPattern('**/*')
+    const isPacked = matcher.createFilter()
+    const packs = (repoPath) => isPacked(join('/app', repoPath), { isDirectory: () => false })
+
+    for (const localOnly of [
+      'dist/old-candidate/win-unpacked/Orca.exe',
+      'plans/009-prove-orca-dev-and-gate-live-recovery.md',
+      'output/playwright/real-gate-profile/daemon/daemon-v38.token',
+      'test-results/failed-test/error-context.md',
+      'debug.log',
+      'NUL'
+    ]) {
+      expect(packs(localOnly)).toBe(false)
+    }
+    expect(packs('out/main/index.js')).toBe(true)
   })
 
   it('keeps runtime resources available through extraResources', () => {

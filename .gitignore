@@ -25,6 +25,7 @@ node_modules
 dist/
 dist-electron/
 out/
+output/
 /build/
 release/
 native/**/.build/
@@ -90,6 +91,7 @@ design-docs/
 # Durable docs that should be tracked must live in one of the allow-listed
 # locations below (assets, readme, STYLEGUIDE, mobile terminal shortcut bar,
 # and the tracked reference docs linked from AGENTS.md / README.md).
+plans/
 docs/**
 !docs/
 !docs/assets/
