@@ -67,6 +67,24 @@ export function exposeWorkerTerminalResource(resource: WorkerTerminalResourceRow
   }
 }
 
+export function exposeWorkerTerminalContainment(
+  containment: NonNullable<ReturnType<OrchestrationDb['getWorkerTerminalContainment']>>
+) {
+  const recovery = containment.recovery
+  return {
+    recoveryId: recovery.id,
+    disposition: recovery.disposition,
+    sourceDeliveryId: recovery.source_delivery_id,
+    sourceWorktreeId: recovery.source_worktree_id,
+    trustedRevision: recovery.trusted_revision,
+    successorDispatchId: recovery.successor_dispatch_id,
+    successorWorktreeId: recovery.successor_worktree_id,
+    successorPlacement: recovery.successor_placement,
+    capacityState: containment.capacityState,
+    capacityReleasedAt: containment.capacityReleasedAt
+  }
+}
+
 export function archiveSummary(
   resource: WorkerTerminalResourceRow | null
 ): { source: string | null; status: string | null } | null {

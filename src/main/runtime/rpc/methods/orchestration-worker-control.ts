@@ -133,6 +133,7 @@ export const ORCHESTRATION_WORKER_CONTROL_METHODS: RpcMethod[] = [
       }
       const observation = await inspectWorkerTerminal(runtime, db, params.dispatch)
       const resource = db.getWorkerTerminalResourceByOwner(params.dispatch)
+      const containment = resource ? db.getWorkerTerminalContainment(resource.id) : undefined
       return {
         dispatch,
         worker: exposeWorker(worker),
@@ -147,7 +148,10 @@ export const ORCHESTRATION_WORKER_CONTROL_METHODS: RpcMethod[] = [
           // null there is the false negative this field exists to remove.
           ...(observation.agentWait !== undefined ? { agentWait: observation.agentWait } : {})
         },
-        terminalResource: resource ? workerRelease.exposeWorkerTerminalResource(resource) : null
+        terminalResource: resource ? workerRelease.exposeWorkerTerminalResource(resource) : null,
+        ...(containment
+          ? { containment: workerRelease.exposeWorkerTerminalContainment(containment) }
+          : {})
       }
     }
   }),

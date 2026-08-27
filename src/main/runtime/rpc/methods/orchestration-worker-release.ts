@@ -1,11 +1,13 @@
 import { z } from 'zod'
 import type { WorkerTerminalListState } from '../../orchestration/worker-terminal-ownership'
-import { defineMethod, type RpcMethod } from '../core'
+import { defineMethod, type RpcContext, type RpcHandler, type RpcMethod } from '../core'
 import { requiredString } from '../schemas'
 import {
   archiveSummary,
   completeWorkerTerminalRelease,
-  exposeWorkerTerminalResource
+  exposeWorkerTerminalContainment,
+  exposeWorkerTerminalResource,
+  type WorkerReleaseReceipt
 } from './orchestration-worker-release-completion'
 import {
   reconcileSettledWorkerTerminalRelease,
@@ -33,7 +35,7 @@ export const ORCHESTRATION_WORKER_RELEASE_METHODS: RpcMethod[] = [
   defineMethod({
     name: 'orchestration.workerRelease',
     params: WorkerDispatchParams,
-    handler: async (params, { runtime }) => {
+    handler: withWorkerReleaseFinality(async (params, { runtime }) => {
       const db = runtime.getOrchestrationDb()
       if (db.getFederatedDispatch(params.dispatch)) {
         // Fail closed: the worker server owns that terminal; a home-side close would be a guess.
@@ -54,6 +56,53 @@ export const ORCHESTRATION_WORKER_RELEASE_METHODS: RpcMethod[] = [
           state: 'already_released',
           processAction: 'none',
           archive: archiveSummary(requested.resource)
+        }
+      }
+      if (requested.disposition === 'reconcile_contained') {
+        const resource = requested.resource
+        const processIncarnation = resource.process_incarnation
+        const hostScope = resource.host_scope
+        const liveness =
+          processIncarnation && hostScope
+            ? await runtime.inspectTerminalProcessIncarnationLiveness(processIncarnation, hostScope)
+            : 'unverifiable'
+        if (processIncarnation && hostScope && liveness === 'exited') {
+          const settled = db.settleContainedWorkerTerminalExit({
+            resourceId: resource.id,
+            sourceDispatchId: params.dispatch,
+            processIncarnation,
+            hostScope
+          })
+          if (settled.disposition === 'released') {
+            runtime.notifyMessageArrived(`dispatch:${params.dispatch}`, 'status')
+            return {
+              dispatchId: params.dispatch,
+              state: 'released',
+              processAction: 'none',
+              archive: archiveSummary(db.getWorkerTerminalResource(resource.id) ?? null)
+            }
+          }
+          if (settled.disposition === 'already_released') {
+            return {
+              dispatchId: params.dispatch,
+              state: 'already_released',
+              processAction: 'none',
+              archive: archiveSummary(db.getWorkerTerminalResource(resource.id) ?? null)
+            }
+          }
+        }
+        return {
+          dispatchId: params.dispatch,
+          state: 'contained',
+          reason: 'lost_custody',
+          processAction: 'none',
+          archive: archiveSummary(resource),
+          recovery:
+            liveness === 'live'
+              ? 'The exact recorded process remains live under lost custody; no process action was taken and capacity remains withheld.'
+              : liveness === 'exited'
+                ? 'Exact exit was observed, but the contained resource identity changed; no process action was taken and capacity remains withheld.'
+                : 'The exact recorded process is unverifiable; no process action was taken and capacity remains withheld.'
         }
       }
       if (requested.disposition === 'reconcile_settled') {
@@ -87,7 +136,7 @@ export const ORCHESTRATION_WORKER_RELEASE_METHODS: RpcMethod[] = [
         dispatchId: params.dispatch,
         resource: requested.resource
       })
-    }
+    })
   }),
   defineMethod({
     name: 'orchestration.workerRetain',
@@ -151,6 +200,9 @@ export const ORCHESTRATION_WORKER_RELEASE_METHODS: RpcMethod[] = [
       const workers = rows
         .filter((row) => !params.terminalState || row.terminalState === params.terminalState)
         .map((row) => {
+          const containment = row.resource
+            ? db.getWorkerTerminalContainment(row.resource.id)
+            : undefined
           return {
             dispatchId: row.dispatchId,
             taskId: row.taskId,
@@ -159,7 +211,8 @@ export const ORCHESTRATION_WORKER_RELEASE_METHODS: RpcMethod[] = [
             dispatchStatus: row.dispatchStatus,
             agentTerminalHandle: row.agentTerminalHandle,
             terminalState: row.terminalState,
-            resource: row.resource ? exposeWorkerTerminalResource(row.resource) : null
+            resource: row.resource ? exposeWorkerTerminalResource(row.resource) : null,
+            ...(containment ? { containment: exposeWorkerTerminalContainment(containment) } : {})
           }
         })
       const counts: Partial<Record<WorkerTerminalListState, number>> = {}
@@ -181,3 +234,15 @@ export const ORCHESTRATION_WORKER_RELEASE_METHODS: RpcMethod[] = [
     })
   })
 ]
+
+function withWorkerReleaseFinality(
+  handler: RpcHandler<z.infer<typeof WorkerDispatchParams>>
+): RpcHandler<z.infer<typeof WorkerDispatchParams>> {
+  return async (params, context: RpcContext) => {
+    const receipt = (await handler(params, context)) as WorkerReleaseReceipt
+    if (!['released', 'already_released', 'retained'].includes(receipt.state)) {
+      context.deferMutationCompletion?.()
+    }
+    return receipt
+  }
+}
