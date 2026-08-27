@@ -1,4 +1,5 @@
 import { LEGACY_RUN_ID } from '../contract-constants'
+import { workerTerminalLifecycleTableSql } from './worker-terminal-lifecycle-v31'
 
 export function createCoreTablesSql(): string {
   return `
@@ -129,42 +130,7 @@ CREATE TABLE IF NOT EXISTS worker_dispatches (
   updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS worker_terminal_resources (
-  id                       TEXT PRIMARY KEY,
-  origin_dispatch_id       TEXT NOT NULL,
-  owner_dispatch_id        TEXT NOT NULL,
-  prior_owner_dispatch_ids TEXT NOT NULL DEFAULT '[]',
-  worktree_id              TEXT,
-  terminal_handle          TEXT NOT NULL,
-  pane_key                 TEXT,
-  process_incarnation      TEXT,
-  host_scope               TEXT,
-  ownership_state          TEXT NOT NULL DEFAULT 'owned'
-    CHECK(ownership_state IN ('owned', 'transferred', 'user_owned', 'external', 'released')),
-  release_state            TEXT NOT NULL DEFAULT 'not_requested'
-    CHECK(release_state IN (
-      'not_requested', 'retained', 'requested', 'releasing', 'released', 'unknown'
-    )),
-  retained_reason          TEXT,
-  release_requested_at     TEXT,
-  release_completed_at     TEXT,
-  release_error            TEXT,
-  archive_source           TEXT,
-  archive_status           TEXT,
-  created_at               TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at               TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_worker_terminal_resources_owner
-  ON worker_terminal_resources(owner_dispatch_id);
-CREATE INDEX IF NOT EXISTS idx_worker_terminal_resources_handle
-  ON worker_terminal_resources(terminal_handle);
-CREATE INDEX IF NOT EXISTS idx_worker_terminal_resources_pane
-  ON worker_terminal_resources(pane_key);
-CREATE INDEX IF NOT EXISTS idx_worker_terminal_resources_identity
-  ON worker_terminal_resources(process_incarnation, host_scope);
-CREATE INDEX IF NOT EXISTS idx_worker_terminal_resources_release
-  ON worker_terminal_resources(release_state);
+${workerTerminalLifecycleTableSql()}
 
 CREATE TABLE IF NOT EXISTS worker_terminal_archives (
   dispatch_id   TEXT PRIMARY KEY,
