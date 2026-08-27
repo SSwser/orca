@@ -45,7 +45,8 @@ describe('federated worker agent launch', () => {
     vi.spyOn(runtime, 'sendTerminalAgentPrompt').mockResolvedValue({
       handle: 'term_remote_worker',
       accepted: true,
-      bytesWritten: 1
+      bytesWritten: 1,
+      semanticObservedAt: Date.now()
     })
     const method = ORCHESTRATION_METHODS.find(
       (candidate) => candidate.name === 'orchestration.federationAttachStart'

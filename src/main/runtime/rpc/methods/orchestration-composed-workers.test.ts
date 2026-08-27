@@ -62,7 +62,8 @@ describe('orchestration RPC methods', () => {
       vi.spyOn(runtime, 'sendTerminalAgentPrompt').mockResolvedValue({
         handle: 'term_worker',
         accepted: true,
-        bytesWritten: 1
+        bytesWritten: 1,
+        semanticObservedAt: Date.now()
       })
     }
 

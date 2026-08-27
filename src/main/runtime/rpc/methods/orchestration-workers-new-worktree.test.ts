@@ -70,7 +70,8 @@ describe('orchestration new-worktree workers', () => {
     vi.spyOn(runtime, 'sendTerminalAgentPrompt').mockResolvedValue({
       handle: 'term_worker',
       accepted: true,
-      bytesWritten: 1
+      bytesWritten: 1,
+      semanticObservedAt: Date.now()
     })
   })
 
@@ -728,7 +729,12 @@ describe('orchestration new-worktree workers', () => {
       })
     )
 
-    finishPrompt?.({ handle: 'term_worker', accepted: true, bytesWritten: 1 })
+    finishPrompt?.({
+      handle: 'term_worker',
+      accepted: true,
+      bytesWritten: 1,
+      semanticObservedAt: Date.now()
+    })
     await expect(pending).resolves.toMatchObject({
       result: { state: 'ready', stage: 'input_accepted' }
     })

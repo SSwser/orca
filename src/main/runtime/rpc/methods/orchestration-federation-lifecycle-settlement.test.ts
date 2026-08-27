@@ -122,7 +122,8 @@ describe('orchestration federation lifecycle settlement', () => {
     vi.spyOn(workerRuntime, 'sendTerminalAgentPrompt').mockResolvedValue({
       handle: 'term_windows_worker',
       accepted: true,
-      bytesWritten: 1
+      bytesWritten: 1,
+      semanticObservedAt: Date.now()
     })
   }
 

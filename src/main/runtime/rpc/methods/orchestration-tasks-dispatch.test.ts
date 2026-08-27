@@ -322,7 +322,8 @@ describe('orchestration RPC methods', () => {
       const send = vi.spyOn(runtime, 'sendTerminalAgentPrompt').mockResolvedValue({
         handle: 'term_a',
         accepted: true,
-        bytesWritten: 1
+        bytesWritten: 1,
+        semanticObservedAt: Date.now()
       })
 
       await call('orchestration.dispatch', {
@@ -362,7 +363,8 @@ describe('orchestration RPC methods', () => {
       const agentPrompt = vi.spyOn(runtime, 'sendTerminalAgentPrompt').mockResolvedValue({
         handle: 'term_a',
         accepted: true,
-        bytesWritten: 1
+        bytesWritten: 1,
+        semanticObservedAt: Date.now()
       })
       const rawSend = vi.spyOn(runtime, 'sendTerminal')
 

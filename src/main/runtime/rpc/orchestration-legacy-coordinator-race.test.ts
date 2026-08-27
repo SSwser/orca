@@ -663,9 +663,12 @@ describe('legacy coordinator takeover races', () => {
           signalDetectionStarted?.()
         })
     )
-    const sendPrompt = vi
-      .spyOn(harness.runtime, 'sendTerminalAgentPrompt')
-      .mockResolvedValue({ handle: targetHandle, accepted: true, bytesWritten: 1 })
+    const sendPrompt = vi.spyOn(harness.runtime, 'sendTerminalAgentPrompt').mockResolvedValue({
+      handle: targetHandle,
+      accepted: true,
+      bytesWritten: 1,
+      semanticObservedAt: Date.now()
+    })
 
     const pending = harness.dispatcher.dispatch(
       request(
