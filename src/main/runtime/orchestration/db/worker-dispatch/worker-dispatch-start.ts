@@ -1,4 +1,4 @@
-import type { DispatchContextRow, WorkerDispatchRow } from '../../types'
+import type { DispatchContextRow, TaskRow, WorkerDispatchRow } from '../../types'
 import { OrchestrationError } from '../../orchestration-error'
 import { ensureMutationReceiptCapacity } from '../../mutation-receipt-capacity'
 import { CURRENT_CONTRACT_VERSION } from '../contract-constants'
@@ -6,6 +6,66 @@ import { generateId } from '../generated-id'
 import type { OrchestrationDb } from '../orchestration-db'
 import { insertStartingDispatchContextRow } from '../dispatch-row-writer'
 import type { DispatchCreator } from '../dispatch-depth'
+
+type StartingWorkerFederation = {
+  environmentId: string
+  environmentName: string
+  peerFingerprint: string
+  protocolVersion: number
+}
+
+export function insertStartingWorkerDispatchStatement(
+  this: OrchestrationDb,
+  params: {
+    dispatchId: string
+    task: TaskRow
+    startOptions: unknown
+    launchTokenHash?: string
+    runtimeEpoch?: string
+    federation?: StartingWorkerFederation
+    depth: number
+  }
+): { dispatch: DispatchContextRow; worker: WorkerDispatchRow } {
+  insertStartingDispatchContextRow(this.db, {
+    id: params.dispatchId,
+    runId: params.task.run_id,
+    taskId: params.task.id,
+    contractVersion: CURRENT_CONTRACT_VERSION,
+    launchTokenHash: params.launchTokenHash ?? null,
+    depth: params.depth
+  })
+  this.db
+    .prepare(
+      `INSERT INTO worker_dispatches (
+         dispatch_id, runtime_epoch, state, stage, start_options
+       ) VALUES (?, ?, 'starting', 'accepted', ?)`
+    )
+    .run(params.dispatchId, params.runtimeEpoch ?? null, JSON.stringify(params.startOptions))
+  if (params.federation) {
+    this.db
+      .prepare(
+        `INSERT INTO federated_dispatches (
+           dispatch_id, environment_id, environment_name, peer_fingerprint, protocol_version
+         ) VALUES (?, ?, ?, ?, ?)`
+      )
+      .run(
+        params.dispatchId,
+        params.federation.environmentId,
+        params.federation.environmentName,
+        params.federation.peerFingerprint,
+        params.federation.protocolVersion
+      )
+  }
+  this.db
+    .prepare(
+      "UPDATE tasks SET status = 'dispatched', result = NULL, completed_at = NULL WHERE id = ?"
+    )
+    .run(params.task.id)
+  return {
+    dispatch: this.getDispatchContextById(params.dispatchId) as DispatchContextRow,
+    worker: this.getWorkerDispatch(params.dispatchId) as WorkerDispatchRow
+  }
+}
 
 export function createStartingWorkerDispatch(
   this: OrchestrationDb,
@@ -15,12 +75,7 @@ export function createStartingWorkerDispatch(
     launchTokenHash?: string
     retryOf?: string
     runtimeEpoch?: string
-    federation?: {
-      environmentId: string
-      environmentName: string
-      peerFingerprint: string
-      protocolVersion: number
-    }
+    federation?: StartingWorkerFederation
     mutationReceipt?: {
       callerFingerprint: string
       requestId: string
@@ -62,6 +117,24 @@ export function createStartingWorkerDispatch(
     if (!task) {
       throw new OrchestrationError('task_not_found', `Task ${params.taskId} was not found.`)
     }
+    const unsettledResource = this.db
+      .prepare(
+        `SELECT r.id, r.lifecycle_state
+           FROM worker_terminal_resources r
+           JOIN dispatch_contexts d ON d.id = r.owner_dispatch_id
+          WHERE d.task_id = ?
+            AND r.lifecycle_state IN (
+              'owned', 'retained', 'release_requested', 'release_closing', 'release_unknown'
+            )
+          LIMIT 1`
+      )
+      .get(task.id) as { id: string; lifecycle_state: string } | undefined
+    if (unsettledResource) {
+      throw new OrchestrationError(
+        'terminal_resource_unsettled',
+        `Task ${task.id} cannot start while terminal resource ${unsettledResource.id} is ${unsettledResource.lifecycle_state}.`
+      )
+    }
     if (params.retryOf) {
       const prior = this.getDispatchContextById(params.retryOf)
       const priorWorker = this.getWorkerDispatch(params.retryOf)
@@ -100,47 +173,18 @@ export function createStartingWorkerDispatch(
           params.mutationReceipt.requestId
         )
     }
-    insertStartingDispatchContextRow(this.db, {
-      id,
-      runId: task.run_id,
-      taskId: task.id,
-      contractVersion: CURRENT_CONTRACT_VERSION,
-      launchTokenHash: params.launchTokenHash ?? null,
+    const started = insertStartingWorkerDispatchStatement.call(this, {
+      dispatchId: id,
+      task,
+      startOptions: params.startOptions,
+      launchTokenHash: params.launchTokenHash,
+      runtimeEpoch: params.runtimeEpoch,
+      federation: params.federation,
       depth: this.resolveChildDispatchDepth(params.creator, params.maxDepth)
     })
-    this.db
-      .prepare(
-        `INSERT INTO worker_dispatches (
-           dispatch_id, runtime_epoch, state, stage, start_options
-         ) VALUES (?, ?, 'starting', 'accepted', ?)`
-      )
-      .run(id, params.runtimeEpoch ?? null, JSON.stringify(params.startOptions))
-    if (params.federation) {
-      this.db
-        .prepare(
-          `INSERT INTO federated_dispatches (
-             dispatch_id, environment_id, environment_name, peer_fingerprint, protocol_version
-           ) VALUES (?, ?, ?, ?, ?)`
-        )
-        .run(
-          id,
-          params.federation.environmentId,
-          params.federation.environmentName,
-          params.federation.peerFingerprint,
-          params.federation.protocolVersion
-        )
-    }
-    this.db
-      .prepare(
-        "UPDATE tasks SET status = 'dispatched', result = NULL, completed_at = NULL WHERE id = ?"
-      )
-      .run(task.id)
     this.db.exec('COMMIT')
     this.hasAnyDispatchContextsCache = true
-    return {
-      dispatch: this.getDispatchContextById(id) as DispatchContextRow,
-      worker: this.getWorkerDispatch(id) as WorkerDispatchRow
-    }
+    return started
   } catch (error) {
     this.db.exec('ROLLBACK')
     throw error

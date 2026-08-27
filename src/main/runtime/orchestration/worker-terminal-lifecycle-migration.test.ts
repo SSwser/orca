@@ -6,6 +6,8 @@ import Database from '../../sqlite/sync-database'
 import { OrchestrationDb } from './db'
 import { SCHEMA_VERSION } from './db/contract-constants'
 import { migrateWorkerTerminalLifecycleV31 } from './db/schema/worker-terminal-lifecycle-v31'
+import { workerContainmentRecoveryTablesSql } from './db/schema/worker-containment-recovery-v31'
+import { migrateWorkerRecoveryOperationsV32 } from './db/schema/worker-recovery-operations-v32'
 
 type LegacyResource = {
   id: string
@@ -117,8 +119,8 @@ describe('worker terminal lifecycle migration', () => {
     db = new OrchestrationDb(dbPath)
     const sqlite = (db as unknown as { db: Database.Database }).db
 
-    expect(sqlite.pragma('user_version', { simple: true })).toBe(31)
-    expect(SCHEMA_VERSION).toBe(31)
+    expect(sqlite.pragma('user_version', { simple: true })).toBe(32)
+    expect(SCHEMA_VERSION).toBe(32)
     const columns = sqlite.prepare('PRAGMA table_info(worker_terminal_resources)').all() as {
       name: string
     }[]
@@ -173,18 +175,53 @@ describe('worker terminal lifecycle migration', () => {
       )
       .all() as { name: string }[]
     expect(indexes.map((row) => row.name)).toContain('idx_worker_terminal_resources_lifecycle')
+    expect(
+      sqlite
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('worker_lost_custody_recoveries', 'worker_workspace_generation_fences', 'worker_terminal_capacity_debts') ORDER BY name"
+        )
+        .all()
+    ).toEqual([
+      { name: 'worker_lost_custody_recoveries' },
+      { name: 'worker_terminal_capacity_debts' },
+      { name: 'worker_workspace_generation_fences' }
+    ])
+    const recoveryColumns = sqlite
+      .prepare('PRAGMA table_info(worker_lost_custody_recoveries)')
+      .all() as { name: string }[]
+    expect(recoveryColumns.map((column) => column.name)).toContain('successor_worktree_id')
+    expect(recoveryColumns.map((column) => column.name)).toContain('disposition')
+    expect(
+      sqlite
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'worker_generation_operations'"
+        )
+        .get()
+    ).toEqual({ name: 'worker_generation_operations' })
+    const deliveriesSql = sqlite
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'deliveries'")
+      .get() as { sql: string }
+    expect(deliveriesSql.sql).toContain("'contained'")
   })
 
-  it('creates fresh databases directly with the canonical v31 lifecycle schema', () => {
+  it('creates fresh databases directly with the canonical v32 recovery schema', () => {
     db = new OrchestrationDb(':memory:')
     const sqlite = (db as unknown as { db: Database.Database }).db
-    const columns = sqlite.prepare('PRAGMA table_info(worker_terminal_resources)').all() as {
-      name: string
-    }[]
+    const recovery = sqlite
+      .prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'worker_lost_custody_recoveries'"
+      )
+      .get() as { sql: string }
+    const operations = sqlite
+      .prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'worker_generation_operations'"
+      )
+      .get() as { sql: string }
 
-    expect(columns.map((column) => column.name)).toContain('lifecycle_state')
-    expect(columns.map((column) => column.name)).not.toContain('ownership_state')
-    expect(columns.map((column) => column.name)).not.toContain('release_state')
+    expect(recovery.sql).toContain('disposition')
+    expect(recovery.sql).not.toContain('ownership_state')
+    expect(recovery.sql).not.toContain('release_state')
+    expect(operations.sql).toContain('state')
   })
 
   it('rolls back and keeps v29 intact when a legacy state is unmappable', () => {
@@ -215,6 +252,50 @@ describe('worker terminal lifecycle migration', () => {
     expect(
       raw.prepare('SELECT ownership_state, release_state FROM worker_terminal_resources').get()
     ).toEqual({ ownership_state: 'owned', release_state: 'future_state' })
+    raw.close()
+  })
+
+  it('classifies every existing v31 recovery with a successor as retry_with_successor', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'orca-worker-recovery-v32-migration-'))
+    const raw = new Database(join(tempDir, 'orchestration.db'))
+    raw.exec(`
+      CREATE TABLE worker_dispatches (dispatch_id TEXT PRIMARY KEY, worktree_id TEXT);
+      ${workerContainmentRecoveryTablesSql()}
+    `)
+    raw
+      .prepare(
+        `INSERT INTO worker_lost_custody_recoveries (
+           id, run_id, task_id, source_dispatch_id, source_resource_id, source_delivery_id,
+           source_worktree_id, trusted_revision, successor_dispatch_id, successor_placement,
+           successor_name, authorization, mutation_caller_fingerprint, mutation_request_id
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        'recovery-v30',
+        'run-v30',
+        'task-v30',
+        'source-v30',
+        'resource-v30',
+        'delivery-v30',
+        'worktree-v30',
+        '0123456789abcdef0123456789abcdef01234567',
+        'successor-v30',
+        'new-child',
+        'successor-generation',
+        'acknowledge_possible_duplicate_external_effects',
+        'caller-v30',
+        'request-v30'
+      )
+
+    migrateWorkerRecoveryOperationsV32(raw)
+
+    expect(
+      raw
+        .prepare(
+          'SELECT disposition, successor_dispatch_id FROM worker_lost_custody_recoveries WHERE id = ?'
+        )
+        .get('recovery-v30')
+    ).toEqual({ disposition: 'retry_with_successor', successor_dispatch_id: 'successor-v30' })
     raw.close()
   })
 })

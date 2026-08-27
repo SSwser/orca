@@ -3,6 +3,8 @@ import { SCHEMA_VERSION } from '../contract-constants'
 import type { OrchestrationDb } from '../orchestration-db'
 import { applySchemaMigrationsV13ToV30 } from './migrate-v13-v30'
 import { applySchemaMigrationsV2ToV12 } from './migrate-v2-v12'
+import { migrateWorkerContainmentRecoveryV31 } from './worker-containment-recovery-v31'
+import { migrateWorkerRecoveryOperationsV32 } from './worker-recovery-operations-v32'
 import {
   ensureWorkerTerminalLifecycleIndexes,
   migrateWorkerTerminalLifecycleV31
@@ -21,8 +23,10 @@ export function migrate(this: OrchestrationDb): void {
   try {
     // Canonicalize the terminal table before older skew repair calls its production writer.
     migrateWorkerTerminalLifecycleV31(this.db)
+    migrateWorkerContainmentRecoveryV31(this.db)
     applySchemaMigrationsV2ToV12.call(this, current)
     applySchemaMigrationsV13ToV30.call(this, current)
+    migrateWorkerRecoveryOperationsV32(this.db)
     this.db.pragma(`user_version = ${SCHEMA_VERSION}`)
     this.db.exec('COMMIT')
   } catch (err) {

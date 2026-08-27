@@ -1,4 +1,5 @@
 import { LEGACY_RUN_ID } from '../contract-constants'
+import { workerContainmentRecoveryTablesV32Sql } from './worker-containment-recovery-v31'
 import { workerTerminalLifecycleTableSql } from './worker-terminal-lifecycle-v31'
 
 export function createCoreTablesSql(): string {
@@ -82,7 +83,7 @@ CREATE TABLE IF NOT EXISTS deliveries (
   consumer_generation   INTEGER NOT NULL,
   message_ids           TEXT NOT NULL,
   status                TEXT NOT NULL DEFAULT 'outstanding'
-    CHECK(status IN ('outstanding', 'acknowledged', 'fenced')),
+    CHECK(status IN ('outstanding', 'acknowledged', 'fenced', 'contained')),
   created_at            TEXT NOT NULL DEFAULT (datetime('now')),
   acknowledged_at       TEXT
 );
@@ -139,6 +140,8 @@ CREATE TABLE IF NOT EXISTS worker_terminal_archives (
   content       TEXT NOT NULL,
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+${workerContainmentRecoveryTablesV32Sql()}
 
   `
 }

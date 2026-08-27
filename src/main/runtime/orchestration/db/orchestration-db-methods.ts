@@ -52,9 +52,12 @@ import type { WorkerDispatchAuthorityMethods } from './worker-dispatch/worker-di
 import type { WorkerDispatchOutcomeMethods } from './worker-dispatch/worker-dispatch-outcome'
 import type { WorkerDispatchStageMethods } from './worker-dispatch/worker-dispatch-stage'
 import type { WorkerDispatchStartMethods } from './worker-dispatch/worker-dispatch-start'
+import type { WorkerGenerationOperationMethods } from './worker-dispatch/worker-generation-operation'
 import type { WorkerDispatchStopMethods } from './worker-dispatch/worker-dispatch-stop'
 import type { WorkerTerminalRecoveryMethods } from './worker-dispatch/worker-terminal-recovery'
 import type { WorkerTerminalArchiveMethods } from './worker-terminal/worker-terminal-archive'
+import type { WorkerTerminalContainmentAcceptanceMethods } from './worker-terminal/worker-terminal-containment-acceptance'
+import type { WorkerTerminalContainmentRecoveryMethods } from './worker-terminal/worker-terminal-containment-recovery'
 import type { WorkerTerminalListingMethods } from './worker-terminal/worker-terminal-listing'
 import type { WorkerTerminalReleaseMethods } from './worker-terminal/worker-terminal-release'
 import type { WorkerTerminalResourceStoreMethods } from './worker-terminal/worker-terminal-resource-store'
@@ -91,6 +94,7 @@ export type OrchestrationDbMethods = CreateTablesMethods &
   TaskStoreMethods &
   TaskStatusTransitionMethods &
   WorkerDispatchStartMethods &
+  WorkerGenerationOperationMethods &
   WorkerDispatchStageMethods &
   WorkerDispatchAuthorityMethods &
   WorkerDispatchOutcomeMethods &
@@ -111,6 +115,8 @@ export type OrchestrationDbMethods = CreateTablesMethods &
   WorkerTerminalTransferMethods &
   WorkerTerminalReleaseMethods &
   WorkerTerminalArchiveMethods &
+  WorkerTerminalContainmentAcceptanceMethods &
+  WorkerTerminalContainmentRecoveryMethods &
   WorkerTerminalListingMethods &
   DispatchContextStoreMethods &
   DispatchCapabilityMethods &

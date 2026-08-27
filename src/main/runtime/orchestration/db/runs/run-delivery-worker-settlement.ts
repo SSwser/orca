@@ -148,10 +148,13 @@ export function finalizeWorkerTaskAfterResourceSettlement(
   ) {
     return false
   }
+  const recovery = db.getWorkerTerminalContainment(resource.id)?.recovery
+  const archiveAccepted =
+    resource.lifecycle_state === 'contained' && recovery?.disposition === 'accept_archived_result'
   const ordinarilySettled = ['released', 'transferred', 'user_owned', 'external'].includes(
     resource.lifecycle_state
   )
-  if (!ordinarilySettled && !transferredAway) {
+  if (!archiveAccepted && !ordinarilySettled && !transferredAway) {
     return false
   }
   const status = worker.state === 'succeeded' ? 'completed' : 'failed'
@@ -168,4 +171,15 @@ export function finalizeWorkerTaskAfterResourceSettlement(
     db.promoteReadyTasks(task.id)
   }
   return true
+}
+
+export function containedSourceSuccessorId(db: OrchestrationDb, dispatchId: string): string | null {
+  const resource = db.getWorkerTerminalResourceByOwner(dispatchId)
+  const recovery = resource ? db.getWorkerTerminalContainment(resource.id)?.recovery : undefined
+  return resource?.lifecycle_state === 'contained' &&
+    recovery?.disposition === 'retry_with_successor' &&
+    recovery.successor_dispatch_id &&
+    recovery.successor_dispatch_id !== dispatchId
+    ? recovery.successor_dispatch_id
+    : null
 }

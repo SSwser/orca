@@ -157,6 +157,13 @@ export function acknowledgeRunDelivery(
       this.db.exec('COMMIT')
       return { delivery: exposeDeliveryTimestamps(delivery), duplicate: true }
     }
+    if (delivery.status === 'contained') {
+      throw new OrchestrationError(
+        'terminal_resource_unsettled',
+        `Delivery ${delivery.id} is permanently resolved by worker containment.`
+      )
+    }
+
     const unresolvedDispatchId = unresolvedWorkerTerminalDispatchId(this, delivery)
     if (unresolvedDispatchId) {
       throw new OrchestrationError(

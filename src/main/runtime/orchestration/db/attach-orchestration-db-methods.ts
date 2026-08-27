@@ -52,9 +52,12 @@ import { attachWorkerDispatchAuthority } from './worker-dispatch/worker-dispatch
 import { attachWorkerDispatchOutcome } from './worker-dispatch/worker-dispatch-outcome'
 import { attachWorkerDispatchStage } from './worker-dispatch/worker-dispatch-stage'
 import { attachWorkerDispatchStart } from './worker-dispatch/worker-dispatch-start'
+import { attachWorkerGenerationOperation } from './worker-dispatch/worker-generation-operation'
 import { attachWorkerDispatchStop } from './worker-dispatch/worker-dispatch-stop'
 import { attachWorkerTerminalRecovery } from './worker-dispatch/worker-terminal-recovery'
 import { attachWorkerTerminalArchive } from './worker-terminal/worker-terminal-archive'
+import { attachWorkerTerminalContainmentAcceptance } from './worker-terminal/worker-terminal-containment-acceptance'
+import { attachWorkerTerminalContainmentRecovery } from './worker-terminal/worker-terminal-containment-recovery'
 import { attachWorkerTerminalListing } from './worker-terminal/worker-terminal-listing'
 import { attachWorkerTerminalRelease } from './worker-terminal/worker-terminal-release'
 import { attachWorkerTerminalResourceStore } from './worker-terminal/worker-terminal-resource-store'
@@ -92,6 +95,7 @@ export function attachOrchestrationDbMethods(ctor: { prototype: object }): void 
   attachTaskStore(ctor)
   attachTaskStatusTransition(ctor)
   attachWorkerDispatchStart(ctor)
+  attachWorkerGenerationOperation(ctor)
   attachWorkerDispatchStage(ctor)
   attachWorkerDispatchAuthority(ctor)
   attachWorkerDispatchOutcome(ctor)
@@ -112,6 +116,8 @@ export function attachOrchestrationDbMethods(ctor: { prototype: object }): void 
   attachWorkerTerminalTransfer(ctor)
   attachWorkerTerminalRelease(ctor)
   attachWorkerTerminalArchive(ctor)
+  attachWorkerTerminalContainmentAcceptance(ctor)
+  attachWorkerTerminalContainmentRecovery(ctor)
   attachWorkerTerminalListing(ctor)
   attachDispatchContextStore(ctor)
   attachDispatchCapability(ctor)
