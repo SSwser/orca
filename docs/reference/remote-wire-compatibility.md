@@ -100,6 +100,42 @@ sync channel, agent-session publications, file or Git RPCs, mobile/E2EE framing,
 the relay transport. A change on those paths still needs its own reasoning against
 the three rules above.
 
+## Capability admission for worker containment recovery
+
+Worker containment recovery changes durable lifecycle, immutable recovery disposition,
+Delivery resolution, workspace fencing, capacity accounting, logical Task finalization,
+and optional successor-generation effects together. Optional JSON fields alone are not
+sufficient admission: a peer missing any part could ordinary-ACK unresolved ownership,
+force a successor for an accepted archive, or reuse the fenced workspace.
+
+Advertise one capability only when the runtime implements the complete contract in
+[`worker-terminal-lifecycle.md`](./worker-terminal-lifecycle.md): both
+`accept_archived_result` and `retry_with_successor`, permanent containment Delivery
+resolution, disposition-aware Task finalization, and durable exact successor operations.
+The Run home must verify that capability before accepting recovery or writing any
+containment state. The disposition is required semantic input, not an optional field that
+an older peer may ignore. Unknown or absent dispositions fail closed before mutation.
+
+Retry additionally requires the execution host and workspace provider to advertise exact
+isolated-generation and durable operation readback. Archive acceptance performs no
+workspace or process effect, but paired, federated, and SSH recovery remain unsupported in
+this change unless the full home/host contract is negotiated. Do not translate either
+disposition into worker release, ordinary worker start, PID adoption, or a compatibility
+execution route.
+
+The native Windows daemon protocol gate for host-crash Job containment is a local
+execution-host capability, not a replacement for runtime wire admission. A non-Windows
+peer must not advertise or infer that Windows guarantee, while an older Windows daemon may
+continue ordinary attach and must reject only a new supervised spawn that requires crash
+containment.
+
+Durable worker prompt proof is a separate cross-platform local daemon protocol capability.
+The runtime keeps prompt semantics, while the surviving execution-host Session records and
+answers for the exact worker-start prompt operation. An older daemon may continue ordinary
+attach and interactive input, but supervised retry must reject it before the first prompt
+byte; socket delivery settlement, legacy terminal `write`, SSH transport state, and
+paired-runtime reachability are not compatibility fallbacks for operation completion.
+
 ## Worked example: `agentWait` on terminal and worker reads
 
 `terminal.show`, `orchestration.workerShow` and `orchestration.federationShow` carry an

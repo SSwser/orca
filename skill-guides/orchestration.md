@@ -151,7 +151,7 @@ Rules:
 - Message types include `status`, `dispatch`, `worker_done`, `merge_ready`, `escalation`, `handoff`, `question`, `decision_gate` (legacy/gates), and `heartbeat`.
 - Use group addresses only for messages that are genuinely useful to many terminals, such as `status` broadcasts or intentional fan-out questions. Do not send dispatch lifecycle messages to groups.
 - `worker_done` belongs to the active Dispatch and defaults to its Run mailbox; never target a group.
-- A valid `worker_done` for the active `taskId` + `dispatchId` marks the task and dispatch completed automatically. Do not follow it with `task-update --status completed`; reserve manual updates for explicit recovery or overrides.
+- A valid `worker_done` for the active `taskId` + `dispatchId` durably records the attempt outcome and archive. For a supervised owned terminal, logical Task finalization waits for exact release or an explicit containment disposition. Do not follow it with `task-update --status completed`; reserve manual updates for explicit recovery or overrides.
 - `heartbeat` is also Dispatch-scoped. Include both IDs and omit `--to` so Orca uses the owning Run; use `status` for broad progress updates.
 
 ## Tasks And Dispatch
@@ -271,6 +271,32 @@ After processing each accepted `worker_done`, choose the terminal's next owner b
 Run `worker-release` after both succeeded and failed `worker_done` reports unless the user explicitly asked to keep that worker live. Release is post-completion cleanup, not cancellation: Orca first preserves inspectable output, then closes only the exact agent terminal owned by that settled Dispatch. Reused or pre-existing terminals, setup terminals, coordinators, active workers, user-taken-over terminals, and identities Orca cannot prove are retained. If the user explicitly asks to keep the live terminal for debugging, record that exception with `orca orchestration worker-retain --dispatch <dispatch_id> --json` instead of silently skipping cleanup. When the user is finished, the same Dispatch can be passed to `worker-release`, which clears the requested retention and releases the terminal.
 
 Do not release a worker because of a timeout, TUI idle state, heartbeat, status, question, escalation, or rejected/stale `worker_done`. If release returns `release_pending` or `release_unknown`, do not substitute `terminal close`; follow the exact recovery action in the receipt. A replayed Delivery may repeat `worker-release` safely.
+
+`release_unknown` means Orca cannot prove the old execution ended. Connectivity, writability, a terminal inventory entry, PID, ancestry, command line, stale runtime identity, and empty SSH inventory do not restore custody or prove exit. Keep the current Delivery unacknowledged unless the release settles exactly or an operator explicitly authorizes containment recovery under [`docs/reference/worker-terminal-lifecycle.md`](../docs/reference/worker-terminal-lifecycle.md).
+
+`worker-recover` is the explicit containment path for a resource already in `release_unknown`. A failed or abandoned worker, missing terminal, or unverifiable liveness verdict does not bypass that state. Recovery requires the source Dispatch, the current coordinator and Run authority, one immutable disposition, and authorization acknowledging that the old execution may still produce external effects. One accepted request containment-resolves the source Delivery, fences the old physical workspace, and withholds capacity. It never acts on the old process tree.
+
+Choose `accept-archived-result` only when the preserved archive is the authoritative business result. It creates no successor and no worktree, terminal, or prompt effect. Choose `retry-with-successor` only when the result is incomplete or untrusted; it additionally requires an immutable trusted Git revision, a distinct `new-child` or `new-top-level` placement, and acceptance of possible duplicate old-worker effects. Retry preaccepts one successor and runs it through the existing durably claimed worker-start owner. The accepted disposition cannot change on replay. Paired/federated workers, SSH hosts without recovery authority, and retry providers without isolated-generation support fail closed rather than using another execution route.
+
+```bash
+# Accept the authoritative archived result without rerunning the Task:
+orca orchestration worker-recover \
+  --dispatch <source_dispatch_id> --resource <resource_id> --delivery <delivery_id> \
+  --resolution accept-archived-result --authorize-lost-custody \
+  --retry-request <stable_request_id> --json
+
+# Retry only when the archived result is incomplete or untrusted:
+orca orchestration worker-recover \
+  --dispatch <source_dispatch_id> --resource <resource_id> --delivery <delivery_id> \
+  --resolution retry-with-successor \
+  --revision <exact_commit_sha> --worktree <new-child|new-top-level> \
+  --name <successor_name> --agent <agent> --authorize-lost-custody \
+  --retry-request <stable_request_id> --json
+```
+
+Use the exact IDs from `worker-show` and the current Delivery receipt. The response names the containment recovery, disposition, capacity debt, and optional successor Dispatch. Do not ACK the contained Delivery, even if the old resource later receives exact exit evidence; its distinct resolution remains audit history. Archive acceptance finalizes through that explicit containment resolution. In retry mode, only the final successor's actionable completion Delivery is normally ACKed.
+
+Do not advance dependent Tasks or a Producer Gate merely because a source or intermediate successor reported `worker_done`. Archive acceptance may advance only in the same transaction that validates the authoritative archive and containment resolution. Retry may advance only after the final successor completes its business work, preserves its archive, releases its exact terminal, and has its actionable Delivery processed.
 
 Workers report exactly once using the IDs and capability injected by Orca; they do not supply Run/server/terminal identity:
 
@@ -409,7 +435,7 @@ Wait for `tui-idle` before dispatching. Always pass `--timeout-ms`; real coding 
 
 - Workers with a valid live preamble must send `worker_done` exactly once from their own terminal with an explicit `--outcome succeeded` or `--outcome failed`:
   `orca orchestration send --type worker_done --subject "<short status>" --body "<3-sentence summary: what you did, what you found, what's left>" --task-id <task_id> --dispatch-id <dispatch_id> --outcome succeeded --files-modified "path/a" --report-path "<optional>" --json`
-- A failed outcome is still a terminal report, but Orca records both the Dispatch and Task as failed. Never encode failure only in the subject/body.
+- A failed outcome is still a terminal report. Orca records the attempt failure, then finalizes the logical Task only through the same resource-settlement boundary. Never encode failure only in the subject/body.
 - After sending `worker_done`, end that dispatched turn and idle at the agent prompt. Do not autonomously start more work, poll, or attempt to close the terminal yourself. A direct user instruction takes precedence and starts ordinary user-owned work: follow it without coordinator approval or a fresh Dispatch, never refuse it because of worker/coordinator roles, and do not reuse the settled Dispatch's lifecycle IDs. A coordinator-supervised follow-up still arrives with a fresh preamble + TASK block.
 - For long tasks, send heartbeat/status only when the preamble asks for it, including both IDs:
   `orca orchestration send --type heartbeat --subject "alive" --payload '{"taskId":"<task_id>","dispatchId":"<dispatch_id>","phase":"implementing"}' --json`

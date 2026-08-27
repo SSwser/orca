@@ -237,6 +237,7 @@ function orchestrationMethod(name: string) {
 async function releaseCompletedWorker(terminalState: 'running' | 'exited'): Promise<void> {
   const db = new OrchestrationDb(':memory:')
   const runtime = new OrcaRuntimeService()
+  let workerHandle = TERMINAL_HANDLE
   runtime.setOrchestrationDb(db)
   const coordinatorPaneKey = 'coordinator-tab:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
   const run = db.createRun({
@@ -255,59 +256,72 @@ async function releaseCompletedWorker(terminalState: 'running' | 'exited'): Prom
     handle === 'terminal-coordinator' ? coordinatorPaneKey : ORIGINAL_PANE_KEY
   )
   vi.spyOn(runtime, 'getTerminalProcessIncarnation').mockImplementation((handle) =>
-    handle === TERMINAL_HANDLE ? 'runtime:test:worker:1' : null
+    handle === workerHandle ? 'runtime:test:worker:1' : null
   )
   vi.spyOn(runtime, 'getOrchestrationDispatchAuthority').mockImplementation((handle) =>
-    handle === TERMINAL_HANDLE
+    handle === workerHandle
       ? ({
-          terminalHandle: TERMINAL_HANDLE,
+          terminalHandle: workerHandle,
           paneKey: ORIGINAL_PANE_KEY,
           processIncarnation: 'runtime:test:worker:1',
-          hostScope: { kind: 'local', hostId: 'local' }
+          hostScope: {
+            kind: 'local',
+            hostId: 'local',
+            restartCustody: {
+              kind: 'windows_daemon_job',
+              daemonPid: 4000,
+              daemonStartedAtMs: 1_786_000_000_000,
+              daemonLaunchNonce: 'completed-worker-test-daemon'
+            }
+          }
         } as never)
       : null
   )
   vi.spyOn(runtime, 'validateOrchestrationAgentLauncher').mockImplementation(() => {})
   vi.spyOn(runtime, 'showManagedTerminalWorkspace').mockResolvedValue({ id: WORKTREE_ID } as never)
-  vi.spyOn(runtime, 'createTerminal').mockResolvedValue({
-    handle: TERMINAL_HANDLE,
-    worktreeId: WORKTREE_ID,
-    title: 'PR 4626 unified correction r3'
+  vi.spyOn(runtime, 'createTerminal').mockImplementation(async (_selector, options) => {
+    workerHandle = options.preAllocatedHandle ?? TERMINAL_HANDLE
+    return {
+      handle: workerHandle,
+      worktreeId: WORKTREE_ID,
+      title: 'PR 4626 unified correction r3'
+    }
   })
-  vi.spyOn(runtime, 'waitForTerminal').mockResolvedValue({
-    handle: TERMINAL_HANDLE,
+  vi.spyOn(runtime, 'waitForTerminal').mockImplementation(async (handle) => ({
+    handle,
     condition: 'tui-idle',
     satisfied: true,
     status: 'running',
     exitCode: null
-  })
+  }))
   vi.spyOn(runtime, 'getTerminalOrchestrationCliCommand').mockReturnValue('orca')
-  vi.spyOn(runtime, 'sendTerminalAgentPrompt').mockResolvedValue({
-    handle: TERMINAL_HANDLE,
+  vi.spyOn(runtime, 'sendTerminalAgentPrompt').mockImplementation(async (handle) => ({
+    handle,
     accepted: true,
-    bytesWritten: 1
-  })
+    bytesWritten: 1,
+    semanticObservedAt: Date.now()
+  }))
   vi.spyOn(runtime, 'isTerminalRunningAgent').mockResolvedValue(true)
   vi.spyOn(runtime, 'getExactWorkerProviderSession').mockReturnValue(null)
-  vi.spyOn(runtime, 'showTerminal').mockResolvedValue({
-    handle: TERMINAL_HANDLE,
+  vi.spyOn(runtime, 'showTerminal').mockImplementation(async (handle) => ({
+    handle,
     worktreeId: WORKTREE_ID,
     ...(terminalState === 'exited' ? { connected: false } : { status: 'running' })
-  } as never)
-  vi.spyOn(runtime, 'readTerminal').mockResolvedValue({
-    handle: TERMINAL_HANDLE,
+  }))
+  vi.spyOn(runtime, 'readTerminal').mockImplementation(async (handle) => ({
+    handle,
     status: terminalState,
     tail: terminalState === 'exited' ? [] : ['completed worker output'],
     truncated: false,
     nextCursor: terminalState === 'exited' ? null : '1'
-  })
-  const closeTerminal = vi.spyOn(runtime, 'closeTerminal').mockImplementation(async () => {
+  }))
+  const closeTerminal = vi.spyOn(runtime, 'closeTerminal').mockImplementation(async (handle) => {
     closeTerminalTab(ORIGINAL_TAB_ID, {
       force: true,
       skipRunningProcessConfirm: true,
       localPtyTeardownOwnedExternally: true
     })
-    return { handle: TERMINAL_HANDLE, tabId: ORIGINAL_TAB_ID, ptyKilled: true }
+    return { handle, tabId: ORIGINAL_TAB_ID, ptyKilled: true }
   })
   vi.spyOn(runtime, 'notifyMessageArrived').mockImplementation(() => {})
 
@@ -339,10 +353,9 @@ async function releaseCompletedWorker(terminalState: 'running' | 'exited'): Prom
     })
     expect(db.getWorkerDispatch(started.dispatchId)?.state).toBe('succeeded')
     expect(db.getWorkerTerminalResourceByOwner(started.dispatchId)).toMatchObject({
-      ownership_state: 'released',
-      release_state: 'released',
+      lifecycle_state: 'released',
       pane_key: ORIGINAL_PANE_KEY,
-      terminal_handle: TERMINAL_HANDLE
+      terminal_handle: workerHandle
     })
     expect(closeTerminal).toHaveBeenCalledOnce()
   } finally {

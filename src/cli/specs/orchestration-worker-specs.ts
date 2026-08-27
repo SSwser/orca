@@ -39,6 +39,39 @@ export const ORCHESTRATION_WORKER_COMMAND_SPECS: CommandSpec[] = [
     ]
   },
   {
+    path: ['orchestration', 'worker-recover'],
+    summary: 'Contain lost worker custody with one explicit recovery disposition',
+    usage:
+      'orca orchestration worker-recover --dispatch <dispatch_id> --resource <resource_id> --delivery <delivery_id> --resolution <accept-archived-result|retry-with-successor> --authorize-lost-custody [--revision <commit_sha> --worktree <new-child|new-top-level> --name <name> --agent <agent>] [--repo <selector>] [--model <id>] [--effort <level>] [--display-name <text>] [--comment <text>] [--setup <run|skip|inherit>] [--timeout-ms <n>] [--run <run_id>] [--from <handle>] --retry-request <id> [--json]',
+    allowedFlags: [
+      ...GLOBAL_FLAGS,
+      'dispatch',
+      'resource',
+      'delivery',
+      'resolution',
+      'revision',
+      'worktree',
+      'name',
+      'repo',
+      'display-name',
+      'comment',
+      'setup',
+      'agent',
+      'model',
+      'effort',
+      'timeout-ms',
+      'run',
+      'from',
+      'authorize-lost-custody',
+      'retry-request'
+    ],
+    notes: [
+      'Requires explicit authorization because the old process may still be live; containment never acts on it.',
+      'Performs no process action on the old terminal, withholds its capacity, fences its physical workspace, and resolves its Delivery as contained rather than acknowledged.',
+      'Archive acceptance creates no successor. Retry requires the successor flags and uses a fresh Git worktree at the exact immutable revision; paired, federated, SSH, and folder providers fail closed.'
+    ]
+  },
+  {
     path: ['orchestration', 'worker-show'],
     summary: 'Inspect one supervised worker Dispatch',
     usage: 'orca orchestration worker-show --dispatch <dispatch_id> [--json]',
@@ -109,7 +142,7 @@ export const ORCHESTRATION_WORKER_COMMAND_SPECS: CommandSpec[] = [
     path: ['orchestration', 'worker-list'],
     summary: 'List supervised worker terminal resource accounting',
     usage:
-      'orca orchestration worker-list [--run <run_id>] [--terminal-state <active|reclaimable|retained|release_pending|release_unknown|released>] [--json]',
+      'orca orchestration worker-list [--run <run_id>] [--terminal-state <active|reclaimable|retained|release_pending|release_unknown|contained|released>] [--json]',
     allowedFlags: [...GLOBAL_FLAGS, 'run', 'terminal-state'],
     notes: [
       'Terminal state is process accounting and is reported separately from Task status; a completed Task can still own a live terminal.',

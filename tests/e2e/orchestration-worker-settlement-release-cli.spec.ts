@@ -183,15 +183,19 @@ test('compiled CLI rejects false completion then reconciles the dead retained wo
       )
     })
     .toBe(true)
-  const started = await client.call<{ effects: { kind: string; role?: string; id?: string }[] }>(
-    'orchestration.workerStart',
-    {
-      task: task.result.task.id,
-      from: coordinator.result.terminal.handle,
-      agent: 'codex',
-      timeoutMs: 15_000
-    }
-  )
+  const started = await client.call<{
+    state: string
+    stage: string
+    lastError?: string
+    effects: { kind: string; role?: string; id?: string }[]
+  }>('orchestration.workerStart', {
+    task: task.result.task.id,
+    from: coordinator.result.terminal.handle,
+    agent: 'codex',
+    timeoutMs: 15_000
+  })
+  expect(started.result.state, JSON.stringify(started.result)).toBe('ready')
+  expect(started.result.stage).toBe('input_accepted')
   const workerHandle = started.result.effects.find(
     (effect) => effect.kind === 'terminal' && effect.role === 'agent'
   )?.id
@@ -276,8 +280,8 @@ test('compiled CLI rejects false completion then reconciles the dead retained wo
   try {
     db.prepare(
       `UPDATE worker_terminal_resources
-       SET ownership_state = 'external', release_state = 'retained',
-           retained_reason = 'external_terminal'
+       SET lifecycle_state = 'release_unknown',
+           release_error = 'terminal inventory was lost after exact exit'
        WHERE owner_dispatch_id = ?`
     ).run(dispatch.result.dispatch!.id)
   } finally {
@@ -302,12 +306,12 @@ test('compiled CLI rejects false completion then reconciles the dead retained wo
       .soft(
         verified
           .prepare(
-            `SELECT ownership_state, release_state
+            `SELECT lifecycle_state
            FROM worker_terminal_resources WHERE owner_dispatch_id = ?`
           )
           .get(dispatch.result.dispatch!.id)
       )
-      .toEqual({ ownership_state: 'released', release_state: 'released' })
+      .toEqual({ lifecycle_state: 'released' })
   } finally {
     verified.close()
   }

@@ -339,7 +339,13 @@ describe('orca root help', () => {
       'orca terminal create --worktree active --command "codex"'
     )
     expect(logSpy.mock.calls[0][0]).toContain(
-      'orchestration worker-start Start a supervised worker locally or on a connected Orca server'
+      '\n  orchestration worker-start Start a supervised worker locally or on a connected Orca server'
+    )
+    expect(logSpy.mock.calls[0][0]).toContain(
+      '\n  orchestration worker-recover Contain lost custody with an explicit disposition'
+    )
+    expect(logSpy.mock.calls[0][0]).toContain(
+      '\n  orchestration worker-show Inspect one supervised worker'
     )
     expect(logSpy.mock.calls[0][0]).toContain(
       'orchestration ask         Ask the coordinator a blocking question'

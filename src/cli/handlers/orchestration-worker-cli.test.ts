@@ -8,7 +8,10 @@ vi.mock('../selectors', () => ({ getTerminalHandle: vi.fn() }))
 
 import { ORCHESTRATION_HANDLERS } from './orchestration'
 import { printResult } from '../format'
-import { ORCHESTRATION_WORKER_LAUNCH_PREFERENCES_RUNTIME_CAPABILITY } from '../../shared/protocol-version'
+import {
+  ORCHESTRATION_WORKER_CONTAINMENT_RECOVERY_RUNTIME_CAPABILITY,
+  ORCHESTRATION_WORKER_LAUNCH_PREFERENCES_RUNTIME_CAPABILITY
+} from '../../shared/protocol-version'
 
 describe('orchestration worker-start CLI contract', () => {
   beforeEach(() => {
@@ -162,6 +165,106 @@ describe('orchestration worker-start CLI contract', () => {
     )
 
     expect(process.exitCode).toBe(1)
+  })
+
+  it('capability-gates explicit contained recovery authorization and forwards exact inputs', async () => {
+    callMock
+      .mockResolvedValueOnce({
+        result: { capabilities: [ORCHESTRATION_WORKER_CONTAINMENT_RECOVERY_RUNTIME_CAPABILITY] }
+      })
+      .mockResolvedValueOnce({
+        result: {
+          taskId: 'task_1',
+          dispatchId: 'ctx_successor',
+          state: 'ready',
+          stage: 'input_accepted',
+          containment: {
+            recoveryId: 'recovery_1',
+            capacity: 'withheld',
+            deliveryResolution: 'contained'
+          }
+        }
+      })
+
+    await ORCHESTRATION_HANDLERS['orchestration worker-recover']({
+      flags: new Map<string, string | boolean>([
+        ['dispatch', 'ctx_source'],
+        ['resource', 'wtr_source'],
+        ['delivery', 'delivery_source'],
+        ['resolution', 'retry-with-successor'],
+        ['revision', '0123456789abcdef0123456789abcdef01234567'],
+        ['worktree', 'new-child'],
+        ['name', 'successor-generation'],
+        ['agent', 'codex'],
+        ['from', 'term_coord'],
+        ['authorize-lost-custody', true],
+        ['retry-request', 'recover-request']
+      ]),
+      client: { call: callMock },
+      cwd: '/tmp/repo',
+      json: true
+    } as never)
+
+    expect(callMock).toHaveBeenNthCalledWith(1, 'status.get')
+    expect(callMock).toHaveBeenNthCalledWith(
+      2,
+      'orchestration.workerRecover',
+      expect.objectContaining({
+        dispatch: 'ctx_source',
+        resource: 'wtr_source',
+        delivery: 'delivery_source',
+        resolution: 'retry_with_successor',
+        worktree: 'new-child',
+        authorization: 'acknowledge_possible_duplicate_external_effects'
+      }),
+      { orchestrationRequestId: 'recover-request' }
+    )
+  })
+
+  it('accepts an authoritative archive without successor flags', async () => {
+    callMock
+      .mockResolvedValueOnce({
+        result: { capabilities: [ORCHESTRATION_WORKER_CONTAINMENT_RECOVERY_RUNTIME_CAPABILITY] }
+      })
+      .mockResolvedValueOnce({
+        result: {
+          taskId: 'task_1',
+          dispatchId: 'ctx_source',
+          state: 'contained',
+          containment: {
+            recoveryId: 'recovery_archive',
+            capacity: 'withheld',
+            deliveryResolution: 'contained'
+          }
+        }
+      })
+
+    await ORCHESTRATION_HANDLERS['orchestration worker-recover']({
+      flags: new Map<string, string | boolean>([
+        ['dispatch', 'ctx_source'],
+        ['resource', 'wtr_source'],
+        ['delivery', 'delivery_source'],
+        ['resolution', 'accept-archived-result'],
+        ['from', 'term_coord'],
+        ['authorize-lost-custody', true],
+        ['retry-request', 'accept-archive-request']
+      ]),
+      client: { call: callMock },
+      cwd: '/tmp/repo',
+      json: true
+    } as never)
+
+    expect(callMock).toHaveBeenNthCalledWith(
+      2,
+      'orchestration.workerRecover',
+      expect.objectContaining({
+        resolution: 'accept_archived_result',
+        authorization: 'accept_authoritative_archived_result_with_lost_custody'
+      }),
+      { orchestrationRequestId: 'accept-archive-request' }
+    )
+    expect(callMock.mock.calls[1]?.[2]).not.toHaveProperty('revision')
+    expect(process.exitCode).not.toBe(1)
   })
 
   it('prints a reveal warning for a live background worker', async () => {

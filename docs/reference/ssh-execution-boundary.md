@@ -60,7 +60,9 @@ A verdict needs evidence from the host that owns the process. Apply these tests 
 
 **Is a returned status actually a claim of success?** An operation that reports failure may have succeeded, and one that reports success may not have run — check the durable state it should have changed rather than trusting the return.
 
-Anything short of positive host evidence is `unverifiable`. Reporting it as `exited` is the error this document exists to prevent: it orphans live work and can cold-start a duplicate over the same worktree.
+Anything short of positive host evidence is `unverifiable`. An empty remote inventory is still client-side absence unless the execution host explicitly reports that the exact recorded process incarnation exited. Reporting absence as `exited` is the error this document exists to prevent: it orphans live work and can cold-start a duplicate over the same worktree.
+
+Supervised worker release and lost-custody recovery follow the stricter lifecycle contract in [`worker-terminal-lifecycle.md`](./worker-terminal-lifecycle.md). SSH disconnect, relay loss, and missing remote inventory cannot prove exit or directly admit containment. Explicit containment is available only after the canonical resource reaches `release_unknown` and the home and execution host negotiate the complete recovery contract. Archive acceptance never implies that the remote process exited. Retry additionally requires an advertised ability to create and exactly resume a fresh isolated generation at the trusted revision. This change does not add that SSH capability, so SSH recovery remains fail closed with no process action.
 
 ## Reading artifacts instead of process state
 
