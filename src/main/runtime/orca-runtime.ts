@@ -21009,19 +21009,19 @@ export class OrcaRuntimeService {
   }
 
   private async readAgentInputVisibleLines(ptyId: string, timeoutMs: number): Promise<string[]> {
-    const providerLines = await this.readProviderTerminalTailLines(ptyId, undefined, {
+    const providerProjection = await this.readProviderTerminalTailLines(ptyId, undefined, {
       timeoutMs,
       retireOnTimeout: true,
       visibleScreenOnly: true
     })
-    if (providerLines.length > 0) {
-      return providerLines
+    if (providerProjection.lines.length > 0) {
+      return providerProjection.lines
     }
     const headlessState = await this.readHeadlessVisibleTerminalState(ptyId)
     if (headlessState?.lines.length) {
       return headlessState.lines
     }
-    return await this.readRendererVisibleSnapshotLines(ptyId)
+    return (await this.readRendererVisibleSnapshotLines(ptyId)).lines
   }
 
   subscribeToPtyExit(ptyId: string, listener: () => void): () => void {
