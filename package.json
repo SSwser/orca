@@ -11,17 +11,17 @@
   "main": "./out/main/index.js",
   "scripts": {
     "format": "oxfmt --write .",
-    "lint": "oxlint && pnpm run audit:code-quality:native && pnpm run audit:code-quality:type-aware && pnpm run check:reliability-gates && pnpm run check:max-lines-ratchet && pnpm run check:runtime-electron-ratchet && pnpm run verify:bundled-skill-guides && pnpm run verify:skill-bundle-manifest && pnpm run verify:localization-catalog && pnpm run verify:localization-extraction && pnpm run verify:localization-coverage",
+    "lint": "node config/scripts/oxlint-executable.mjs && pnpm run audit:code-quality:native && pnpm run audit:code-quality:type-aware && pnpm run check:reliability-gates && pnpm run check:max-lines-ratchet && pnpm run check:runtime-electron-ratchet && pnpm run verify:bundled-skill-guides && pnpm run verify:skill-bundle-manifest && pnpm run verify:localization-catalog && pnpm run verify:localization-extraction && pnpm run verify:localization-coverage",
     "audit:code-quality": "pnpm run audit:code-quality:native && pnpm run audit:code-quality:type-aware && pnpm run audit:react-doctor",
-    "audit:code-quality:native": "oxlint --config config/oxlint-code-quality-native-plugins.json src config tests mobile --deny-warnings",
-    "audit:code-quality:type-aware": "oxlint --type-aware --config config/oxlint-code-quality-type-aware.json src config tests --deny-warnings",
+    "audit:code-quality:native": "node config/scripts/oxlint-executable.mjs --config config/oxlint-code-quality-native-plugins.json src config tests mobile --deny-warnings",
+    "audit:code-quality:type-aware": "node config/scripts/oxlint-executable.mjs --type-aware --config config/oxlint-code-quality-type-aware.json src config tests --deny-warnings",
     "audit:react-doctor": "pnpm dlx react-doctor@0.9.1 . --yes --no-supply-chain --no-telemetry --blocking none",
     "audit:dead-code": "pnpm dlx knip@5.88.1 --config config/knip.json",
     "check:code-quality:changed": "node config/scripts/check-changed-code-quality.mjs",
     "check:react-doctor:changed": "node config/scripts/check-react-doctor-changed.mjs",
     "check:zustand-selector-fanout": "node config/scripts/zustand-selector-fanout-benchmark.mjs --check",
     "doctor": "pnpm dlx react-doctor@0.9.1 . --no-telemetry",
-    "lint:react-doctor": "oxlint --config config/oxlint-react-doctor.json",
+    "lint:react-doctor": "node config/scripts/oxlint-executable.mjs --config config/oxlint-react-doctor.json",
     "lint:react-doctor:changed": "node config/scripts/lint-react-doctor-changed.mjs",
     "prepare": "husky",
     "test": "node config/scripts/ensure-native-runtime.mjs --runtime=node && vitest run --config config/vitest.config.ts",
@@ -283,8 +283,8 @@
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx,mjs,mts,cts}": [
-      "oxlint",
-      "oxlint --config config/oxlint-react-doctor.json",
+      "node config/scripts/oxlint-executable.mjs",
+      "node config/scripts/oxlint-executable.mjs --config config/oxlint-react-doctor.json",
       "oxfmt --write"
     ],
     "*.{json,css}": [

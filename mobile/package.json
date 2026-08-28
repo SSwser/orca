@@ -10,7 +10,7 @@
     "postinstall": "node scripts/build-terminal-webview-engine.mjs && node scripts/build-mermaid-webview-engine.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint",
+    "lint": "node ../config/scripts/oxlint-executable.mjs",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "mock-server": "npx tsx scripts/mock-server.ts",

@@ -86,7 +86,7 @@ jobs:
           native-runtime: node
 
       - name: Lint
-        run: pnpm exec oxlint --format github
+        run: node config/scripts/oxlint-executable.mjs --format github
 
       - name: Enforce focused code-quality plugins
         run: pnpm run audit:code-quality:native
