@@ -15,7 +15,7 @@ export function markWorkerTerminalUserOwned(this: OrchestrationDb, paneKey: stri
   try {
     const exact = this.db
       .prepare(
-        `SELECT id, owner_dispatch_id, pane_key FROM worker_terminal_resources
+        `SELECT id, owner_dispatch_id, pane_key FROM worker_execution_resources
           WHERE pane_key = ?
             AND lifecycle_state IN ('owned', 'retained', 'release_requested')
             AND NOT EXISTS (
@@ -30,7 +30,7 @@ export function markWorkerTerminalUserOwned(this: OrchestrationDb, paneKey: stri
         : (
             this.db
               .prepare(
-                `SELECT id, owner_dispatch_id, pane_key FROM worker_terminal_resources
+                `SELECT id, owner_dispatch_id, pane_key FROM worker_execution_resources
                 WHERE lifecycle_state IN ('owned', 'retained', 'release_requested')
                   AND NOT EXISTS (
                     SELECT 1 FROM worker_dispatches w
@@ -41,7 +41,7 @@ export function markWorkerTerminalUserOwned(this: OrchestrationDb, paneKey: stri
               .all() as { id: string; owner_dispatch_id: string; pane_key: string }[]
           ).filter((candidate) => isEquivalentPaneKey(candidate.pane_key, paneKey))
     const update = this.db.prepare(
-      `UPDATE worker_terminal_resources
+      `UPDATE worker_execution_resources
        SET lifecycle_state = 'user_owned',
            retained_reason = 'user_takeover', updated_at = datetime('now')
        WHERE id = ? AND lifecycle_state IN ('owned', 'retained', 'release_requested')
@@ -73,7 +73,7 @@ export function listWorkerTerminalReleaseBacklog(
 ): WorkerTerminalResourceRow[] {
   return this.db
     .prepare(
-      `SELECT * FROM worker_terminal_resources
+      `SELECT * FROM worker_execution_resources
         WHERE lifecycle_state IN ('release_requested', 'release_closing')
         ORDER BY release_requested_at ASC`
     )
@@ -114,7 +114,7 @@ export function listWorkerTerminalResources(
   }[]
   const resources = this.db
     .prepare(
-      `SELECT r.* FROM worker_terminal_resources r
+      `SELECT r.* FROM worker_execution_resources r
          JOIN dispatch_contexts d ON d.id = r.owner_dispatch_id
         ${params.runId ? 'WHERE d.run_id = ?' : ''}`
     )

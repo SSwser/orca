@@ -18,7 +18,9 @@ export function selectExactWorkerProviderSession(args: {
         entry.providerSessionOnly !== true &&
         entry.providerSession !== undefined &&
         entry.agentType !== undefined &&
-        entry.receivedAt >= args.observedAfter
+        entry.state === 'working' &&
+        entry.stateStartedAt >= args.observedAfter &&
+        entry.receivedAt >= entry.stateStartedAt
     )
     .sort((left, right) => right.receivedAt - left.receivedAt)[0]
   if (!status?.providerSession || !status.agentType) {
@@ -29,6 +31,6 @@ export function selectExactWorkerProviderSession(args: {
     processIncarnation: args.processIncarnation,
     agent: status.agentType,
     providerSession: { ...status.providerSession },
-    observedAt: status.receivedAt
+    observedAt: status.stateStartedAt
   }
 }

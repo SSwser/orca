@@ -200,7 +200,11 @@ describe('LocalPtyProvider', () => {
         // Why: an omitted cwd resolves to a guaranteed-safe default home (the
         // guard only rejects root-like paths), so the agent must still launch.
         await expect(
-          provider.spawn({ cols: 80, rows: 24, command: 'codex' })
+          provider.spawn({
+            cols: 80,
+            rows: 24,
+            target: { kind: 'shell-command', command: 'codex' }
+          })
         ).resolves.toBeDefined()
 
         const spawnCall = spawnMock.mock.calls.at(-1)!
@@ -219,7 +223,12 @@ describe('LocalPtyProvider', () => {
       spawnMock.mockClear()
 
       await expect(
-        provider.spawn({ cols: 80, rows: 24, cwd: '/', command: 'claude' })
+        provider.spawn({
+          cols: 80,
+          rows: 24,
+          cwd: '/',
+          target: { kind: 'shell-command', command: 'claude' }
+        })
       ).rejects.toThrow(/requires a non-root workspace/)
 
       expect(spawnMock).not.toHaveBeenCalled()

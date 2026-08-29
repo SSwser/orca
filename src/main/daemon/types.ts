@@ -15,16 +15,14 @@ export type {
 // ─── Protocol Version ────────────────────────────────────────────────
 import type { StartupCommandDelivery } from '../../shared/codex-startup-delivery'
 import type { TuiAgent } from '../../shared/tui-agent'
+import type { PtySpawnTarget } from '../../shared/pty-spawn-target'
 import type { PtyStartupIngressIntent } from '../../shared/pty-startup-ingress'
 import type {
+  AgentSessionCreateOperationIdentity,
   AgentSessionExecutionClaim,
   AgentSessionSurfaceBinding
 } from '../../shared/agent-session-host-authority'
 import type * as HistorySeedProtocol from './terminal-history-seed-transfer-protocol'
-import type {
-  InspectWorkerPromptOperationRequest,
-  WriteWorkerPromptOperationRequest
-} from './daemon-worker-prompt-operation-request'
 import type { SessionInfo } from './daemon-session-info'
 export type { SessionInfo } from './daemon-session-info'
 export type { TerminalModes } from './terminal-modes'
@@ -39,7 +37,6 @@ export {
   GET_FOREGROUND_PROCESS_PROTOCOL_VERSION,
   GIT_CREDENTIAL_GUARD_HOST_PROTOCOL_VERSION,
   WINDOWS_HOST_CRASH_CONTAINMENT_DAEMON_PROTOCOL_VERSION,
-  WORKER_PROMPT_OPERATION_DAEMON_PROTOCOL_VERSION,
   PREVIOUS_DAEMON_PROTOCOL_VERSIONS,
   PROTOCOL_VERSION,
   PTY_STARTUP_INGRESS_PROTOCOL_VERSION,
@@ -75,7 +72,7 @@ export type CreateOrAttachRequest = {
     cwd?: string
     env?: Record<string, string>
     envToDelete?: string[]
-    command?: string
+    target?: PtySpawnTarget
     startupCommandDelivery?: StartupCommandDelivery
     launchAgent?: TuiAgent
     /** Rejects an absent session instead of interpreting mount uncertainty as create permission. */
@@ -104,6 +101,7 @@ export type CreateOrAttachRequest = {
       claim: AgentSessionExecutionClaim
       surface: AgentSessionSurfaceBinding
     }
+    agentSessionCreateOperation?: AgentSessionCreateOperationIdentity
   }
 }
 
@@ -315,8 +313,6 @@ export type DaemonRequest =
   | HistorySeedProtocol.TerminalHistorySeedTransferRequest
   | CancelCreateOrAttachRequest
   | WriteRequest
-  | WriteWorkerPromptOperationRequest
-  | InspectWorkerPromptOperationRequest
   | ResizeRequest
   | PausePtyRequest
   | ResumePtyRequest

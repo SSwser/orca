@@ -6,6 +6,7 @@ import type { PtyBackgroundStreamEvent, PtyDataEvent } from './pty-provider-even
 import type { PtySpawnResult } from './pty-spawn-result'
 import type { PtyIncarnationId } from '../../shared/pty-incarnation'
 import type {
+  AgentSessionCreateOperationIdentity,
   AgentSessionExecutionClaim,
   AgentSessionSurfaceBinding
 } from '../../shared/agent-session-host-authority'
@@ -13,6 +14,7 @@ import type { PtyProcessInfo } from './pty-process-info'
 import type { TerminalExitCause } from '../../shared/terminal-exit-cause'
 import type { PtyRestartCustody } from '../../shared/pty-restart-custody'
 import type { TerminalOwner } from '../../shared/terminal-owner'
+import type { PtySpawnTarget } from '../../shared/pty-spawn-target'
 
 export type {
   PtyBackgroundStreamEvent,
@@ -53,7 +55,7 @@ export type PtySpawnOptions = {
   envToDelete?: string[]
   /** Main-validated home provenance for an automatic Codex session resume. */
   codexHomePathOverride?: { value: string | null }
-  command?: string
+  target?: PtySpawnTarget
   commandDelivery?: 'renderer' | 'provider'
   startupCommandDelivery?: StartupCommandDelivery
   /** Minimal allowlisted launch ownership preserved by daemon reattach. */
@@ -107,6 +109,8 @@ export type PtySpawnOptions = {
   }
   /** Host-scoped structured-create identity used only for lower-owner replay. */
   agentSessionCreateOperationId?: string
+  /** Exact supervised create identity returned unchanged on daemon reattach. */
+  agentSessionCreateOperation?: AgentSessionCreateOperationIdentity
   /** Signals that the native process exists even if later publication fails. */
   onPtySpawnCommitted?: () => void
   /** Cancels only before physical dispatch; operation identity fences later ambiguity. */
@@ -114,12 +118,6 @@ export type PtySpawnOptions = {
 }
 
 export type { PtyProcessInfo, PtySpawnResult }
-import type {
-  WorkerPromptOperationIdentity,
-  WorkerPromptOperationInspection,
-  WorkerPromptOperationRequest
-} from '../../shared/worker-prompt-operation'
-
 type PtyProbeOptions = { signal?: AbortSignal }
 
 export type IPtyProvider = {
@@ -153,15 +151,6 @@ export type IPtyProvider = {
   ) => Promise<'live' | 'exited' | 'unverifiable'>
   write(id: string, data: string): boolean | void
   writeWithSettlement?: (id: string, data: string) => Promise<boolean>
-  supportsWorkerPromptOperations?: (id: string) => boolean
-  writeWorkerPromptOperation?: (
-    id: string,
-    operation: WorkerPromptOperationRequest
-  ) => Promise<{ accepted: boolean }>
-  inspectWorkerPromptOperation?: (
-    id: string,
-    identity: WorkerPromptOperationIdentity
-  ) => Promise<WorkerPromptOperationInspection>
   resize(id: string, cols: number, rows: number): void
   /**
    * Producer-side flow control: stop/restart reading the underlying PTY so a

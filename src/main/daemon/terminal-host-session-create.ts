@@ -45,6 +45,15 @@ export async function createOrAttachTerminalSession(
   // exit, kill during the await) that produced repeated regressions. Checkpoint
   // readers that need a settled owner use getSettledSnapshot.
   if (existing && existing.isAlive && !existing.isTerminating) {
+    if (
+      opts.agentSessionCreateOperation &&
+      (existing.agentSessionCreateOperation?.operationId !==
+        opts.agentSessionCreateOperation.operationId ||
+        existing.agentSessionCreateOperation.payloadFingerprint !==
+          opts.agentSessionCreateOperation.payloadFingerprint)
+    ) {
+      throw new Error('agent_session_operation_conflict')
+    }
     const snapshot = existing.getSnapshot()
     existing.detachAllClients()
     const token = existing.attachClient(opts.streamClient)
@@ -95,7 +104,7 @@ async function spawnAndPublishSession(
     cwd: opts.cwd,
     env: opts.env,
     envToDelete: opts.envToDelete,
-    command: opts.command,
+    target: opts.target,
     startupCommandDelivery: opts.startupCommandDelivery,
     ...(opts.launchAgent ? { launchAgent: opts.launchAgent } : {}),
     ...(opts.requireHostCrashContainment ? { requireHostCrashContainment: true } : {}),
@@ -127,6 +136,9 @@ async function spawnAndPublishSession(
     scrollback: resolveDaemonSessionScrollbackRows(),
     historySeedChunks: opts.historySeedChunks,
     ...(opts.startupIngress ? { startupIngress: opts.startupIngress } : {}),
+    ...(opts.agentSessionCreateOperation
+      ? { agentSessionCreateOperation: opts.agentSessionCreateOperation }
+      : {}),
     wslDistro,
     onExit: () => deps.onSessionExit(opts.sessionId, opts.agentSessionGeneration),
     ...(deps.reportReadinessEvent ? { reportReadinessEvent: deps.reportReadinessEvent } : {}),
@@ -151,11 +163,12 @@ async function spawnAndPublishSession(
   deps.onSessionCreated(opts.sessionId, opts.agentSessionGeneration, session.isAlive)
   const token = session.attachClient(opts.streamClient)
 
-  if (opts.command && !subprocess.startupCommandDeliveredInShellArgs) {
+  const command = opts.target?.kind === 'shell-command' ? opts.target.command : undefined
+  if (command && !subprocess.startupCommandDeliveredInShellArgs) {
     const submit = process.platform === 'win32' ? '\r' : '\n'
     // Why: only Orca-wrapped shells advertise the paste-safe startup barrier.
     session.write(
-      buildStartupCommandSubmission(opts.command, {
+      buildStartupCommandSubmission(command, {
         submit,
         bracketedPasteSafe: shellReadySupported
       })

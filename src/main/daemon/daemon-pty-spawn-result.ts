@@ -85,6 +85,12 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
     }
     const claimResult = (): Pick<PtySpawnResult, 'agentSessionEnsure'> | Record<string, never> =>
       result.agentSessionEnsure ? { agentSessionEnsure: result.agentSessionEnsure } : {}
+    const operationResult = ():
+      | Pick<PtySpawnResult, 'agentSessionCreateOperation'>
+      | Record<string, never> =>
+      result.agentSessionCreateOperation
+        ? { agentSessionCreateOperation: result.agentSessionCreateOperation }
+        : {}
     const incarnationResult = (): Pick<PtySpawnResult, 'incarnationId'> | Record<string, never> =>
       result.incarnationId ? { incarnationId: result.incarnationId } : {}
     const restartCustodyResult = () => this.restartCustodyResult(result, resultDaemonIdentity)
@@ -126,6 +132,7 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
         ...restartCustodyResult(),
         pid,
         ...claimResult(),
+        ...operationResult(),
         ...launchIdentity(),
         coldRestore: cachedRestore,
         ...(providerWslDistro !== undefined ? { wslDistro: providerWslDistro } : {}),
@@ -227,6 +234,7 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
           ...restartCustodyResult(),
           pid,
           ...claimResult(),
+          ...operationResult(),
           ...launchIdentity(),
           coldRestore,
           ...(providerWslDistro !== undefined ? { wslDistro: providerWslDistro } : {}),
@@ -240,6 +248,7 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
         ...restartCustodyResult(),
         pid,
         ...claimResult(),
+        ...operationResult(),
         ...launchIdentity(),
         ...(providerWslDistro !== undefined ? { wslDistro: providerWslDistro } : {}),
         ...(providerSequence ? { providerSequence } : {})
@@ -289,6 +298,7 @@ export abstract class DaemonPtySpawnResult extends DaemonPtySpawnRequest {
         ...restartCustodyResult(),
         pid,
         ...claimResult(),
+        ...operationResult(),
         ...launchIdentity(),
         ...(providerWslDistro !== undefined ? { wslDistro: providerWslDistro } : {}),
         ...(providerSequence ? { providerSequence } : {}),

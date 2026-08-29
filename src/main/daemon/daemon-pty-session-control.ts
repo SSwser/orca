@@ -2,7 +2,7 @@ import type { ColdRestorePayload } from './cold-restore-payload-cache'
 import { isUnknownRequestTypeError } from './daemon-endpoint-errors'
 import { GET_SIZE_PROTOCOL_VERSION } from './daemon-protocol-version'
 import { FinalCheckpointWaitExpiredError } from './daemon-pty-lifecycle-errors'
-import { DaemonPtyWorkerPromptOperations } from './daemon-pty-worker-prompt-operations'
+import { DaemonPtySessionSpawn } from './daemon-pty-session-spawn'
 import { providerSequenceFromCreateOrAttach } from './daemon-pty-provider-sequence'
 import { remainingDaemonRequestTimeoutMs } from './daemon-request-deadline'
 import type { ColdRestoreInfo } from './history-reader'
@@ -15,7 +15,7 @@ export const LIVENESS_PROBE_TIMEOUT_MS = 2_000
 
 const MAX_TOMBSTONES = 1000
 
-export abstract class DaemonPtySessionControl extends DaemonPtyWorkerPromptOperations {
+export abstract class DaemonPtySessionControl extends DaemonPtySessionSpawn {
   async attach(id: string): Promise<Pick<PtySpawnResult, 'providerSequence'> | void> {
     await this.ensureConnected()
     if (!this.canDelegateBackgroundToDaemon) {

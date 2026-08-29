@@ -13,6 +13,8 @@ import {
 import { createDaemonPtySubprocessHandle } from './pty-subprocess/subprocess-handle'
 import type { StartupCommandDelivery } from '../../shared/codex-startup-delivery'
 import type { TuiAgent } from '../../shared/tui-agent'
+import type { PtySpawnTarget } from '../../shared/pty-spawn-target'
+import { resolveSafePtyDefaultCwd } from '../providers/pty-default-cwd'
 
 const PTY_SPAWN_HEALTH_RETRY_ATTEMPTS = 2
 
@@ -23,7 +25,7 @@ export type PtySubprocessOptions = {
   cwd?: string
   env?: Record<string, string>
   envToDelete?: string[]
-  command?: string
+  target?: PtySpawnTarget
   startupCommandDelivery?: StartupCommandDelivery
   launchAgent?: TuiAgent
   /** Refuse a Windows spawn unless daemon death will reap the PTY tree. */
@@ -70,10 +72,19 @@ export async function checkPtySpawnHealth(): Promise<void> {
 export async function createPtySubprocess(opts: PtySubprocessOptions): Promise<SubprocessHandle> {
   const size = normalizePtySize(opts.cols, opts.rows)
   const env = createDaemonPtyEnvironment(opts)
-  const launch = createPtyShellLaunchPlan(opts, env)
+  const agentTarget = opts.target?.kind === 'agent-process' ? opts.target : null
+  if (agentTarget) {
+    for (const name of agentTarget.envPatch.delete) {
+      delete env[name]
+    }
+    Object.assign(env, agentTarget.envPatch.set)
+  }
+  const launch = agentTarget ? null : createPtyShellLaunchPlan(opts, env)
+  const spawnCwd = launch?.spawnCwd ?? opts.cwd ?? resolveSafePtyDefaultCwd()
+  const validationCwd = launch?.validationCwd ?? spawnCwd
 
   await preflightPtySpawn({
-    validationCwd: launch.validationCwd,
+    validationCwd,
     cwdWasExplicit: opts.cwd !== undefined,
     sessionId: opts.sessionId,
     ...(opts.cancelSignal ? { signal: opts.cancelSignal } : {})
@@ -85,19 +96,28 @@ export async function createPtySubprocess(opts: PtySubprocessOptions): Promise<S
   let spawned: SpawnedDaemonPty
   try {
     spawned = spawnNativeDaemonPty({
-      shellPath: launch.shellPath,
-      shellArgs: launch.shellArgs,
-      spawnCwd: launch.spawnCwd,
+      target: agentTarget
+        ? {
+            kind: 'agent-process',
+            executable: agentTarget.executable,
+            argv: agentTarget.argv
+          }
+        : {
+            kind: 'shell',
+            shellPath: launch!.shellPath,
+            shellArgs: launch!.shellArgs,
+            windowsFallbackAttempts: launch!.windowsFallbackAttempts
+          },
+      spawnCwd,
       env,
       cols: size.cols,
       rows: size.rows,
-      windowsFallbackAttempts: launch.windowsFallbackAttempts,
       requireHostCrashContainment: opts.requireHostCrashContainment,
       onMacosTccSpawnStrategy: opts.onMacosTccSpawnStrategy
     })
   } catch (error) {
     if (process.platform === 'win32') {
-      throw formatPtySpawnError(error, launch.shellPath, launch.spawnCwd)
+      throw formatPtySpawnError(error, agentTarget?.executable ?? launch!.shellPath, spawnCwd)
     }
     throw error
   }
@@ -108,11 +128,15 @@ export async function createPtySubprocess(opts: PtySubprocessOptions): Promise<S
     spawnCwd: spawned.spawnCwd,
     env,
     startupCommandDeliveredInShellArgs:
-      spawned.startupCommandDeliveredInShellArgs ?? launch.startupCommandDeliveredInShellArgs,
+      spawned.startupCommandDeliveredInShellArgs ??
+      launch?.startupCommandDeliveredInShellArgs ??
+      false,
     reportsChildExitStatus: spawned.reportsChildExitStatus,
     hostCrashContained: spawned.hostCrashContained,
     requestedCwd: opts.cwd,
     sessionId: opts.sessionId,
-    startupAgentRecognition: launch.startupAgentRecognition
+    startupAgentRecognition: agentTarget
+      ? { agent: 'codex', processName: agentTarget.expectedProcess }
+      : launch!.startupAgentRecognition
   })
 }

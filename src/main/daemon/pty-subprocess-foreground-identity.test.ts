@@ -478,7 +478,7 @@ describe('createPtySubprocess', () => {
         cols: 80,
         rows: 24,
         cwd: 'C:\\repo\\orca',
-        command: 'codex'
+        target: { kind: 'shell-command', command: 'codex' }
       })
 
       expect(handle.getForegroundProcess()).toBe('codex')
@@ -525,7 +525,7 @@ describe('createPtySubprocess', () => {
         cols: 80,
         rows: 24,
         cwd: 'C:\\repo\\orca',
-        command: 'codex'
+        target: { kind: 'shell-command', command: 'codex' }
       })
 
       expect(handle.getForegroundProcess()).toBe('codex')

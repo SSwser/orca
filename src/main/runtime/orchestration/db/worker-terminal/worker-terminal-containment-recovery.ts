@@ -38,6 +38,9 @@ export type LostCustodyRecoveryParams = LostCustodyRecoveryBaseParams &
         successorName: string
         authorization: 'acknowledge_possible_duplicate_external_effects'
         startOptions: unknown
+        successorDispatchId: string
+        provisionalCapability: string
+        launchTokenHash: string
         runtimeEpoch?: string
       }
   )
@@ -165,7 +168,7 @@ export function settleContainedWorkerTerminalExit(
     }
     const released = this.db
       .prepare(
-        `UPDATE worker_terminal_resources
+        `UPDATE worker_execution_resources
          SET lifecycle_state = 'released', retained_reason = NULL, release_error = NULL,
              release_completed_at = datetime('now'), updated_at = datetime('now')
          WHERE id = ? AND lifecycle_state = 'contained'`
@@ -173,7 +176,7 @@ export function settleContainedWorkerTerminalExit(
       .run(resource.id)
     const debt = this.db
       .prepare(
-        `UPDATE worker_terminal_capacity_debts
+        `UPDATE worker_execution_capacity_debts
          SET state = 'released', released_at = datetime('now')
          WHERE resource_id = ? AND state = 'withheld'`
       )
@@ -217,7 +220,7 @@ export function getWorkerTerminalContainment(
     .prepare(
       `SELECT r.*, d.state AS capacity_state, d.released_at AS capacity_released_at
          FROM worker_lost_custody_recoveries r
-         JOIN worker_terminal_capacity_debts d ON d.recovery_id = r.id
+         JOIN worker_execution_capacity_debts d ON d.recovery_id = r.id
         WHERE r.source_resource_id = ?`
     )
     .get(resourceId) as

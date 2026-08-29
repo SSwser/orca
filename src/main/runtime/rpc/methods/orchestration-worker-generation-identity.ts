@@ -11,7 +11,7 @@ function digest(value: string, encoding: 'hex' | 'base64url' = 'base64url'): str
 
 function operationIdentity(
   dispatchId: string,
-  effectKind: 'worktree' | 'terminal' | 'authority' | 'prompt',
+  effectKind: 'worktree' | 'execution_start',
   payload: unknown
 ): WorkerGenerationOperationIdentity {
   const payloadFingerprint = digest(JSON.stringify(payload), 'hex')
@@ -34,33 +34,31 @@ export function buildWorkerGenerationOperationIdentities(args: {
   dispatchId: string
   startOptions: unknown
 }) {
-  const worktree = operationIdentity(args.dispatchId, 'worktree', args.startOptions)
-  const terminal = operationIdentity(args.dispatchId, 'terminal', {
+  const { executionTargetFingerprint: _executionTargetFingerprint, ...topologyStartOptions } =
+    (args.startOptions as Record<string, unknown> | null) ?? {}
+  const worktree = operationIdentity(args.dispatchId, 'worktree', topologyStartOptions)
+  const executionSeed = operationIdentity(args.dispatchId, 'execution_start', {
     startOptions: args.startOptions,
     worktreeOperationId: worktree.operationId
   })
-  const terminalTabId = deterministicUuid(`${terminal.operationId}:tab`)
-  const terminalLeafId = deterministicUuid(`${terminal.operationId}:leaf`)
+  const terminalTabId = deterministicUuid(`${worktree.operationId}:tab`)
+  const terminalLeafId = deterministicUuid(`${worktree.operationId}:leaf`)
   const requestedTerminal = (args.startOptions as { terminal?: unknown } | null)?.terminal
   const terminalHandle =
     typeof requestedTerminal === 'string' && requestedTerminal.length > 0
       ? requestedTerminal
-      : `term_${deterministicUuid(`${terminal.operationId}:handle`)}`
+      : `term_${deterministicUuid(`${worktree.operationId}:handle`)}`
   return {
     worktree: {
       ...worktree,
       branchName: `orca-worker/${worktree.operationId.slice(0, 16)}`
     },
-    terminal: {
-      ...terminal,
+    executionStart: {
+      ...executionSeed,
       terminalHandle,
       tabId: terminalTabId,
       leafId: terminalLeafId
-    },
-    authority: operationIdentity(args.dispatchId, 'authority', {
-      terminalOperationId: terminal.operationId,
-      terminalHandle
-    })
+    }
   }
 }
 
@@ -68,11 +66,13 @@ export type WorkerGenerationOperationIdentities = ReturnType<
   typeof buildWorkerGenerationOperationIdentities
 >
 
-export function buildWorkerGenerationPromptOperation(args: {
+export function buildWorkerExecutionStartOperation(args: {
   dispatchId: string
-  terminalOperationId: string
+  executionSeedOperationId: string
   terminalHandle: string
   prompt: string
+  capability: string
+  targetFingerprint: string
 }): WorkerGenerationOperationIdentity {
-  return operationIdentity(args.dispatchId, 'prompt', args)
+  return operationIdentity(args.dispatchId, 'execution_start', args)
 }

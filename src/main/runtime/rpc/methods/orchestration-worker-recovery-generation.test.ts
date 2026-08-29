@@ -110,13 +110,12 @@ describe('orchestration.workerRecover successor generations', () => {
     vi.spyOn(runtime, 'showRepo').mockResolvedValue({ id: 'repo', kind: 'git' } as never)
     vi.spyOn(runtime, 'resolveLocalManagedRepoCommit').mockResolvedValue(REVISION)
     vi.spyOn(runtime, 'validateOrchestrationAgentLauncher').mockImplementation(() => undefined)
-    vi.spyOn(runtime, 'createManagedWorktree').mockImplementation(async (args) => {
+    vi.spyOn(runtime, 'createManagedWorktree').mockImplementation(async () => {
       index++
-      terminalHandle = args.workerGenerationTerminalOperation?.terminalHandle ?? terminalHandle
       worktreeId = `repo::successor-${index}`
       return {
         worktree: { id: worktreeId, repoId: 'repo' },
-        startupTerminal: { spawned: true, handle: terminalHandle },
+        startupTerminal: { spawned: false },
         setupReceipt: {
           requested: 'run',
           hookFound: false,
@@ -141,21 +140,42 @@ describe('orchestration.workerRecover successor generations', () => {
       exitCode: null
     }))
     vi.spyOn(runtime, 'getOrchestrationDispatchAuthority').mockImplementation(
-      () =>
+      (handle) =>
         ({
-          terminalHandle,
-          paneKey: SUCCESSOR_PANE,
-          processIncarnation: `new-daemon:${terminalHandle}:process`,
+          terminalHandle: handle,
+          paneKey: handle === 'term_coord' ? COORDINATOR_PANE : SUCCESSOR_PANE,
+          processIncarnation:
+            handle === 'term_coord' ? 'new-daemon:coord:process' : `new-daemon:${handle}:process`,
           hostScope: HOST_SCOPE
         }) as never
     )
     vi.spyOn(runtime, 'getTerminalOrchestrationCliCommand').mockReturnValue('orca')
-    vi.spyOn(runtime, 'sendTerminalAgentPrompt').mockImplementation(
-      async (handle, _prompt, options) => {
-        await options?.beforeWrite?.(`pty-${handle}`)
-        return { handle, accepted: true, bytesWritten: 1, semanticObservedAt: Date.now() }
+    vi.spyOn(runtime, 'resolveWorkerAgentProcessAdmission').mockReturnValue({
+      targetFingerprint: 'c'.repeat(64)
+    })
+    vi.spyOn(runtime, 'createAgentSession').mockImplementation(async (request) => {
+      const start = request.executionStart!
+      terminalHandle = start.terminalHandle
+      return {
+        terminal: {
+          handle: terminalHandle,
+          worktreeId,
+          title: 'Codex',
+          surface: 'background'
+        },
+        disposition: 'created',
+        executionStartReceipt: {
+          ...start,
+          launchTokenHash: 'test-launch-token-hash',
+          paneKey: SUCCESSOR_PANE,
+          processIncarnation: `new-daemon:${terminalHandle}:process`,
+          hostScope: HOST_SCOPE,
+          providerSession: { key: 'session_id', id: `codex-successor-${index}` },
+          turnStartedAt: Date.now(),
+          semanticObservedAt: Date.now()
+        }
       }
-    )
+    })
   }
 
   async function recover(input: {
@@ -229,14 +249,14 @@ describe('orchestration.workerRecover successor generations', () => {
     expect(db.getDeliveryRaw(failedDelivery.id)?.status).toBe('contained')
     expect(
       db.db
-        .prepare('SELECT resource_id, state FROM worker_terminal_capacity_debts ORDER BY rowid')
+        .prepare('SELECT resource_id, state FROM worker_execution_capacity_debts ORDER BY rowid')
         .all()
     ).toEqual([
       { resource_id: fixture.resource.id, state: 'withheld' },
       { resource_id: failedResource.id, state: 'withheld' }
     ])
     expect(runtime.createManagedWorktree).toHaveBeenCalledTimes(2)
-    expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledTimes(2)
+    expect(runtime.createAgentSession).toHaveBeenCalledTimes(2)
   })
 
   it('returns contained capacity exactly once after exact source-tree exit', async () => {
@@ -266,7 +286,7 @@ describe('orchestration.workerRecover successor generations', () => {
     })
     expect(close).not.toHaveBeenCalled()
     expect(db.getWorkerTerminalResource(fixture.resource.id)?.lifecycle_state).toBe('released')
-    expect(db.db.prepare('SELECT state FROM worker_terminal_capacity_debts').get()).toEqual({
+    expect(db.db.prepare('SELECT state FROM worker_execution_capacity_debts').get()).toEqual({
       state: 'released'
     })
   })

@@ -96,7 +96,7 @@ describe('SSH fresh agent-session create operations', () => {
     await provider.spawn({
       cols: 80,
       rows: 24,
-      command: 'codex',
+      target: { kind: 'shell-command', command: 'codex' },
       agentSessionCreateOperationId: 'a'.repeat(43)
     })
 
@@ -126,7 +126,7 @@ describe('SSH fresh agent-session create operations', () => {
       provider.spawn({
         cols: 80,
         rows: 24,
-        command: 'codex',
+        target: { kind: 'shell-command', command: 'codex' },
         agentSessionCreateOperationId: 'b'.repeat(43)
       })
     ).rejects.toThrow('execution_owner_unavailable')
@@ -140,7 +140,7 @@ describe('SSH fresh agent-session create operations', () => {
       provider.spawn({
         cols: 80,
         rows: 24,
-        command: 'codex'
+        target: { kind: 'shell-command', command: 'codex' }
       })
     ).resolves.toMatchObject({ id: 'ssh:conn-1@@pty-legacy' })
 
@@ -199,7 +199,7 @@ describe('SSH fresh agent-session create operations', () => {
     const spawn = provider.spawn({
       cols: 80,
       rows: 24,
-      command: 'codex',
+      target: { kind: 'shell-command', command: 'codex' },
       agentSessionCreateOperationId: 'd'.repeat(43),
       signal: abort.signal
     })
@@ -223,7 +223,7 @@ describe('SSH fresh agent-session create operations', () => {
       .spawn({
         cols: 80,
         rows: 24,
-        command: 'codex',
+        target: { kind: 'shell-command', command: 'codex' },
         agentSessionCreateOperationId: 'c'.repeat(43)
       })
       .catch((error: unknown) => error)

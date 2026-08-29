@@ -1,7 +1,7 @@
 import { OrchestrationError } from '../../orchestration-error'
 import type { OrchestrationDb } from '../orchestration-db'
 
-export type WorkerGenerationEffectKind = 'worktree' | 'terminal' | 'authority' | 'prompt'
+export type WorkerGenerationEffectKind = 'worktree' | 'execution_start'
 
 type WorkerGenerationOperationIdentity = {
   dispatchId: string

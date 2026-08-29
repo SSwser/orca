@@ -17,13 +17,6 @@ import type { DiffComment, MobileDiffReviewState } from '../diff-comment-types'
 // ─── Worktree metadata (persisted user-authored fields only) ─────────
 export type WorktreeMeta = {
   workerGenerationOperation?: WorkerGenerationWorktreeOperation
-  workerGenerationTerminalOperation?: {
-    operationId: string
-    payloadFingerprint: string
-    terminalHandle: string
-    tabId: string
-    leafId: string
-  }
   /** Immutable per-workspace-instance ID used to reject stale lineage after path reuse. */
   instanceId?: string
   /** See Worktree.projectId. Persisted for project-first workspace ownership. */

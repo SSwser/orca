@@ -741,7 +741,7 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
         cols: 80,
         rows: 24,
         cwd: '/home/user',
-        command: 'printf ready',
+        target: { kind: 'shell-command', command: 'printf ready' },
         env: { SHELL: '/bin/zsh' },
         sessionId: 'sleep-checkpoint-tail'
       })

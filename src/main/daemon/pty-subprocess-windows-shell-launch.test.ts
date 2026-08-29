@@ -89,6 +89,46 @@ describe('createPtySubprocess', () => {
     validateWorkingDirectoryMock
   })
 
+  it('spawns a supervised Codex target directly without an interactive shell', async () => {
+    const proc = mockPtyProcess()
+    spawnMock.mockReturnValue(proc)
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')
+    const prompt = 'line one\n"quoted" CJK 任务'
+
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    try {
+      await createPtySubprocess({
+        sessionId: 'agent-process',
+        cols: 80,
+        rows: 24,
+        cwd: 'C:\\repo',
+        env: { KEEP: 'yes', STALE: 'remove' },
+        target: {
+          kind: 'agent-process',
+          executable: WINDOWS_POWERSHELL_ABS,
+          argv: ['-NoProfile', '-NonInteractive', '-File', 'C:\\Tools\\codex.ps1', prompt],
+          envPatch: { set: { CODEX_HOME: 'C:\\profile' }, delete: ['STALE'] },
+          expectedProcess: 'codex'
+        },
+        requireHostCrashContainment: true
+      })
+    } finally {
+      if (platform) {
+        Object.defineProperty(process, 'platform', platform)
+      }
+    }
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      WINDOWS_POWERSHELL_ABS,
+      ['-NoProfile', '-NonInteractive', '-File', 'C:\\Tools\\codex.ps1', prompt],
+      expect.objectContaining({
+        cwd: 'C:\\repo',
+        env: expect.objectContaining({ KEEP: 'yes', CODEX_HOME: 'C:\\profile' })
+      })
+    )
+    expect(spawnMock.mock.calls[0]?.[2]?.env).not.toHaveProperty('STALE')
+  })
+
   it('keeps powershell.exe when the inbox PowerShell implementation is selected on Windows', async () => {
     const proc = mockPtyProcess()
     spawnMock.mockReturnValue(proc)
@@ -257,7 +297,7 @@ describe('createPtySubprocess', () => {
         rows: 24,
         cwd: 'C:\\repo\\orca',
         shellOverride: 'powershell.exe',
-        command: "& 'codex' '--no-alt-screen'"
+        target: { kind: 'shell-command', command: "& 'codex' '--no-alt-screen'" }
       })
     } finally {
       if (platform) {
@@ -287,7 +327,7 @@ describe('createPtySubprocess', () => {
         rows: 24,
         cwd: 'C:\\repo\\orca',
         shellOverride: 'cmd.exe',
-        command: `codex ${'x'.repeat(7000)}`,
+        target: { kind: 'shell-command', command: `codex ${'x'.repeat(7000)}` },
         env: { ORCA_CODEX_LAUNCH_PREFLIGHT: CODEX_LAUNCH_PREFLIGHT }
       })
     } finally {

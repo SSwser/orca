@@ -2,6 +2,7 @@ import type { StartupCommandDelivery } from '../../shared/codex-startup-delivery
 import type { TuiAgent } from '../../shared/tui-agent'
 import type { SubprocessHandle } from './session-subprocess-handle'
 import type { TakePendingOutputResult, TerminalSnapshot } from './types'
+import type { PtySpawnTarget } from '../../shared/pty-spawn-target'
 
 export type TerminalHostOptions = {
   spawnSubprocess: (opts: {
@@ -11,7 +12,7 @@ export type TerminalHostOptions = {
     cwd?: string
     env?: Record<string, string>
     envToDelete?: string[]
-    command?: string
+    target?: PtySpawnTarget
     startupCommandDelivery?: StartupCommandDelivery
     launchAgent?: TuiAgent
     /** Refuse a Windows spawn unless daemon death will reap the PTY tree. */

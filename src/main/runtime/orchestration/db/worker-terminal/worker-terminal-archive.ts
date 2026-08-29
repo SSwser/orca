@@ -67,7 +67,7 @@ export function commitWorkerTerminalArchiveForRelease(
       }
       this.db
         .prepare(
-          `UPDATE worker_terminal_resources
+          `UPDATE worker_execution_resources
            SET lifecycle_state = 'release_closing', archive_source = ?, archive_status = ?,
                updated_at = datetime('now')
            WHERE id = ? AND owner_dispatch_id = ?
@@ -128,7 +128,7 @@ export function commitWorkerTerminalArchiveForStop(
     }
     this.db
       .prepare(
-        `UPDATE worker_terminal_resources
+        `UPDATE worker_execution_resources
          SET archive_source = COALESCE(archive_source, ?),
              archive_status = COALESCE(archive_status, ?), updated_at = datetime('now')
          WHERE id = ? AND owner_dispatch_id = ? AND process_incarnation = ?
@@ -165,7 +165,7 @@ export function settleWorkerTerminalRelease(
 ): WorkerTerminalResourceRow {
   this.db
     .prepare(
-      `UPDATE worker_terminal_resources
+      `UPDATE worker_execution_resources
        SET lifecycle_state = 'released',
            release_completed_at = datetime('now'), release_error = NULL,
            updated_at = datetime('now')
@@ -183,7 +183,7 @@ export function markWorkerTerminalReleaseUnknown(
 ): WorkerTerminalResourceRow {
   this.db
     .prepare(
-      `UPDATE worker_terminal_resources
+      `UPDATE worker_execution_resources
        SET lifecycle_state = 'release_unknown', release_error = ?, updated_at = datetime('now')
        WHERE id = ? AND lifecycle_state IN ('release_requested', 'release_closing')`
     )
@@ -198,7 +198,7 @@ export function revertWorkerTerminalReleaseToRetained(
 ): WorkerTerminalResourceRow {
   this.db
     .prepare(
-      `UPDATE worker_terminal_resources
+      `UPDATE worker_execution_resources
        SET lifecycle_state = 'retained', retained_reason = ?, updated_at = datetime('now')
        WHERE id = ? AND lifecycle_state IN ('release_requested', 'release_closing')`
     )
@@ -238,7 +238,7 @@ export function retainWorkerTerminalResource(
     }
     this.db
       .prepare(
-        `UPDATE worker_terminal_resources
+        `UPDATE worker_execution_resources
          SET lifecycle_state = 'retained', retained_reason = 'user_requested',
              updated_at = datetime('now')
          WHERE id = ? AND lifecycle_state IN ('owned', 'retained', 'release_requested')`

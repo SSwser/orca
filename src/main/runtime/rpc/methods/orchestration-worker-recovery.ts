@@ -6,7 +6,9 @@ import {
 import { OrchestrationError } from '../../orchestration/orchestration-error'
 import { defineMethod, type RpcContext, type RpcHandler, type RpcMethod } from '../core'
 import { OptionalFiniteNumber, OptionalString, requiredString } from '../schemas'
+import { resolveOrchestrationCaller } from './orchestration-run-scope'
 import { executeAcceptedLocalWorkerStart } from './orchestration-worker-start-executor'
+import { prepareWorkerExecutionAdmission } from './orchestration-worker-execution-admission'
 import { prepareLocalWorkerExecution } from './orchestration-worker-start-preparation'
 import { OptionalWorkerLaunchPreference } from './orchestration-worker-start-schema'
 
@@ -73,37 +75,116 @@ export const ORCHESTRATION_WORKER_RECOVERY_METHODS: RpcMethod[] = [
   defineMethod({
     name: 'orchestration.workerRecover',
     params: WorkerRecoverParams,
-    handler: withWorkerRecoveryFinality(async (params, { runtime, orchestrationMutation }) => {
-      if (!orchestrationMutation) {
-        throw new OrchestrationError(
-          'invalid_argument',
-          'worker-recover requires a durable --retry-request identifier.'
+    handler: withWorkerRecoveryFinality(
+      async (params, { runtime, orchestrationMutation, orchestrationCompatibilityEvidence }) => {
+        if (!orchestrationMutation) {
+          throw new OrchestrationError(
+            'invalid_argument',
+            'worker-recover requires a durable --retry-request identifier.'
+          )
+        }
+        const db = runtime.getOrchestrationDb()
+        const coordinatorPaneKey = resolveOrchestrationCaller(runtime, {
+          callerTerminalHandle: params.from,
+          callerEvidence: orchestrationCompatibilityEvidence
+        })
+        if (!coordinatorPaneKey) {
+          throw new OrchestrationError(
+            'consumer_fenced',
+            'worker-recover requires the coordinator terminal currently bound to the Run.'
+          )
+        }
+        const run = db.getCurrentRunForPane(coordinatorPaneKey)
+        if (!run || (params.run && params.run !== run.id)) {
+          throw new OrchestrationError(
+            'consumer_fenced',
+            'worker-recover requires the coordinator terminal currently bound to the Run.'
+          )
+        }
+        const source = db.getDispatchContextById(params.dispatch)
+        const task = source ? db.getTask(source.task_id) : undefined
+        if (!source || !task || source.run_id !== run.id) {
+          throw new OrchestrationError(
+            'task_not_found',
+            `Dispatch ${params.dispatch} was not found in Run ${run.id}.`
+          )
+        }
+        if (params.resolution === 'accept_archived_result') {
+          const accepted = db.acceptLostCustodyWorkerRecovery({
+            runId: run.id,
+            consumerGeneration: run.consumer_generation,
+            coordinatorHandle: params.from,
+            coordinatorPaneKey,
+            sourceDispatchId: params.dispatch,
+            sourceResourceId: params.resource,
+            sourceDeliveryId: params.delivery,
+            recoveryDisposition: params.resolution,
+            authorization: params.authorization,
+            mutationReceipt: orchestrationMutation
+          })
+          return {
+            runId: run.id,
+            taskId: task.id,
+            dispatchId: source.id,
+            state: 'contained',
+            processAction: 'none' as const,
+            recoveryDisposition: accepted.recovery.disposition,
+            recoveryId: accepted.recovery.id,
+            successorDispatchId: null,
+            containment: {
+              deliveryResolution: 'contained' as const,
+              capacity: 'withheld' as const
+            }
+          }
+        }
+        const sourceResource = db.getWorkerTerminalResource(params.resource)
+        const workerParams = {
+          task: task.id,
+          run: run.id,
+          from: params.from,
+          worktree: params.worktree,
+          name: params.name,
+          repo: params.repo,
+          baseBranch: params.revision,
+          displayName: params.displayName,
+          comment: params.comment,
+          setup: params.setup,
+          agent: params.agent,
+          model: params.model,
+          effort: params.effort,
+          timeoutMs: params.timeoutMs,
+          devMode: params.devMode
+        }
+        const prepared = await prepareLocalWorkerExecution({ runtime, params: workerParams })
+        if (
+          sourceResource?.worktree_id &&
+          prepared.creationWorktree?.id === sourceResource.worktree_id
+        ) {
+          throw new OrchestrationError(
+            'terminal_resource_unsettled',
+            'worker-recover cannot create a successor from the lost-custody physical workspace.'
+          )
+        }
+        const repoSelector = params.repo ?? prepared.creationWorktree?.repoId
+        if (!repoSelector) {
+          throw new OrchestrationError(
+            'invalid_argument',
+            'worker-recover could not resolve a local Git repository for the successor.'
+          )
+        }
+        const trustedRevision = await runtime.resolveLocalManagedRepoCommit(
+          repoSelector,
+          params.revision
         )
-      }
-      const db = runtime.getOrchestrationDb()
-      const coordinatorPaneKey = runtime.getTerminalPaneKey(params.from)
-      if (!coordinatorPaneKey) {
-        throw new OrchestrationError(
-          'consumer_fenced',
-          'worker-recover requires the coordinator terminal currently bound to the Run.'
-        )
-      }
-      const run = db.getCurrentRunForPane(coordinatorPaneKey)
-      if (!run || (params.run && params.run !== run.id)) {
-        throw new OrchestrationError(
-          'consumer_fenced',
-          'worker-recover requires the coordinator terminal currently bound to the Run.'
-        )
-      }
-      const source = db.getDispatchContextById(params.dispatch)
-      const task = source ? db.getTask(source.task_id) : undefined
-      if (!source || !task || source.run_id !== run.id) {
-        throw new OrchestrationError(
-          'task_not_found',
-          `Dispatch ${params.dispatch} was not found in Run ${run.id}.`
-        )
-      }
-      if (params.resolution === 'accept_archived_result') {
+        const admission = prepareWorkerExecutionAdmission({
+          runtime,
+          task,
+          coordinatorHandle: params.from,
+          startOptions: prepared.startOptions,
+          launchPreferences: prepared.launch.preferences,
+          devMode: params.devMode
+        })
+        prepared.startOptions = admission.startOptions
         const accepted = db.acceptLostCustodyWorkerRecovery({
           runId: run.id,
           consumerGeneration: run.consumer_generation,
@@ -113,121 +194,63 @@ export const ORCHESTRATION_WORKER_RECOVERY_METHODS: RpcMethod[] = [
           sourceResourceId: params.resource,
           sourceDeliveryId: params.delivery,
           recoveryDisposition: params.resolution,
+          trustedRevision,
+          successorPlacement: params.worktree,
+          successorName: params.name,
           authorization: params.authorization,
+          startOptions: admission.startOptions,
+          successorDispatchId: admission.dispatchId,
+          provisionalCapability: admission.provisionalCapability,
+          launchTokenHash: admission.launchTokenHash,
+          runtimeEpoch: runtime.getRuntimeId(),
           mutationReceipt: orchestrationMutation
         })
-        return {
+        if (!accepted.successor) {
+          throw new OrchestrationError(
+            'operation_unknown',
+            `Recovery ${accepted.recovery.id} is missing its retry successor.`
+          )
+        }
+        prepared.startOptions = JSON.parse(accepted.successor.worker.start_options) as Record<
+          string,
+          unknown
+        >
+        if (
+          accepted.disposition === 'replayed' &&
+          !['starting', 'start_unknown'].includes(accepted.successor.worker.state)
+        ) {
+          return replayedSuccessorReceipt({
+            runId: run.id,
+            taskId: task.id,
+            dispatchId: accepted.successor.dispatch.id,
+            state: accepted.successor.worker.state,
+            stage: accepted.successor.worker.stage,
+            effects: accepted.successor.worker.effects,
+            residualResources: accepted.successor.worker.residual_resources,
+            recoveryId: accepted.recovery.id
+          })
+        }
+        const result = await executeAcceptedLocalWorkerStart({
+          runtime,
+          db,
           runId: run.id,
-          taskId: task.id,
-          dispatchId: source.id,
-          state: 'contained',
+          task,
+          started: accepted.successor,
+          prepared
+        })
+        return {
+          ...(result as Record<string, unknown>),
           processAction: 'none' as const,
-          recoveryDisposition: accepted.recovery.disposition,
-          recoveryId: accepted.recovery.id,
-          successorDispatchId: null,
           containment: {
+            recoveryId: accepted.recovery.id,
+            sourceDispatchId: params.dispatch,
+            sourceResourceId: params.resource,
             deliveryResolution: 'contained' as const,
             capacity: 'withheld' as const
           }
         }
       }
-      const sourceResource = db.getWorkerTerminalResource(params.resource)
-      const workerParams = {
-        task: task.id,
-        run: run.id,
-        from: params.from,
-        worktree: params.worktree,
-        name: params.name,
-        repo: params.repo,
-        baseBranch: params.revision,
-        displayName: params.displayName,
-        comment: params.comment,
-        setup: params.setup,
-        agent: params.agent,
-        model: params.model,
-        effort: params.effort,
-        timeoutMs: params.timeoutMs,
-        devMode: params.devMode
-      }
-      const prepared = await prepareLocalWorkerExecution({ runtime, params: workerParams })
-      if (
-        sourceResource?.worktree_id &&
-        prepared.creationWorktree?.id === sourceResource.worktree_id
-      ) {
-        throw new OrchestrationError(
-          'terminal_resource_unsettled',
-          'worker-recover cannot create a successor from the lost-custody physical workspace.'
-        )
-      }
-      const repoSelector = params.repo ?? prepared.creationWorktree?.repoId
-      if (!repoSelector) {
-        throw new OrchestrationError(
-          'invalid_argument',
-          'worker-recover could not resolve a local Git repository for the successor.'
-        )
-      }
-      const trustedRevision = await runtime.resolveLocalManagedRepoCommit(
-        repoSelector,
-        params.revision
-      )
-      const accepted = db.acceptLostCustodyWorkerRecovery({
-        runId: run.id,
-        consumerGeneration: run.consumer_generation,
-        coordinatorHandle: params.from,
-        coordinatorPaneKey,
-        sourceDispatchId: params.dispatch,
-        sourceResourceId: params.resource,
-        sourceDeliveryId: params.delivery,
-        recoveryDisposition: params.resolution,
-        trustedRevision,
-        successorPlacement: params.worktree,
-        successorName: params.name,
-        authorization: params.authorization,
-        startOptions: prepared.startOptions,
-        runtimeEpoch: runtime.getRuntimeId(),
-        mutationReceipt: orchestrationMutation
-      })
-      if (!accepted.successor) {
-        throw new OrchestrationError(
-          'operation_unknown',
-          `Recovery ${accepted.recovery.id} is missing its retry successor.`
-        )
-      }
-      if (
-        accepted.disposition === 'replayed' &&
-        !['starting', 'start_unknown'].includes(accepted.successor.worker.state)
-      ) {
-        return replayedSuccessorReceipt({
-          runId: run.id,
-          taskId: task.id,
-          dispatchId: accepted.successor.dispatch.id,
-          state: accepted.successor.worker.state,
-          stage: accepted.successor.worker.stage,
-          effects: accepted.successor.worker.effects,
-          residualResources: accepted.successor.worker.residual_resources,
-          recoveryId: accepted.recovery.id
-        })
-      }
-      const result = await executeAcceptedLocalWorkerStart({
-        runtime,
-        db,
-        runId: run.id,
-        task,
-        started: accepted.successor,
-        prepared
-      })
-      return {
-        ...(result as Record<string, unknown>),
-        processAction: 'none' as const,
-        containment: {
-          recoveryId: accepted.recovery.id,
-          sourceDispatchId: params.dispatch,
-          sourceResourceId: params.resource,
-          deliveryResolution: 'contained' as const,
-          capacity: 'withheld' as const
-        }
-      }
-    })
+    )
   })
 ]
 

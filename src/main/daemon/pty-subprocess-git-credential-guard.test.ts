@@ -211,7 +211,7 @@ describe('createPtySubprocess', () => {
       sessionId: 'trusted-wrapped-agent',
       cols: 80,
       rows: 24,
-      command: 'cd /repo && custom-agent-wrapper',
+      target: { kind: 'shell-command', command: 'cd /repo && custom-agent-wrapper' },
       launchAgent: 'claude',
       env: { SHELL: '/bin/bash' }
     })

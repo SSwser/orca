@@ -26,11 +26,6 @@ import {
 } from './terminal-host-shell-ownership'
 import { isShellProcess } from '../../shared/agent-detection'
 import { TerminalAttachCanceledError } from './daemon-errors'
-import type {
-  WorkerPromptOperationIdentity,
-  WorkerPromptOperationInspection,
-  WorkerPromptOperationRequest
-} from '../../shared/worker-prompt-operation'
 
 export type { CreateOrAttachOptions, CreateOrAttachResult } from './terminal-host-create-contract'
 
@@ -150,20 +145,6 @@ export class TerminalHost {
 
   write(sessionId: string, data: string): void {
     this.getAliveSession(sessionId).write(data)
-  }
-
-  writeWorkerPromptOperation(
-    sessionId: string,
-    request: WorkerPromptOperationRequest
-  ): { accepted: boolean } {
-    return this.getAliveSession(sessionId).writeWorkerPromptOperation(request)
-  }
-
-  inspectWorkerPromptOperation(
-    sessionId: string,
-    identity: WorkerPromptOperationIdentity
-  ): WorkerPromptOperationInspection {
-    return this.getAliveSession(sessionId).inspectWorkerPromptOperation(identity)
   }
 
   closeStartupQueryAuthority(sessionId: string): number {

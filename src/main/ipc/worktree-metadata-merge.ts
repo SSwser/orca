@@ -43,9 +43,6 @@ export function mergeWorktree(
     ...(meta?.workerGenerationOperation
       ? { workerGenerationOperation: meta.workerGenerationOperation }
       : {}),
-    ...(meta?.workerGenerationTerminalOperation
-      ? { workerGenerationTerminalOperation: meta.workerGenerationTerminalOperation }
-      : {}),
     path: git.path,
     head: git.head,
     branch: git.branch,

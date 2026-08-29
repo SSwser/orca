@@ -64,7 +64,6 @@ export type WorkerGenerationWorktreeOperation = {
   completedReceipt?: {
     worktreeId: string
     instanceId?: string
-    terminalHandle: string
     setup: {
       requested: 'run' | 'skip' | 'inherit'
       hookFound: boolean
@@ -90,13 +89,6 @@ export type Worktree = {
   /** Authenticated client that created this workspace. Missing means unknown legacy origin. */
   creatorProvenance?: WorkspaceCreatorProvenance
   workerGenerationOperation?: WorkerGenerationWorktreeOperation
-  workerGenerationTerminalOperation?: {
-    operationId: string
-    payloadFingerprint: string
-    terminalHandle: string
-    tabId: string
-    leafId: string
-  }
   /** Host-specific setup used to create/run this workspace. */
   projectHostSetupId?: string
   /** Checkout ownership for a recipe-provisioned main workspace. */

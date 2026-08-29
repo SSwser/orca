@@ -1,4 +1,5 @@
 import type {
+  WorkerExecutionResourceRow,
   WorkerTerminalResourceRow,
   WorkerTerminalLifecycleState
 } from '../../worker-terminal-ownership'
@@ -19,7 +20,7 @@ export function backfillWorkerTerminalResources(this: OrchestrationDb): void {
         WHERE w.agent_terminal_handle IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM federated_dispatches f WHERE f.dispatch_id = w.dispatch_id)
           AND NOT EXISTS (
-            SELECT 1 FROM worker_terminal_resources r WHERE r.owner_dispatch_id = w.dispatch_id
+            SELECT 1 FROM worker_execution_resources r WHERE r.owner_dispatch_id = w.dispatch_id
           )`
     )
     .all() as {
@@ -30,10 +31,10 @@ export function backfillWorkerTerminalResources(this: OrchestrationDb): void {
     process_incarnation: string | null
   }[]
   const insert = this.db.prepare(
-    `INSERT INTO worker_terminal_resources (
-       id, origin_dispatch_id, owner_dispatch_id, worktree_id, terminal_handle,
+    `INSERT INTO worker_execution_resources (
+       id, origin_dispatch_id, owner_dispatch_id, worktree_id, resource_kind, terminal_handle,
        pane_key, process_incarnation, lifecycle_state, retained_reason
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     ) VALUES (?, ?, ?, ?, 'terminal', ?, ?, ?, ?, ?)`
   )
   for (const row of rows) {
     insert.run(
@@ -66,10 +67,10 @@ export function createWorkerTerminalResourceStatement(
   const id = generateId('wtr')
   this.db
     .prepare(
-      `INSERT INTO worker_terminal_resources (
-         id, origin_dispatch_id, owner_dispatch_id, worktree_id, terminal_handle,
+      `INSERT INTO worker_execution_resources (
+         id, origin_dispatch_id, owner_dispatch_id, worktree_id, resource_kind, terminal_handle,
          pane_key, process_incarnation, host_scope, lifecycle_state, retained_reason
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       ) VALUES (?, ?, ?, ?, 'terminal', ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
@@ -86,22 +87,36 @@ export function createWorkerTerminalResourceStatement(
   return this.getWorkerTerminalResource(id) as WorkerTerminalResourceRow
 }
 
+export function getWorkerExecutionResource(
+  this: OrchestrationDb,
+  id: string
+): WorkerExecutionResourceRow | undefined {
+  return this.db.prepare('SELECT * FROM worker_execution_resources WHERE id = ?').get(id) as
+    | WorkerExecutionResourceRow
+    | undefined
+}
+
 export function getWorkerTerminalResource(
   this: OrchestrationDb,
   id: string
 ): WorkerTerminalResourceRow | undefined {
-  return this.db.prepare('SELECT * FROM worker_terminal_resources WHERE id = ?').get(id) as
-    | WorkerTerminalResourceRow
-    | undefined
+  return this.getWorkerExecutionResource(id)
+}
+
+export function getWorkerExecutionResourceByOwner(
+  this: OrchestrationDb,
+  dispatchId: string
+): WorkerExecutionResourceRow | undefined {
+  return this.db
+    .prepare('SELECT * FROM worker_execution_resources WHERE owner_dispatch_id = ?')
+    .get(dispatchId) as WorkerExecutionResourceRow | undefined
 }
 
 export function getWorkerTerminalResourceByOwner(
   this: OrchestrationDb,
   dispatchId: string
 ): WorkerTerminalResourceRow | undefined {
-  return this.db
-    .prepare('SELECT * FROM worker_terminal_resources WHERE owner_dispatch_id = ?')
-    .get(dispatchId) as WorkerTerminalResourceRow | undefined
+  return this.getWorkerExecutionResourceByOwner(dispatchId)
 }
 
 export function getWorkerTerminalResourceFormerlyOwnedBy(
@@ -110,8 +125,8 @@ export function getWorkerTerminalResourceFormerlyOwnedBy(
 ): WorkerTerminalResourceRow | undefined {
   return this.db
     .prepare(
-      `SELECT * FROM worker_terminal_resources
-        WHERE prior_owner_dispatch_ids LIKE ?
+      `SELECT * FROM worker_execution_resources
+        WHERE resource_kind = 'terminal' AND prior_owner_dispatch_ids LIKE ?
         ORDER BY updated_at DESC LIMIT 1`
     )
     .get(`%"${dispatchId}"%`) as WorkerTerminalResourceRow | undefined
@@ -123,7 +138,7 @@ export function getNonActionableWorkerTerminalResource(
 ): WorkerTerminalResourceRow | undefined {
   return this.db
     .prepare(
-      `SELECT * FROM worker_terminal_resources
+      `SELECT * FROM worker_execution_resources
         WHERE terminal_handle = ? AND lifecycle_state IN ('release_unknown', 'contained')
         ORDER BY updated_at DESC LIMIT 1`
     )
@@ -154,7 +169,7 @@ export function transferWorkerTerminalResourceStatement(
   priorOwners.push(resource.owner_dispatch_id)
   this.db
     .prepare(
-      `UPDATE worker_terminal_resources
+      `UPDATE worker_execution_resources
        SET owner_dispatch_id = ?, prior_owner_dispatch_ids = ?, lifecycle_state = 'owned',
            retained_reason = NULL, release_requested_at = NULL, release_completed_at = NULL,
            release_error = NULL, terminal_handle = ?, pane_key = ?, process_incarnation = ?,
@@ -178,6 +193,8 @@ export function transferWorkerTerminalResourceStatement(
 export type WorkerTerminalResourceStoreMethods = {
   backfillWorkerTerminalResources: typeof backfillWorkerTerminalResources
   createWorkerTerminalResourceStatement: typeof createWorkerTerminalResourceStatement
+  getWorkerExecutionResource: typeof getWorkerExecutionResource
+  getWorkerExecutionResourceByOwner: typeof getWorkerExecutionResourceByOwner
   getWorkerTerminalResource: typeof getWorkerTerminalResource
   getWorkerTerminalResourceByOwner: typeof getWorkerTerminalResourceByOwner
   getWorkerTerminalResourceFormerlyOwnedBy: typeof getWorkerTerminalResourceFormerlyOwnedBy
@@ -189,6 +206,8 @@ export function attachWorkerTerminalResourceStore(ctor: { prototype: object }): 
   Object.assign(ctor.prototype, {
     backfillWorkerTerminalResources,
     createWorkerTerminalResourceStatement,
+    getWorkerExecutionResource,
+    getWorkerExecutionResourceByOwner,
     getWorkerTerminalResource,
     getWorkerTerminalResourceByOwner,
     getWorkerTerminalResourceFormerlyOwnedBy,

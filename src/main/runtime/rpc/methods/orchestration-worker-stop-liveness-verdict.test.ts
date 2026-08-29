@@ -204,7 +204,7 @@ describe('worker-stop against a terminal we lost contact with', () => {
       throw new Error('Expected worker terminal resource')
     }
     ;(db as unknown as { db: { prepare: (sql: string) => { run: (id: string) => void } } }).db
-      .prepare('DELETE FROM worker_terminal_resources WHERE id = ?')
+      .prepare('DELETE FROM worker_execution_resources WHERE id = ?')
       .run(resource.id)
 
     await expect(

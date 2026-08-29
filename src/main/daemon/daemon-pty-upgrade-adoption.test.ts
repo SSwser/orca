@@ -125,7 +125,7 @@ describe('daemon PTY upgrade adoption', () => {
       cols: 120,
       rows: 40,
       attachOnly: true,
-      command: 'must-not-run'
+      target: { kind: 'shell-command', command: 'must-not-run' }
     })
 
     expect(adopted).toMatchObject({

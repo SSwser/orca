@@ -219,7 +219,7 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
             rows: 24,
             sessionId: 'legacy-stable-pane-session',
             attachOnly: true,
-            command: 'must-not-run'
+            target: { kind: 'shell-command', command: 'must-not-run' }
           })
         ).resolves.toMatchObject({
           id: 'legacy-stable-pane-session',
@@ -229,11 +229,11 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
         expect(request).toHaveBeenCalledWith(
           'createOrAttach',
           expect.objectContaining({
-            command: undefined,
             launchAgent: undefined,
             startupCommandDelivery: undefined
           })
         )
+        expect(request.mock.calls[0]?.[1]).not.toHaveProperty('target')
         expect(request.mock.calls[0]?.[1]).not.toHaveProperty('attachOnly')
       } finally {
         legacy.dispose()
@@ -264,14 +264,11 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
             rows: 24,
             sessionId: 'raced-out-legacy-session',
             attachOnly: true,
-            command: 'must-not-run'
+            target: { kind: 'shell-command', command: 'must-not-run' }
           })
         ).rejects.toThrow('Session not found: raced-out-legacy-session')
-        expect(request).toHaveBeenNthCalledWith(
-          1,
-          'createOrAttach',
-          expect.objectContaining({ command: undefined })
-        )
+        expect(request).toHaveBeenNthCalledWith(1, 'createOrAttach', expect.any(Object))
+        expect(request.mock.calls[0]?.[1]).not.toHaveProperty('target')
         expect(request).toHaveBeenNthCalledWith(2, 'kill', {
           sessionId: 'raced-out-legacy-session',
           immediate: true
@@ -445,7 +442,11 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
         cols: 80,
         rows: 24,
         cwd: '/repo/owned-before-osc7',
-        worktreeId: 'repo::/repo/owned-before-osc7'
+        worktreeId: 'repo::/repo/owned-before-osc7',
+        agentSessionCreateOperation: {
+          operationId: 'a'.repeat(43),
+          payloadFingerprint: 'b'.repeat(64)
+        }
       })
       await adapter.spawn({ cols: 80, rows: 24 })
 
@@ -456,6 +457,10 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
       expect(procs[0]).toHaveProperty('title')
       expect(procs[0].cwd).toBe('/repo/owned-before-osc7')
       expect(procs[0].worktreeId).toBe('repo::/repo/owned-before-osc7')
+      expect(procs[0].agentSessionCreateOperation).toEqual({
+        operationId: 'a'.repeat(43),
+        payloadFingerprint: 'b'.repeat(64)
+      })
       expect(adapter.getLastAuditObservation()).toMatchObject({
         state: 'present',
         reason: 'authenticated_inventory',
@@ -609,14 +614,21 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
       await adapter.listProcesses()
 
       await server.shutdown()
-      await waitFor(
-        () => !(adapter as unknown as { client: { isConnected(): boolean } }).client.isConnected()
-      )
-      await expect(adapter.listProcesses()).rejects.toThrow()
       await waitFor(() =>
-        observations.some(
-          (observation) => observation.trigger === 'token_missing_after_authenticated_disconnect'
-        )
+        (
+          adapter as unknown as {
+            client: { hasObservedAuthenticatedDisconnect(): boolean }
+          }
+        ).client.hasObservedAuthenticatedDisconnect()
+      )
+      rmSync(tokenPath, { force: true })
+      await expect(adapter.listProcesses()).rejects.toThrow()
+      await waitFor(
+        () =>
+          observations.some(
+            (observation) => observation.trigger === 'token_missing_after_authenticated_disconnect'
+          ),
+        10_000
       )
 
       expect(observations).toContainEqual(

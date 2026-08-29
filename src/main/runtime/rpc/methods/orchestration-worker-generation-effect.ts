@@ -2,11 +2,12 @@ import type { OrchestrationDb } from '../../orchestration/db'
 import { OrchestrationError } from '../../orchestration/orchestration-error'
 import type { WorkerEffect } from './orchestration-worker-topology'
 import type { WorkerGenerationOperationIdentity } from './orchestration-worker-generation-identity'
-import { isAgentPromptSubmissionUnconfirmedError } from '../../agent-prompt-submission-verification'
 
-export type WorkerGenerationEffectKind = 'worktree' | 'terminal' | 'authority' | 'prompt'
+export type WorkerGenerationEffectKind = 'worktree' | 'execution_start'
 export type WorkerGenerationEffectReadback =
   | { verdict: 'not_started' | 'conflict' | 'unverifiable' }
+  | { verdict: 'started' }
+  | { verdict: 'accepted'; receipt: unknown }
   | { verdict: 'completed'; receipt: unknown }
 
 export async function acquireWorkerGenerationEffect(args: {
@@ -18,7 +19,8 @@ export async function acquireWorkerGenerationEffect(args: {
   claimantId: string
   inspect: () => Promise<WorkerGenerationEffectReadback>
 }): Promise<
-  { disposition: 'execute' | 'in_progress' } | { disposition: 'completed'; receipt: unknown }
+  | { disposition: 'execute' | 'observe' | 'in_progress' }
+  | { disposition: 'completed'; receipt: unknown }
 > {
   const claim = args.db.claimWorkerGenerationOperation({
     dispatchId: args.dispatchId,
@@ -45,7 +47,13 @@ export async function acquireWorkerGenerationEffect(args: {
   try {
     readback = await args.inspect()
   } catch (error) {
-    if (claim.claimantId && isAgentPromptSubmissionUnconfirmedError(error)) {
+    if (
+      claim.claimantId &&
+      error &&
+      typeof error === 'object' &&
+      (error as { agentSessionOperationOutcome?: unknown }).agentSessionOperationOutcome ===
+        'unknown'
+    ) {
       args.db.markWorkerGenerationOperationUnverifiable({
         dispatchId: args.dispatchId,
         effectKind: args.effectKind,
@@ -88,7 +96,10 @@ export async function acquireWorkerGenerationEffect(args: {
   if (readback.verdict === 'not_started') {
     return { disposition: 'execute' }
   }
-  if (readback.verdict !== 'completed') {
+  if (readback.verdict === 'started') {
+    return { disposition: 'observe' }
+  }
+  if (readback.verdict !== 'completed' && readback.verdict !== 'accepted') {
     return { disposition: 'in_progress' }
   }
   args.db.completeWorkerGenerationOperation({

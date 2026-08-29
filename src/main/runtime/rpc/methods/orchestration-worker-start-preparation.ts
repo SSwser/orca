@@ -21,7 +21,20 @@ export async function prepareLocalWorkerExecution(args: {
   const requestedWorktree = params.worktree ?? 'current'
   const createsWorktree = requestedWorktree === 'new-child' || requestedWorktree === 'new-top-level'
   const { agent, launch } = prepareLocalWorkerStart({ params, createsWorktree, runtime })
+  if (agent !== 'codex' || params.terminal) {
+    throw new OrchestrationError(
+      'agent_unconfigured',
+      'Supervised Worker execution start currently supports only a new local Codex Session.'
+    )
+  }
   const coordinatorTerminal = await runtime.showTerminal(params.from)
+  const coordinatorAuthority = runtime.getOrchestrationDispatchAuthority(params.from)
+  if (!coordinatorAuthority || coordinatorAuthority.hostScope.kind !== 'local') {
+    throw new OrchestrationError(
+      'execution_host_unavailable',
+      'Supervised Worker execution start requires local execution-host authority.'
+    )
+  }
   const creationWorktree = createsWorktree
     ? await runtime.showManagedWorktree(`id:${coordinatorTerminal.worktreeId}`)
     : undefined
@@ -37,20 +50,17 @@ export async function prepareLocalWorkerExecution(args: {
     : requestedWorktree === 'current'
       ? await runtime.showManagedTerminalWorkspace(`id:${coordinatorTerminal.worktreeId}`)
       : await runtime.showManagedTerminalWorkspace(requestedWorktree)
-  if (params.terminal) {
-    const explicitTerminal = await runtime.showTerminal(params.terminal)
-    if (explicitTerminal.worktreeId !== resolvedWorktree?.id) {
-      throw new OrchestrationError(
-        'terminal_worktree_mismatch',
-        `Terminal ${params.terminal} does not belong to worktree ${resolvedWorktree?.id}.`
-      )
-    }
-    if (!(await runtime.isTerminalRunningAgent(params.terminal))) {
-      throw new OrchestrationError(
-        'agent_unconfigured',
-        `Terminal ${params.terminal} is not running a recognized agent.`
-      )
-    }
+  const executionRuntime = runtime.resolveProjectRuntimeForWorktree(
+    resolvedWorktree?.id ?? creationWorktree?.id
+  )
+  if (
+    executionRuntime &&
+    (executionRuntime.status !== 'resolved' || executionRuntime.runtime.kind === 'wsl')
+  ) {
+    throw new OrchestrationError(
+      'execution_host_unavailable',
+      'Supervised Worker execution start is unavailable for this workspace execution host.'
+    )
   }
   return {
     params,

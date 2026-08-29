@@ -20890,6 +20890,7 @@ describe('OrcaRuntimeService', () => {
       setInMemoryOrchestrationMessages(runtime, db)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -20930,6 +20931,7 @@ describe('OrcaRuntimeService', () => {
       setInMemoryOrchestrationMessages(runtime, db)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -20977,6 +20979,7 @@ describe('OrcaRuntimeService', () => {
       setInMemoryOrchestrationMessages(runtime, db)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -21019,6 +21022,7 @@ describe('OrcaRuntimeService', () => {
       setInMemoryOrchestrationMessages(runtime, db)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -21053,6 +21057,7 @@ describe('OrcaRuntimeService', () => {
       setInMemoryOrchestrationMessages(runtime, db)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -36507,6 +36512,7 @@ describe('OrcaRuntimeService', () => {
       setInMemoryOrchestrationMessages(runtime, db)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -36552,6 +36558,7 @@ describe('OrcaRuntimeService', () => {
       setInMemoryOrchestrationMessages(runtime, db)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -36613,6 +36620,7 @@ describe('OrcaRuntimeService', () => {
       setInMemoryOrchestrationMessages(runtime, db)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -36678,6 +36686,7 @@ describe('OrcaRuntimeService', () => {
       setInMemoryOrchestrationMessages(runtime, db)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -36730,6 +36739,7 @@ describe('OrcaRuntimeService', () => {
       setInMemoryOrchestrationMessages(runtime, db)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -36770,6 +36780,7 @@ describe('OrcaRuntimeService', () => {
       const write = vi.fn().mockReturnValue(true)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -36811,6 +36822,7 @@ describe('OrcaRuntimeService', () => {
       setInMemoryOrchestrationMessages(runtime, db)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -36850,6 +36862,7 @@ describe('OrcaRuntimeService', () => {
       const write = vi.fn().mockReturnValue(true)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -36914,6 +36927,7 @@ describe('OrcaRuntimeService', () => {
     setInMemoryOrchestrationMessages(runtime, db)
     runtime.setPtyController({
       write,
+      writeWithSettlement: async (ptyId, data) => write(ptyId, data),
       kill: vi.fn(),
       getForegroundProcess: async () => 'codex'
     })
@@ -36957,6 +36971,7 @@ describe('OrcaRuntimeService', () => {
     setInMemoryOrchestrationMessages(runtime, db)
     runtime.setPtyController({
       write,
+      writeWithSettlement: async (ptyId, data) => write(ptyId, data),
       kill: vi.fn(),
       getForegroundProcess: async () => null
     })
@@ -36991,6 +37006,7 @@ describe('OrcaRuntimeService', () => {
       setInMemoryOrchestrationMessages(runtime, db)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -37034,6 +37050,7 @@ describe('OrcaRuntimeService', () => {
       setInMemoryOrchestrationMessages(runtime, db)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -37082,6 +37099,7 @@ describe('OrcaRuntimeService', () => {
       setInMemoryOrchestrationMessages(runtime, db)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -37130,6 +37148,7 @@ describe('OrcaRuntimeService', () => {
       setInMemoryOrchestrationMessages(runtime, db)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -37191,6 +37210,7 @@ describe('OrcaRuntimeService', () => {
       setInMemoryOrchestrationMessages(runtime, db)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -37327,6 +37347,7 @@ describe('OrcaRuntimeService', () => {
       setInMemoryOrchestrationMessages(runtime, db)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -37374,6 +37395,7 @@ describe('OrcaRuntimeService', () => {
       const write = vi.fn().mockReturnValue(true)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -37430,6 +37452,7 @@ describe('OrcaRuntimeService', () => {
       setInMemoryOrchestrationMessages(runtime, db)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -37484,6 +37507,7 @@ describe('OrcaRuntimeService', () => {
       setInMemoryOrchestrationMessages(runtime, db)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -37524,6 +37548,7 @@ describe('OrcaRuntimeService', () => {
       setInMemoryOrchestrationMessages(runtime, db)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -37572,6 +37597,7 @@ describe('OrcaRuntimeService', () => {
       setInMemoryOrchestrationMessages(runtime, db)
       runtime.setPtyController({
         write,
+        writeWithSettlement: async (ptyId, data) => write(ptyId, data),
         kill: vi.fn(),
         getForegroundProcess: async () => null
       })
@@ -37631,6 +37657,7 @@ describe('OrcaRuntimeService', () => {
     setInMemoryOrchestrationMessages(runtime, db)
     runtime.setPtyController({
       write,
+      writeWithSettlement: async (ptyId, data) => write(ptyId, data),
       kill: vi.fn(),
       getForegroundProcess: async () => null
     })

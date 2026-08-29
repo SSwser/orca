@@ -49,7 +49,9 @@ export function persistGatedSetupSpawnFailure(args: WorkerSetupStageArgs): boole
 }
 
 export function persistWorkerSetupWaitOutcome(
-  args: WorkerSetupStageArgs & { wait: { satisfied: boolean; status: string } }
+  args: WorkerSetupStageArgs & {
+    wait: { satisfied: boolean; status: string; exitCode?: number | null }
+  }
 ): void {
   applyWaitForSetupOutcome(args.setup, args.effects, args.wait)
   if (args.setup.startupPolicy !== 'wait-for-setup') {

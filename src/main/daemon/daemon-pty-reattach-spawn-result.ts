@@ -25,6 +25,9 @@ export function buildDaemonPtyReattachSpawnResult(args: {
     ...args.restartCustody,
     pid: args.pid,
     ...(result.agentSessionEnsure ? { agentSessionEnsure: result.agentSessionEnsure } : {}),
+    ...(result.agentSessionCreateOperation
+      ? { agentSessionCreateOperation: result.agentSessionCreateOperation }
+      : {}),
     ...(result.launchAgent ? { launchAgent: result.launchAgent } : {}),
     ...(args.providerWslDistro !== undefined ? { wslDistro: args.providerWslDistro } : {}),
     snapshot: snapshotPrefix + snapshotFrame,

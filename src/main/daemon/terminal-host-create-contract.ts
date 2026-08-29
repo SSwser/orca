@@ -4,11 +4,13 @@ import type { ShellReadyState, TerminalSnapshot } from './types'
 import type { PtyStartupIngressIntent } from '../../shared/pty-startup-ingress'
 import type {
   AgentSessionClaimedSpawnResult,
+  AgentSessionCreateOperationIdentity,
   AgentSessionExecutionClaim,
   AgentSessionSurfaceBinding
 } from '../../shared/agent-session-host-authority'
 import type { PtyIncarnationId } from '../../shared/pty-incarnation'
 import type { TerminalExitCause } from '../../shared/terminal-exit-cause'
+import type { PtySpawnTarget } from '../../shared/pty-spawn-target'
 
 export type CreateOrAttachOptions = {
   sessionId: string
@@ -17,7 +19,7 @@ export type CreateOrAttachOptions = {
   cwd?: string
   env?: Record<string, string>
   envToDelete?: string[]
-  command?: string
+  target?: PtySpawnTarget
   startupCommandDelivery?: StartupCommandDelivery
   launchAgent?: TuiAgent
   /** Missing ownership is not permission to create during stable-pane adoption. */
@@ -35,6 +37,7 @@ export type CreateOrAttachOptions = {
     claim: AgentSessionExecutionClaim
     surface: AgentSessionSurfaceBinding
   }
+  agentSessionCreateOperation?: AgentSessionCreateOperationIdentity
   streamClient: {
     onData: (data: string, rawLength?: number, transformed?: boolean, seq?: number) => void
     onExit: (code: number, incarnationId: PtyIncarnationId, cause?: TerminalExitCause) => void
@@ -56,4 +59,5 @@ export type CreateOrAttachResult = {
   incarnationId: PtyIncarnationId
   hostCrashContained?: true
   agentSessionEnsure?: AgentSessionClaimedSpawnResult
+  agentSessionCreateOperation?: AgentSessionCreateOperationIdentity
 }

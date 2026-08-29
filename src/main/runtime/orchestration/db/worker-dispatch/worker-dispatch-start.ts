@@ -3,6 +3,7 @@ import { OrchestrationError } from '../../orchestration-error'
 import { ensureMutationReceiptCapacity } from '../../mutation-receipt-capacity'
 import { CURRENT_CONTRACT_VERSION } from '../contract-constants'
 import { generateId } from '../generated-id'
+import { hashDispatchCapability } from '../dispatch-capability-hash'
 import type { OrchestrationDb } from '../orchestration-db'
 import { insertStartingDispatchContextRow } from '../dispatch-row-writer'
 import type { DispatchCreator } from '../dispatch-depth'
@@ -22,6 +23,7 @@ export function insertStartingWorkerDispatchStatement(
     startOptions: unknown
     launchTokenHash?: string
     runtimeEpoch?: string
+    provisionalCapability?: string
     federation?: StartingWorkerFederation
     depth: number
   }
@@ -37,10 +39,24 @@ export function insertStartingWorkerDispatchStatement(
   this.db
     .prepare(
       `INSERT INTO worker_dispatches (
-         dispatch_id, runtime_epoch, state, stage, start_options
-       ) VALUES (?, ?, 'starting', 'accepted', ?)`
+         dispatch_id, runtime_epoch, state, stage, start_options, provisional_capability
+       ) VALUES (?, ?, 'starting', 'accepted', ?, ?)`
     )
-    .run(params.dispatchId, params.runtimeEpoch ?? null, JSON.stringify(params.startOptions))
+    .run(
+      params.dispatchId,
+      params.runtimeEpoch ?? null,
+      JSON.stringify(params.startOptions),
+      params.provisionalCapability ?? null
+    )
+  if (params.provisionalCapability) {
+    this.db
+      .prepare(
+        `UPDATE dispatch_contexts
+            SET capability_hash = ?, capability_revoked_at = NULL
+          WHERE id = ? AND status = 'pending'`
+      )
+      .run(hashDispatchCapability(params.provisionalCapability), params.dispatchId)
+  }
   if (params.federation) {
     this.db
       .prepare(
@@ -71,6 +87,8 @@ export function createStartingWorkerDispatch(
   this: OrchestrationDb,
   params: {
     taskId: string
+    dispatchId?: string
+    provisionalCapability?: string
     startOptions: unknown
     launchTokenHash?: string
     retryOf?: string
@@ -120,7 +138,7 @@ export function createStartingWorkerDispatch(
     const unsettledResource = this.db
       .prepare(
         `SELECT r.id, r.lifecycle_state
-           FROM worker_terminal_resources r
+           FROM worker_execution_resources r
            JOIN dispatch_contexts d ON d.id = r.owner_dispatch_id
           WHERE d.task_id = ?
             AND r.lifecycle_state IN (
@@ -159,7 +177,7 @@ export function createStartingWorkerDispatch(
       )
     }
 
-    const id = generateId('ctx')
+    const id = params.dispatchId ?? generateId('ctx')
     if (params.mutationReceipt) {
       this.db
         .prepare(
@@ -179,6 +197,7 @@ export function createStartingWorkerDispatch(
       startOptions: params.startOptions,
       launchTokenHash: params.launchTokenHash,
       runtimeEpoch: params.runtimeEpoch,
+      provisionalCapability: params.provisionalCapability,
       federation: params.federation,
       depth: this.resolveChildDispatchDepth(params.creator, params.maxDepth)
     })

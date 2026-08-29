@@ -158,10 +158,10 @@ export function acceptLostCustodyWorkerRecovery<TParams extends LostCustodyRecov
 
     const recoveryId = generateId('recovery')
     const successorDispatchId =
-      params.recoveryDisposition === 'retry_with_successor' ? generateId('ctx') : null
+      params.recoveryDisposition === 'retry_with_successor' ? params.successorDispatchId : null
     const contained = this.db
       .prepare(
-        `UPDATE worker_terminal_resources
+        `UPDATE worker_execution_resources
          SET lifecycle_state = 'contained', retained_reason = 'lost_custody',
              updated_at = datetime('now')
          WHERE id = ? AND owner_dispatch_id = ?
@@ -209,7 +209,7 @@ export function acceptLostCustodyWorkerRecovery<TParams extends LostCustodyRecov
       .run(sourceWorktreeId, resource.id, recoveryId)
     this.db
       .prepare(
-        `INSERT INTO worker_terminal_capacity_debts (resource_id, recovery_id)
+        `INSERT INTO worker_execution_capacity_debts (resource_id, recovery_id)
          VALUES (?, ?)`
       )
       .run(resource.id, recoveryId)
@@ -242,6 +242,8 @@ export function acceptLostCustodyWorkerRecovery<TParams extends LostCustodyRecov
             task,
             startOptions: params.startOptions,
             runtimeEpoch: params.runtimeEpoch,
+            provisionalCapability: params.provisionalCapability,
+            launchTokenHash: params.launchTokenHash,
             depth: source.depth
           })
         : null

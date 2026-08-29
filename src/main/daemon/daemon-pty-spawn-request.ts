@@ -8,7 +8,10 @@ import {
 } from './daemon-pty-runtime-state'
 import { isDaemonGoneError } from './daemon-endpoint-errors'
 import type { DaemonEndpointIdentity } from './daemon-hello-protocol'
-import { HISTORY_SEED_TRANSFER_PROTOCOL_VERSION } from './daemon-protocol-version'
+import {
+  HISTORY_SEED_TRANSFER_PROTOCOL_VERSION,
+  PTY_SPAWN_TARGET_DAEMON_PROTOCOL_VERSION
+} from './daemon-protocol-version'
 import type { ColdRestoreInfo } from './history-reader'
 import { NdjsonLineTooLongError } from './ndjson'
 import {
@@ -112,6 +115,7 @@ export abstract class DaemonPtySpawnRequest extends DaemonPtyRuntimeState {
       historySeedTransferId: string | undefined
     ) => {
       const { opts } = context
+      const target = context.attachOnly ? undefined : opts.target
       if (opts.signal?.aborted) {
         throw new Error('client_disconnected')
       }
@@ -122,7 +126,11 @@ export abstract class DaemonPtySpawnRequest extends DaemonPtyRuntimeState {
         cwd: context.attachOnly ? undefined : context.effectiveCwd,
         env: context.attachOnly ? undefined : opts.env,
         envToDelete: context.attachOnly ? undefined : opts.envToDelete,
-        command: context.attachOnly ? undefined : opts.command,
+        ...(this.protocolVersion >= PTY_SPAWN_TARGET_DAEMON_PROTOCOL_VERSION
+          ? { target }
+          : target?.kind === 'shell-command' && target.command
+            ? { command: target.command }
+            : {}),
         startupCommandDelivery: context.attachOnly ? undefined : opts.startupCommandDelivery,
         launchAgent: context.attachOnly ? undefined : opts.launchAgent,
         ...(context.attachOnly && !context.emulateLegacyAttachOnly ? { attachOnly: true } : {}),
@@ -142,6 +150,9 @@ export abstract class DaemonPtySpawnRequest extends DaemonPtyRuntimeState {
           : {}),
         ...(!context.attachOnly && opts.agentSessionEnsure
           ? { agentSessionEnsure: opts.agentSessionEnsure }
+          : {}),
+        ...(!context.attachOnly && opts.agentSessionCreateOperation
+          ? { agentSessionCreateOperation: opts.agentSessionCreateOperation }
           : {}),
         ...(!context.attachOnly && opts.requireHostCrashContainment
           ? { requireHostCrashContainment: true }

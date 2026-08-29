@@ -59,14 +59,21 @@ describe('orchestration worker release recovery', () => {
       handle === workerHandle || handle === 'term_worker' ? 'runtime_test:term_worker:1' : null
     )
     vi.spyOn(runtime, 'getOrchestrationDispatchAuthority').mockImplementation((handle) =>
-      handle === workerHandle || handle === 'term_worker'
+      handle === 'term_coord'
         ? ({
             terminalHandle: handle,
-            paneKey: workerPaneKey,
-            processIncarnation: 'runtime_test:term_worker:1',
-            hostScope: localHostScope
+            paneKey: coordinatorPaneKey,
+            processIncarnation: 'runtime_test:term_coord:1',
+            hostScope: { kind: 'local', hostId: 'local' }
           } as never)
-        : null
+        : handle === workerHandle || handle === 'term_worker'
+          ? ({
+              terminalHandle: handle,
+              paneKey: workerPaneKey,
+              processIncarnation: 'runtime_test:term_worker:1',
+              hostScope: localHostScope
+            } as never)
+          : null
     )
     vi.spyOn(runtime, 'validateOrchestrationAgentLauncher').mockImplementation(() => {})
     vi.spyOn(runtime, 'showTerminal').mockImplementation(
@@ -75,24 +82,32 @@ describe('orchestration worker release recovery', () => {
     vi.spyOn(runtime, 'showManagedTerminalWorkspace').mockResolvedValue({
       id: 'repo::worktree'
     } as never)
-    vi.spyOn(runtime, 'createTerminal').mockImplementation(async (_selector, options) => {
-      workerHandle = options?.preAllocatedHandle ?? 'term_worker'
-      return { handle: workerHandle, worktreeId: 'repo::worktree', title: 'worker' }
+    vi.spyOn(runtime, 'resolveWorkerAgentProcessAdmission').mockReturnValue({
+      targetFingerprint: 'c'.repeat(64)
     })
-    vi.spyOn(runtime, 'waitForTerminal').mockImplementation(async (handle) => ({
-      handle,
-      condition: 'tui-idle',
-      satisfied: true,
-      status: 'running',
-      exitCode: null
-    }))
-    vi.spyOn(runtime, 'getTerminalOrchestrationCliCommand').mockReturnValue('orca')
-    vi.spyOn(runtime, 'sendTerminalAgentPrompt').mockImplementation(async (handle) => ({
-      handle,
-      accepted: true,
-      bytesWritten: 1,
-      semanticObservedAt: Date.now()
-    }))
+    vi.spyOn(runtime, 'createAgentSession').mockImplementation(async (request) => {
+      const start = request.executionStart!
+      workerHandle = start.terminalHandle
+      return {
+        terminal: {
+          handle: workerHandle,
+          worktreeId: 'repo::worktree',
+          title: 'Codex',
+          surface: 'background'
+        },
+        disposition: 'created',
+        executionStartReceipt: {
+          ...start,
+          launchTokenHash: 'test-launch-token-hash',
+          paneKey: workerPaneKey,
+          processIncarnation: 'runtime_test:term_worker:1',
+          hostScope: localHostScope,
+          providerSession: { key: 'session_id', id: 'codex-release-recovery-worker' },
+          turnStartedAt: Date.now(),
+          semanticObservedAt: Date.now()
+        }
+      }
+    })
     vi.spyOn(runtime, 'isTerminalRunningAgent').mockResolvedValue(true)
     vi.spyOn(runtime, 'getExactWorkerProviderSession').mockReturnValue(null)
     vi.spyOn(runtime, 'readTerminal').mockImplementation(async (handle) => ({

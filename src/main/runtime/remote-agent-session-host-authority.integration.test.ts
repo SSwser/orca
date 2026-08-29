@@ -115,7 +115,10 @@ describe('remote agent-session host authority integration', () => {
             rows: options.rows,
             cwd: options.cwd,
             env: options.env,
-            command: options.command,
+            target:
+              typeof options.command === 'string'
+                ? { kind: 'shell-command', command: options.command }
+                : undefined,
             startupCommandDelivery: options.startupCommandDelivery,
             launchAgent: options.launchAgent,
             agentSessionEnsure: options.agentSessionEnsure,

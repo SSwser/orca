@@ -49,6 +49,37 @@ export function workerTerminalLeaseIsCurrent(
   )
 }
 
+export function workerTerminalExitedIdentityIsCurrent(
+  runtime: OrcaRuntimeService,
+  db: OrchestrationDb,
+  dispatchId: string,
+  resource: WorkerTerminalResourceRow
+): boolean {
+  const worker = db.getWorkerDispatch(dispatchId)
+  const dispatch = db.getDispatchContextById(dispatchId)
+  const paneKey = runtime.getTerminalPaneKey(resource.terminal_handle)
+  const processIncarnation = runtime.getTerminalProcessIncarnation(resource.terminal_handle)
+  return Boolean(
+    resource.owner_dispatch_id === dispatchId &&
+    ['release_requested', 'release_closing', 'release_unknown'].includes(
+      resource.lifecycle_state
+    ) &&
+    resource.pane_key &&
+    resource.process_incarnation &&
+    resource.host_scope &&
+    worker?.agent_terminal_handle === resource.terminal_handle &&
+    dispatch?.assignee_handle === resource.terminal_handle &&
+    dispatch.assignee_pane_key &&
+    isEquivalentPaneKey(dispatch.assignee_pane_key, resource.pane_key) &&
+    dispatch.process_incarnation === resource.process_incarnation &&
+    paneKey &&
+    isEquivalentPaneKey(paneKey, resource.pane_key) &&
+    processIncarnation === resource.process_incarnation &&
+    db.isDispatchProcessCurrent({ dispatchId, paneKey, processIncarnation }) &&
+    !db.workerTerminalResourceHasIdentityConflict(resource.id)
+  )
+}
+
 export function workerTerminalHasStopOwnedExitEvidence(
   db: OrchestrationDb,
   dispatchId: string,

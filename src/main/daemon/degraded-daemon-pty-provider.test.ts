@@ -387,6 +387,17 @@ describe('DegradedDaemonPtyProvider', () => {
     expect(fallback.writeWithSettlement).toHaveBeenCalledWith(fresh.id, 'new')
   })
 
+  it('does not synthesize settlement from a fallback provider plain write', async () => {
+    const current = createDaemonAdapter('daemon')
+    const fallback = createProvider('fallback')
+    delete fallback.writeWithSettlement
+    const provider = new DegradedDaemonPtyProvider({ current, legacy: [], fallback })
+    const fresh = await provider.spawn({ cols: 80, rows: 24 })
+
+    await expect(provider.writeWithSettlement(fresh.id, 'pointer')).resolves.toBe(false)
+    expect(fallback.write).not.toHaveBeenCalled()
+  })
+
   it('routes later fresh PTYs to the daemon after spawn health recovers', async () => {
     const current = createDaemonAdapter('daemon')
     const fallback = createProvider('fallback')

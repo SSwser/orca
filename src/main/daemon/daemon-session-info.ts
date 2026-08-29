@@ -1,4 +1,7 @@
-import type { AgentSessionOwnerBinding } from '../../shared/agent-session-host-authority'
+import type {
+  AgentSessionCreateOperationIdentity,
+  AgentSessionOwnerBinding
+} from '../../shared/agent-session-host-authority'
 import type { SessionState, ShellReadyState } from './types'
 
 export type SessionInfo = {
@@ -16,4 +19,5 @@ export type SessionInfo = {
   rows: number
   createdAt: number
   agentSessionOwners?: AgentSessionOwnerBinding[]
+  agentSessionCreateOperation?: AgentSessionCreateOperationIdentity
 }

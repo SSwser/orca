@@ -11,9 +11,11 @@ import type { TuiAgent } from '../../../../shared/tui-agent'
 import type { AgentProviderSessionMetadata } from '../../../../shared/agent-session-resume'
 import type { StartupCommandDelivery } from '../../../../shared/codex-startup-delivery'
 import type {
+  AgentSessionCreateOperationIdentity,
   AgentSessionExecutionClaim,
   AgentSessionSurfaceBinding
 } from '../../../../shared/agent-session-host-authority'
+import type { AgentProcessPtySpawnTarget } from '../../../../shared/pty-spawn-target'
 import { localProvider } from '../provider/registry'
 
 export type RuntimePtySpawnState = {
@@ -85,6 +87,7 @@ export type RuntimePtySpawnArgs = {
   rows: number
   cwd?: string
   command?: string
+  spawnTarget?: AgentProcessPtySpawnTarget
   launchAgent?: TuiAgent
   commandDelivery?: 'renderer' | 'provider'
   startupCommandDelivery?: StartupCommandDelivery
@@ -112,6 +115,7 @@ export type RuntimePtySpawnArgs = {
     surface: AgentSessionSurfaceBinding
   }
   agentSessionCreateOperationId?: string
+  agentSessionCreateOperation?: AgentSessionCreateOperationIdentity
   signal?: AbortSignal
   onPtySpawnCommitted?: () => void
   adoptedStablePane?: {

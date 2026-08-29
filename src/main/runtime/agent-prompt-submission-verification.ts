@@ -1,7 +1,15 @@
 export { AGENT_PROMPT_EFFECT_TIMEOUT_MS } from '../../shared/orchestration-timing-budgets'
 import { AGENT_PROMPT_EFFECT_TIMEOUT_MS } from '../../shared/orchestration-timing-budgets'
 import type { TuiAgent } from '../../shared/tui-agent'
-import type { WorkerPromptSemanticBaseline } from '../../shared/worker-prompt-operation'
+
+type AgentPromptSemanticBaseline = {
+  observedAt: number
+  permissionSequence: number
+  workingSequence: number
+  explicitWorkingStartedAt: number | null
+  outputSequence: number
+  status: 'working' | 'permission' | 'idle' | null
+}
 
 export const AGENT_PROMPT_HOOK_EFFECT_TIMEOUT_MS = AGENT_PROMPT_EFFECT_TIMEOUT_MS
 const AGENT_PROMPT_EFFECT_POLL_MS = 50
@@ -13,7 +21,7 @@ export const AGENT_PROMPT_STALLED_ERROR = 'agent_prompt_stalled'
 export const AGENT_PROMPT_SUBMISSION_UNCONFIRMED_ERROR = 'submission_unconfirmed'
 
 export type AgentPromptActivity = Readonly<
-  WorkerPromptSemanticBaseline & {
+  AgentPromptSemanticBaseline & {
     generation: number
   }
 >

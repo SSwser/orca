@@ -15,6 +15,7 @@ export function prepareStartingWorkerAuthority(
     effects: unknown[]
     setupState: string
     hostScope?: string | null
+    capability?: string
     // 'created': this worker-start operation created the agent terminal (including agent-first
     // worktree creation, whose effects receipt says 'reused_agent_terminal'). 'external': an
     // explicit --terminal reuse; ownership transfers only from an exact owned settled resource.
@@ -23,6 +24,7 @@ export function prepareStartingWorkerAuthority(
       operationId: string
       payloadFingerprint: string
       claimantId: string
+      receipt: unknown
     }
   }
 ): string {
@@ -53,7 +55,17 @@ export function prepareStartingWorkerAuthority(
         `Terminal ${params.handle} already has an active dispatch (${existing.id} for task ${existing.task_id})`
       )
     }
-    const capability = `dcap_${randomBytes(32).toString('base64url')}`
+    const capability = params.capability ?? `dcap_${randomBytes(32).toString('base64url')}`
+    if (
+      params.capability &&
+      (worker.provisional_capability !== params.capability ||
+        dispatch.capability_hash !== hashDispatchCapability(params.capability))
+    ) {
+      throw new OrchestrationError(
+        'request_mismatch',
+        `Dispatch ${params.dispatchId} execution capability does not match its reservation.`
+      )
+    }
     const contextUpdate = this.db
       .prepare(
         `UPDATE dispatch_contexts
@@ -80,6 +92,7 @@ export function prepareStartingWorkerAuthority(
       .prepare(
         `UPDATE worker_dispatches
          SET stage = 'authority_attached', worktree_id = ?, agent_terminal_handle = ?,
+             provisional_capability = NULL,
              setup_state = ?, effects = ?, residual_resources = ?, updated_at = datetime('now')
          WHERE dispatch_id = ? AND state = 'starting'`
       )
@@ -151,18 +164,11 @@ export function prepareStartingWorkerAuthority(
         .prepare(
           `UPDATE worker_generation_operations
               SET state = 'completed', receipt = ?, updated_at = datetime('now')
-            WHERE dispatch_id = ? AND effect_kind = 'authority' AND operation_id = ?
+            WHERE dispatch_id = ? AND effect_kind = 'execution_start' AND operation_id = ?
               AND payload_fingerprint = ? AND claimant_id = ? AND state = 'claimed'`
         )
         .run(
-          JSON.stringify({
-            terminalHandle: params.handle,
-            capability,
-            paneKey: params.paneKey,
-            processIncarnation: params.processIncarnation,
-            hostScope: params.hostScope ?? null,
-            ...(params.launchTokenHash ? { launchTokenHash: params.launchTokenHash } : {})
-          }),
+          JSON.stringify(params.generationOperation.receipt),
           params.dispatchId,
           params.generationOperation.operationId,
           params.generationOperation.payloadFingerprint,
@@ -183,12 +189,55 @@ export function prepareStartingWorkerAuthority(
   }
 }
 
+export function reserveStartingWorkerCapability(this: OrchestrationDb, dispatchId: string): string {
+  this.db.exec('BEGIN IMMEDIATE')
+  try {
+    const worker = this.getWorkerDispatch(dispatchId)
+    const dispatch = this.getDispatchContextById(dispatchId)
+    if (!worker || worker.state !== 'starting' || !dispatch || dispatch.status !== 'pending') {
+      throw new OrchestrationError('dispatch_inactive', `Dispatch ${dispatchId} is not starting.`)
+    }
+    if (worker.provisional_capability) {
+      this.db.exec('COMMIT')
+      return worker.provisional_capability
+    }
+    const capability = `dcap_${randomBytes(32).toString('base64url')}`
+    const updated = this.db
+      .prepare(
+        `UPDATE worker_dispatches
+            SET provisional_capability = ?, updated_at = datetime('now')
+          WHERE dispatch_id = ? AND state = 'starting' AND provisional_capability IS NULL`
+      )
+      .run(capability, dispatchId)
+    if (updated.changes !== 1) {
+      throw new OrchestrationError(
+        'operation_unknown',
+        `Dispatch ${dispatchId} capability changed.`
+      )
+    }
+    this.db
+      .prepare(
+        `UPDATE dispatch_contexts
+            SET capability_hash = ?, capability_revoked_at = NULL
+          WHERE id = ? AND status = 'pending'`
+      )
+      .run(hashDispatchCapability(capability), dispatchId)
+    this.db.exec('COMMIT')
+    return capability
+  } catch (error) {
+    this.db.exec('ROLLBACK')
+    throw error
+  }
+}
+
 export type WorkerDispatchAuthorityMethods = {
   prepareStartingWorkerAuthority: typeof prepareStartingWorkerAuthority
+  reserveStartingWorkerCapability: typeof reserveStartingWorkerCapability
 }
 
 export function attachWorkerDispatchAuthority(ctor: { prototype: object }): void {
   Object.assign(ctor.prototype, {
-    prepareStartingWorkerAuthority
+    prepareStartingWorkerAuthority,
+    reserveStartingWorkerCapability
   })
 }

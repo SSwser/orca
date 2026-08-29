@@ -298,7 +298,7 @@ describe('durable orchestration mutation ledger', () => {
     db.close()
   })
 
-  it('returns the accepted Dispatch when worker-start was interrupted by restart', async () => {
+  it('resumes the accepted Dispatch when worker-start was interrupted by restart', async () => {
     const db = new OrchestrationDb(':memory:')
     const runtime = new OrcaRuntimeService()
     runtime.setOrchestrationDb(db)
@@ -319,7 +319,16 @@ describe('durable orchestration mutation ledger', () => {
         payloadHash
       }
     })
-    const effect = vi.fn()
+    const effect = vi
+      .fn()
+      .mockImplementationOnce((_params, context) => {
+        context.deferMutationCompletion?.()
+        return { dispatchId: context.resumedWorkerStartDispatchId, state: 'starting' }
+      })
+      .mockImplementationOnce((_params, context) => ({
+        dispatchId: context.resumedWorkerStartDispatchId,
+        state: 'ready'
+      }))
     const dispatcher = new RpcDispatcher({
       runtime,
       methods: [
@@ -341,17 +350,38 @@ describe('durable orchestration mutation ledger', () => {
     })
 
     expect(result).toMatchObject({
-      ok: false,
-      error: {
-        code: 'operation_unknown',
-        data: {
+      ok: true,
+      result: {
+        dispatchId: started.dispatch.id,
+        state: 'starting',
+        mutation: {
           requestId: 'mutation_worker_start',
-          dispatchId: started.dispatch.id,
-          recoveryCommand: `orca orchestration worker-show --dispatch ${started.dispatch.id} --json`
+          replayed: true
         }
       }
     })
-    expect(effect).not.toHaveBeenCalled()
+    expect(db.getMutationReceipt(callerFingerprint, 'mutation_worker_start')?.state).toBe('pending')
+
+    const completed = await dispatcher.dispatch({
+      id: 'rpc_worker_start_retry_again',
+      authToken: 'caller-token',
+      method: 'orchestration.workerStart',
+      params,
+      orchestrationContractVersion: ORCHESTRATION_CONTRACT_VERSION,
+      orchestrationRequestId: 'mutation_worker_start'
+    })
+    expect(completed).toMatchObject({
+      ok: true,
+      result: {
+        dispatchId: started.dispatch.id,
+        state: 'ready',
+        mutation: { requestId: 'mutation_worker_start', replayed: true }
+      }
+    })
+    expect(effect).toHaveBeenCalledTimes(2)
+    expect(db.getMutationReceipt(callerFingerprint, 'mutation_worker_start')?.state).toBe(
+      'completed'
+    )
     db.close()
   })
 

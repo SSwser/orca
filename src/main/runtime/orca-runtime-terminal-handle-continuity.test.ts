@@ -12,15 +12,21 @@ const TAB_ID = 'tab-handle-continuity'
 const LEAF_ID = '11111111-1111-4111-8111-111111111111'
 const PTY_ID = 'pty-handle-continuity'
 const INCARNATION_ID = '22222222-2222-4222-8222-222222222222'
+const EXECUTION_OPERATION = {
+  operationId: 'a'.repeat(43),
+  payloadFingerprint: 'b'.repeat(64)
+}
+const EXECUTION_HANDLE = 'term_execution-operation'
 const testDbs: OrchestrationDb[] = []
 
 afterEach(() => {
+  vi.useRealTimers()
   for (const db of testDbs.splice(0)) {
     db.close()
   }
 })
 
-function createHarness() {
+function createHarness(options: { executionOperation?: boolean } = {}) {
   let incarnationId = INCARNATION_ID
   let session: WorkspaceSessionState = {
     ...getDefaultWorkspaceSession(),
@@ -83,7 +89,13 @@ function createHarness() {
         id: PTY_ID,
         incarnationId,
         cwd: WORKTREE_PATH,
-        title: 'Fixture shell'
+        title: 'Fixture shell',
+        ...(options.executionOperation
+          ? {
+              terminalHandle: EXECUTION_HANDLE,
+              agentSessionCreateOperation: EXECUTION_OPERATION
+            }
+          : {})
       }
     ]),
     getForegroundProcess: async () => null
@@ -123,6 +135,58 @@ function createHarness() {
 }
 
 describe('terminal handle incarnation continuity', () => {
+  it('restores the exact execution operation with its controller-owned terminal handle', async () => {
+    const harness = createHarness({ executionOperation: true })
+    ;(
+      harness.runtime as unknown as {
+        resolveTerminalWorkspaceLaunchScope: ReturnType<typeof vi.fn>
+      }
+    ).resolveTerminalWorkspaceLaunchScope = vi.fn(async () => ({
+      id: WORKTREE_ID,
+      path: WORKTREE_PATH,
+      connectionId: null
+    }))
+    vi.spyOn(harness.runtime, 'getExactWorkerProviderSession').mockReturnValue({
+      paneKey: makePaneKey(TAB_ID, LEAF_ID),
+      processIncarnation: `${PTY_ID}:${INCARNATION_ID}`,
+      agent: 'codex',
+      providerSession: { key: 'session_id', id: 'codex-session' },
+      observedAt: Date.now()
+    })
+
+    await harness.runtime.listTerminals(`id:${WORKTREE_ID}`)
+    expect(
+      (
+        harness.runtime as unknown as {
+          ptysById: Map<string, { agentSessionCreateOperation: unknown }>
+        }
+      ).ptysById.get(PTY_ID)?.agentSessionCreateOperation
+    ).toEqual(EXECUTION_OPERATION)
+    expect(harness.runtime.getOrchestrationDispatchAuthority(EXECUTION_HANDLE)).toMatchObject({
+      ptyId: PTY_ID,
+      paneKey: makePaneKey(TAB_ID, LEAF_ID),
+      processIncarnation: `${PTY_ID}:${INCARNATION_ID}`
+    })
+    await expect(harness.runtime.showTerminal(EXECUTION_HANDLE)).resolves.toMatchObject({
+      handle: EXECUTION_HANDLE,
+      worktreeId: WORKTREE_ID
+    })
+    await expect(
+      harness.runtime.inspectAgentSessionExecutionStart(`id:${WORKTREE_ID}`, {
+        ...EXECUTION_OPERATION,
+        targetFingerprint: 'c'.repeat(64),
+        terminalHandle: EXECUTION_HANDLE,
+        launchToken: 'launch-token',
+        writeFence: { ownerId: 'ctx_worker', generation: EXECUTION_OPERATION.operationId },
+        semanticBaselineAt: Date.now() - 1_000,
+        timeoutMs: 1_000
+      })
+    ).resolves.toMatchObject({
+      verdict: 'accepted',
+      receipt: { terminalHandle: EXECUTION_HANDLE }
+    })
+  })
+
   it('keeps a handle valid when renderer reload preserves the PTY incarnation', async () => {
     const harness = createHarness()
     const [before] = (await harness.runtime.listTerminals(`id:${WORKTREE_ID}`)).terminals

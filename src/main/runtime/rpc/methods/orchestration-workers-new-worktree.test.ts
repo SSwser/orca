@@ -39,23 +39,30 @@ describe('orchestration new-worktree workers', () => {
       handle === workerHandle ? 'runtime_test:term_worker:1' : null
     )
     vi.spyOn(runtime, 'getOrchestrationDispatchAuthority').mockImplementation((handle) =>
-      handle === workerHandle
+      handle === 'term_coord'
         ? ({
             terminalHandle: handle,
-            paneKey: 'tab_worker:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-            processIncarnation: 'runtime_test:term_worker:1',
-            hostScope: {
-              kind: 'local',
-              hostId: 'local',
-              restartCustody: {
-                kind: 'windows_daemon_job',
-                daemonPid: 4000,
-                daemonStartedAtMs: 1_786_000_000_000,
-                daemonLaunchNonce: 'new-worktree-test-daemon'
-              }
-            }
+            paneKey: coordinatorPaneKey,
+            processIncarnation: 'runtime_test:term_coord:1',
+            hostScope: { kind: 'local', hostId: 'local' }
           } as never)
-        : null
+        : handle === workerHandle
+          ? ({
+              terminalHandle: handle,
+              paneKey: 'tab_worker:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+              processIncarnation: 'runtime_test:term_worker:1',
+              hostScope: {
+                kind: 'local',
+                hostId: 'local',
+                restartCustody: {
+                  kind: 'windows_daemon_job',
+                  daemonPid: 4000,
+                  daemonStartedAtMs: 1_786_000_000_000,
+                  daemonLaunchNonce: 'new-worktree-test-daemon'
+                }
+              }
+            } as never)
+          : null
     )
     vi.spyOn(runtime, 'validateOrchestrationAgentLauncher').mockImplementation(() => {})
     vi.spyOn(runtime, 'showTerminal').mockResolvedValue({
@@ -91,12 +98,41 @@ describe('orchestration new-worktree workers', () => {
       new Promise(() => undefined)
     )
     vi.spyOn(runtime, 'getTerminalOrchestrationCliCommand').mockReturnValue('orca')
-    vi.spyOn(runtime, 'sendTerminalAgentPrompt').mockImplementation(async (handle) => ({
-      handle,
-      accepted: true,
-      bytesWritten: 1,
-      semanticObservedAt: Date.now()
-    }))
+    vi.spyOn(runtime, 'resolveWorkerAgentProcessAdmission').mockReturnValue({
+      targetFingerprint: 'c'.repeat(64)
+    })
+    vi.spyOn(runtime, 'createAgentSession').mockImplementation(async (request) => {
+      const start = request.executionStart!
+      workerHandle = start.terminalHandle
+      return {
+        terminal: {
+          handle: workerHandle,
+          worktreeId: request.worktree.replace(/^id:/, ''),
+          title: 'Codex',
+          surface: 'background'
+        },
+        disposition: 'created',
+        executionStartReceipt: {
+          ...start,
+          launchTokenHash: 'test-launch-token-hash',
+          paneKey: 'tab_worker:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          processIncarnation: 'runtime_test:term_worker:1',
+          hostScope: {
+            kind: 'local',
+            hostId: 'local',
+            restartCustody: {
+              kind: 'windows_daemon_job',
+              daemonPid: 4000,
+              daemonStartedAtMs: 1_786_000_000_000,
+              daemonLaunchNonce: 'new-worktree-test-daemon'
+            }
+          },
+          providerSession: { key: 'session_id', id: 'codex-session' },
+          turnStartedAt: Date.now(),
+          semanticObservedAt: Date.now()
+        }
+      }
+    })
   })
 
   afterEach(() => {
@@ -135,11 +171,17 @@ describe('orchestration new-worktree workers', () => {
   }) {
     const hookFound = options?.hookFound ?? true
     const state = options?.state ?? (hookFound ? 'running' : 'not_configured')
-    vi.spyOn(runtime, 'createManagedWorktree').mockImplementation(async (args) => {
-      workerHandle = args.workerGenerationTerminalOperation?.terminalHandle ?? 'term_worker'
+    const defaultTerminals =
+      options?.startupPolicy === 'wait-for-setup'
+        ? [
+            { handle: 'term_worker', title: 'Codex' },
+            { handle: 'term_setup', title: 'Setup' }
+          ]
+        : [{ handle: 'term_worker', title: 'Codex' }]
+    vi.spyOn(runtime, 'createManagedWorktree').mockImplementation(async () => {
       return {
         worktree: { id: 'repo::created', repoId: 'repo' },
-        startupTerminal: { spawned: true, handle: workerHandle },
+        startupTerminal: { spawned: false },
         setupReceipt: {
           requested: state === 'skipped' ? 'skip' : 'run',
           hookFound,
@@ -147,14 +189,14 @@ describe('orchestration new-worktree workers', () => {
           state,
           terminalHandle:
             options?.setupTerminalHandle ??
-            options?.terminals?.find((terminal) => terminal.title === 'Setup')?.handle
+            (options?.terminals ?? defaultTerminals).find((terminal) => terminal.title === 'Setup')
+              ?.handle
         }
       } as never
     })
     vi.mocked(runtime.listTerminals).mockImplementation(async () => {
-      const terminals = (options?.terminals ?? [{ handle: 'term_worker', title: 'Codex' }]).map(
-        (terminal) =>
-          terminal.handle === 'term_worker' ? { ...terminal, handle: workerHandle } : terminal
+      const terminals = (options?.terminals ?? defaultTerminals).map((terminal) =>
+        terminal.handle === 'term_worker' ? { ...terminal, handle: workerHandle } : terminal
       )
       return { terminals, totalCount: terminals.length, truncated: false } as never
     })
@@ -167,7 +209,7 @@ describe('orchestration new-worktree workers', () => {
 
     expect(runtime.createManagedWorktree).toHaveBeenCalledWith(
       expect.objectContaining({
-        startupAgent: 'codex',
+        suppressInitialTerminal: true,
         awaitTerminalProvisioning: true,
         observeSetupCompletion: true,
         lineage: expect.objectContaining({ noParent: true, parentWorktree: undefined })
@@ -185,7 +227,7 @@ describe('orchestration new-worktree workers', () => {
         expect.objectContaining({
           kind: 'terminal',
           role: 'agent',
-          action: 'reused_agent_terminal',
+          action: 'created',
           id: workerHandle
         })
       ])
@@ -193,25 +235,26 @@ describe('orchestration new-worktree workers', () => {
     expect(runtime.createTerminal).not.toHaveBeenCalled()
   })
 
-  it('passes launch preferences into agent-first worktree creation', async () => {
+  it('passes launch preferences into the atomic Agent Session start', async () => {
     mockCreatedWorktree()
 
     const { result } = await startWorker({
-      model: 'custom-codex-model',
+      model: 'custom-claude-model',
       effort: 'high'
     })
 
-    expect(runtime.createManagedWorktree).toHaveBeenCalledWith(
+    expect(runtime.createAgentSession).toHaveBeenCalledWith(
       expect.objectContaining({
-        startupAgent: 'codex',
-        startupLaunchPreferences: { model: 'custom-codex-model', effort: 'high' }
-      })
+        agent: 'codex',
+        launchPreferences: { model: 'custom-claude-model', effort: 'high' }
+      }),
+      { clientKind: 'runtime' }
     )
     expect(result).toMatchObject({
       state: 'ready',
       launch: {
-        requested: { agent: 'codex', model: 'custom-codex-model', effort: 'high' },
-        effective: { agent: 'codex', model: 'custom-codex-model', effort: 'high' }
+        requested: { agent: 'codex', model: 'custom-claude-model', effort: 'high' },
+        effective: { agent: 'codex', model: 'custom-claude-model', effort: 'high' }
       }
     })
   })
@@ -257,7 +300,7 @@ describe('orchestration new-worktree workers', () => {
 
     await startWorker({ worktree: 'new-top-level' })
 
-    const prompt = vi.mocked(runtime.sendTerminalAgentPrompt).mock.calls[0]?.[1] ?? ''
+    const prompt = vi.mocked(runtime.createAgentSession).mock.calls[0]?.[0].prompt ?? ''
     expect(prompt).toContain('orca-ide orchestration send')
     expect(prompt).toMatch(/--dispatch-capability dcap_[A-Za-z0-9_-]+/)
     expect(prompt).not.toMatch(/(^|\s)orca orchestration send/)
@@ -362,7 +405,7 @@ describe('orchestration new-worktree workers', () => {
         expect.objectContaining({ kind: 'dispatch_input', state: 'accepted' })
       ])
     )
-    expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledOnce()
+    expect(runtime.createAgentSession).toHaveBeenCalledOnce()
     expect(db.getInbox(10).filter((message) => message.run_id === runId)).toEqual(
       expect.arrayContaining([expect.objectContaining({ type: 'status', priority: 'high' })])
     )
@@ -395,6 +438,13 @@ describe('orchestration new-worktree workers', () => {
 
   it('records wait-for-setup success before task input is accepted', async () => {
     mockCreatedWorktree({ startupPolicy: 'wait-for-setup', state: 'running' })
+    vi.mocked(runtime.waitForTerminal).mockResolvedValue({
+      handle: 'term_setup',
+      condition: 'exit',
+      satisfied: true,
+      status: 'exited',
+      exitCode: 0
+    })
 
     const { result } = await startWorker()
     const dispatchId = (result as { dispatchId: string }).dispatchId
@@ -408,7 +458,7 @@ describe('orchestration new-worktree workers', () => {
       ])
     })
     expect(vi.mocked(runtime.waitForTerminal).mock.invocationCallOrder[0]).toBeLessThan(
-      vi.mocked(runtime.sendTerminalAgentPrompt).mock.invocationCallOrder[0]!
+      vi.mocked(runtime.createAgentSession).mock.invocationCallOrder[0]!
     )
     expect(JSON.parse(db.getWorkerDispatch(dispatchId)?.effects ?? '[]')).toEqual(
       expect.arrayContaining([
@@ -438,7 +488,7 @@ describe('orchestration new-worktree workers', () => {
       ])
     })
     expect(db.getTask(task.id)?.status).toBe('failed')
-    expect(runtime.sendTerminalAgentPrompt).not.toHaveBeenCalled()
+    expect(runtime.createAgentSession).not.toHaveBeenCalled()
   })
 
   it('does not inject task input when the gated setup script fails', async () => {
@@ -459,7 +509,7 @@ describe('orchestration new-worktree workers', () => {
       setup: { state: 'failed' },
       effects: expect.arrayContaining([expect.objectContaining({ kind: 'setup', state: 'failed' })])
     })
-    expect(runtime.sendTerminalAgentPrompt).not.toHaveBeenCalled()
+    expect(runtime.createAgentSession).not.toHaveBeenCalled()
   })
 
   it('does not mislabel a wait-for-setup timeout as setup failure', async () => {
@@ -476,10 +526,10 @@ describe('orchestration new-worktree workers', () => {
 
     expect(result).toMatchObject({
       state: 'failed',
-      failedStage: 'agent_readiness',
+      failedStage: 'setup_wait',
       setup: { state: 'running' }
     })
-    expect(runtime.sendTerminalAgentPrompt).not.toHaveBeenCalled()
+    expect(runtime.createAgentSession).not.toHaveBeenCalled()
   })
 
   it('distinguishes no-effect failure, unknown acceptance, and durable residual effects', async () => {
@@ -508,26 +558,25 @@ describe('orchestration new-worktree workers', () => {
     })
 
     mockCreatedWorktree()
-    vi.mocked(runtime.waitForTerminal).mockResolvedValueOnce({
-      handle: 'term_worker',
-      condition: 'tui-idle',
-      satisfied: false,
-      status: 'exited',
-      exitCode: 1
-    })
+    vi.mocked(runtime.createAgentSession).mockRejectedValueOnce(
+      new Error('provider rejected before process creation')
+    )
     const durableEffect = await startWorker({ name: 'durable-effect' })
     expect(durableEffect.result).toMatchObject({
       state: 'failed',
-      failedStage: 'agent_readiness',
+      failedStage: 'execution_start',
       effects: expect.arrayContaining([
-        expect.objectContaining({ kind: 'worktree', id: 'repo::created' }),
-        expect.objectContaining({ kind: 'terminal', id: workerHandle })
+        expect.objectContaining({ kind: 'worktree', id: 'repo::created' })
       ]),
       residualResources: expect.arrayContaining([
-        expect.objectContaining({ kind: 'worktree', id: 'repo::created' }),
-        expect.objectContaining({ kind: 'terminal', id: workerHandle })
+        expect.objectContaining({ kind: 'worktree', id: 'repo::created' })
       ])
     })
+    expect(
+      db.getWorkerTerminalResourceByOwner(
+        (durableEffect.result as { dispatchId: string }).dispatchId
+      )
+    ).toBeUndefined()
   })
 
   it('returns outcome unknown when worktree creation may have been accepted remotely', async () => {
@@ -553,8 +602,7 @@ describe('orchestration new-worktree workers', () => {
   it('persists the retry request with the starting Dispatch before worktree effects', async () => {
     const task = db.createTask({ spec: 'atomic worker acceptance', runId })
     let finishCreate: ((value: CreateWorktreeResult) => void) | undefined
-    vi.spyOn(runtime, 'createManagedWorktree').mockImplementation(async (args) => {
-      workerHandle = args.workerGenerationTerminalOperation?.terminalHandle ?? 'term_worker'
+    vi.spyOn(runtime, 'createManagedWorktree').mockImplementation(async () => {
       return await new Promise((resolve) => {
         finishCreate = resolve
       })
@@ -610,7 +658,7 @@ describe('orchestration new-worktree workers', () => {
     })
   })
 
-  it('replays a dispatch-input failure after restart without creating another worker', async () => {
+  it('replays an execution-start failure after restart without creating another worker', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'orca-worker-start-replay-'))
     paths.push(dir)
     db.close()
@@ -622,8 +670,8 @@ describe('orchestration new-worktree workers', () => {
       coordinatorPaneKey
     }).id
     mockCreatedWorktree({ hookFound: false })
-    vi.mocked(runtime.sendTerminalAgentPrompt).mockRejectedValueOnce(
-      new Error('connection closed before dispatch input was accepted')
+    vi.mocked(runtime.createAgentSession).mockRejectedValueOnce(
+      new Error('provider rejected before execution start')
     )
     const task = db.createTask({ spec: 'recover dispatch input', runId })
     const dispatcher = new RpcDispatcher({ runtime, methods: ORCHESTRATION_METHODS })
@@ -663,9 +711,9 @@ describe('orchestration new-worktree workers', () => {
     const recreateWorktree = vi
       .spyOn(restartedRuntime, 'createManagedWorktree')
       .mockRejectedValue(new Error('replay recreated the worktree'))
-    const reinjectPrompt = vi
-      .spyOn(restartedRuntime, 'sendTerminalAgentPrompt')
-      .mockRejectedValue(new Error('replay reinjected the prompt'))
+    const recreateSession = vi
+      .spyOn(restartedRuntime, 'createAgentSession')
+      .mockRejectedValue(new Error('replay recreated the Session'))
     const restartedDispatcher = new RpcDispatcher({
       runtime: restartedRuntime,
       methods: ORCHESTRATION_METHODS
@@ -681,10 +729,9 @@ describe('orchestration new-worktree workers', () => {
       ok: true,
       result: {
         state: 'failed',
-        failedStage: 'dispatch_input',
+        failedStage: 'execution_start',
         residualResources: expect.arrayContaining([
-          expect.objectContaining({ kind: 'worktree', id: 'repo::created' }),
-          expect.objectContaining({ kind: 'terminal', id: workerHandle })
+          expect.objectContaining({ kind: 'worktree', id: 'repo::created' })
         ]),
         mutation: { requestId: 'worker_start_request', replayed: false }
       }
@@ -694,35 +741,28 @@ describe('orchestration new-worktree workers', () => {
       result: {
         dispatchId: firstReceipt.dispatchId,
         state: 'failed',
-        failedStage: 'dispatch_input',
+        failedStage: 'execution_start',
         residualResources: firstReceipt.residualResources,
         mutation: { requestId: 'worker_start_request', replayed: true }
       }
     })
     expect(runtime.createManagedWorktree).toHaveBeenCalledOnce()
-    expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledOnce()
+    expect(runtime.createAgentSession).toHaveBeenCalledOnce()
     expect(recreateWorktree).not.toHaveBeenCalled()
-    expect(reinjectPrompt).not.toHaveBeenCalled()
+    expect(recreateSession).not.toHaveBeenCalled()
   })
 
-  it('persists pre-effect, post-effect, and post-input stages in order', async () => {
+  it('persists the execution-start claim before provider acceptance', async () => {
     mockCreatedWorktree({ hookFound: false })
-    let finishWait:
-      | ((value: Awaited<ReturnType<OrcaRuntimeService['waitForTerminal']>>) => void)
+    let finishSession:
+      | ((value: Awaited<ReturnType<OrcaRuntimeService['createAgentSession']>>) => void)
       | undefined
-    let finishPrompt:
-      | ((value: Awaited<ReturnType<OrcaRuntimeService['sendTerminalAgentPrompt']>>) => void)
-      | undefined
-    vi.mocked(runtime.waitForTerminal).mockImplementationOnce(
-      async () =>
+    let request: Parameters<OrcaRuntimeService['createAgentSession']>[0] | undefined
+    vi.mocked(runtime.createAgentSession).mockImplementationOnce(
+      async (value) =>
         await new Promise((resolve) => {
-          finishWait = resolve
-        })
-    )
-    vi.mocked(runtime.sendTerminalAgentPrompt).mockImplementationOnce(
-      async () =>
-        await new Promise((resolve) => {
-          finishPrompt = resolve
+          request = value
+          finishSession = resolve
         })
     )
 
@@ -732,35 +772,48 @@ describe('orchestration new-worktree workers', () => {
       const dispatch = task ? db.getDispatchContext(task.id) : undefined
       expect(dispatch && db.getWorkerDispatch(dispatch.id)).toMatchObject({
         state: 'starting',
-        stage: 'terminal_readying',
-        worktree_id: 'repo::created',
-        agent_terminal_handle: workerHandle
+        stage: 'worktree_created',
+        worktree_id: 'repo::created'
       })
     })
     const dispatch = db.getDispatchContext(db.listTasks()[0]!.id)!
-    expect(JSON.parse(db.getWorkerDispatch(dispatch.id)!.residual_resources)).toEqual(
-      expect.arrayContaining([expect.objectContaining({ kind: 'worktree', id: 'repo::created' })])
-    )
-
-    finishWait?.({
-      handle: 'term_worker',
-      condition: 'tui-idle',
-      satisfied: true,
-      status: 'running',
-      exitCode: null
-    })
-    await vi.waitFor(() =>
-      expect(db.getWorkerDispatch(dispatch.id)).toMatchObject({
-        state: 'starting',
-        stage: 'authority_attached'
-      })
-    )
-
-    finishPrompt?.({
-      handle: 'term_worker',
-      accepted: true,
-      bytesWritten: 1,
-      semanticObservedAt: Date.now()
+    expect(
+      db.db
+        .prepare(
+          "SELECT state FROM worker_generation_operations WHERE dispatch_id = ? AND effect_kind = 'execution_start'"
+        )
+        .get(dispatch.id)
+    ).toEqual({ state: 'claimed' })
+    expect(db.getWorkerTerminalResourceByOwner(dispatch.id)).toBeUndefined()
+    const start = request!.executionStart!
+    workerHandle = start.terminalHandle
+    finishSession?.({
+      terminal: {
+        handle: workerHandle,
+        worktreeId: 'repo::created',
+        title: 'Codex',
+        surface: 'background'
+      },
+      disposition: 'created',
+      executionStartReceipt: {
+        ...start,
+        launchTokenHash: 'test-launch-token-hash',
+        paneKey: 'tab_worker:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        processIncarnation: 'runtime_test:term_worker:1',
+        hostScope: {
+          kind: 'local',
+          hostId: 'local',
+          restartCustody: {
+            kind: 'windows_daemon_job',
+            daemonPid: 4000,
+            daemonStartedAtMs: 1_786_000_000_000,
+            daemonLaunchNonce: 'new-worktree-test-daemon'
+          }
+        },
+        providerSession: { key: 'session_id', id: 'codex-session' },
+        turnStartedAt: Date.now(),
+        semanticObservedAt: Date.now()
+      }
     })
     await expect(pending).resolves.toMatchObject({
       result: { state: 'ready', stage: 'input_accepted' }
@@ -770,51 +823,4 @@ describe('orchestration new-worktree workers', () => {
       stage: 'input_accepted'
     })
   })
-
-  it.each([
-    ['completed', 'ready'],
-    ['not_started', 'outcome_unknown'],
-    ['conflict', 'failed'],
-    ['unverifiable', 'outcome_unknown']
-  ] as const)(
-    'classifies an ambiguous prompt submit with immediate %s inspection',
-    async (verdict, expectedState) => {
-      mockCreatedWorktree({ hookFound: false })
-      vi.mocked(runtime.sendTerminalAgentPrompt).mockRejectedValueOnce(
-        Object.assign(new Error('prompt submit reply lost'), { code: 'operation_unknown' })
-      )
-      const inspect = vi.spyOn(runtime, 'inspectTerminalWorkerPromptOperation').mockResolvedValue(
-        verdict === 'completed'
-          ? ({
-              verdict,
-              receipt: {
-                operationId: 'prompt-operation',
-                payloadFingerprint: 'prompt-fingerprint',
-                sessionIncarnationId: 'new-daemon:pty:process',
-                terminalHandle: workerHandle,
-                completedAt: Date.now(),
-                semanticObservedAt: Date.now()
-              }
-            } as never)
-          : { verdict }
-      )
-
-      const { result } = await startWorker({ name: `inspect-${verdict}` })
-
-      expect(result).toMatchObject({
-        state: expectedState,
-        ...(verdict === 'conflict'
-          ? { lastError: expect.stringContaining('identity conflict') }
-          : verdict === 'completed'
-            ? {}
-            : { failedStage: 'dispatch_input' })
-      })
-      expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledOnce()
-      expect(inspect).toHaveBeenCalledOnce()
-      if (verdict === 'completed') {
-        const dispatchId = (result as { dispatchId: string }).dispatchId
-        expect(db.getDispatchContextById(dispatchId)?.capability_revoked_at).toBeNull()
-      }
-    }
-  )
 })

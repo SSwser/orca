@@ -41,7 +41,7 @@ describe('exact worker provider session selection', () => {
       processIncarnation: 'pty:incarnation',
       agent: 'codex',
       providerSession: { key: 'session_id', id: 'exact' },
-      observedAt: 250
+      observedAt: 190
     })
   })
 
@@ -58,6 +58,26 @@ describe('exact worker provider session selection', () => {
           status('tab:worker', 'identity-only', {
             receivedAt: 400,
             providerSessionOnly: true
+          })
+        ]
+      })
+    ).toBeNull()
+  })
+
+  it('rejects session identity without a new working turn edge', () => {
+    expect(
+      selectExactWorkerProviderSession({
+        paneKey: 'tab:worker',
+        processIncarnation: 'pty:incarnation',
+        connectionId: null,
+        launchToken: undefined,
+        observedAfter: 150,
+        statuses: [
+          status('tab:worker', 'idle-session', { state: 'done', receivedAt: 250 }),
+          status('tab:worker', 'old-working-turn', {
+            state: 'working',
+            stateStartedAt: 100,
+            receivedAt: 300
           })
         ]
       })

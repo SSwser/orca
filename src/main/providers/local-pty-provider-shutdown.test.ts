@@ -386,7 +386,11 @@ describe('LocalPtyProvider', () => {
     it('cancels pending shell-ready startup delivery on forced shutdown', async () => {
       vi.useFakeTimers()
       try {
-        const { id } = await provider.spawn({ cols: 80, rows: 24, command: 'printf ready' })
+        const { id } = await provider.spawn({
+          cols: 80,
+          rows: 24,
+          target: { kind: 'shell-command', command: 'printf ready' }
+        })
 
         await provider.shutdown(id, { immediate: true })
         vi.advanceTimersByTime(2000)

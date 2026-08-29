@@ -162,6 +162,7 @@ export const ORCHESTRATION_WORKER_STOP_METHODS: RpcMethod[] = [
           'none'
         )
       }
+      let closeAttempted = false
       try {
         const archive = await captureWorkerTerminalArchiveOnce({
           runtime,
@@ -192,6 +193,7 @@ export const ORCHESTRATION_WORKER_STOP_METHODS: RpcMethod[] = [
             archiveSummary(archivedResource)
           )
         }
+        closeAttempted = true
         const close = await runtime.closeTerminal(handle)
         if (!close.ptyKilled) {
           const exitSettled = db.getWorkerDispatch(params.dispatch)
@@ -233,7 +235,7 @@ export const ORCHESTRATION_WORKER_STOP_METHODS: RpcMethod[] = [
             dispatchId: params.dispatch,
             state: exitSettled.state,
             alreadySettled: false,
-            processAction: 'closed_agent_terminal',
+            processAction: closeAttempted ? 'closed_agent_terminal' : 'none',
             archive: archiveSummary(db.getWorkerTerminalResourceByOwner(params.dispatch) ?? null)
           }
         }

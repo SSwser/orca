@@ -9,6 +9,10 @@ export function buildSshPtySpawnRequest(args: {
   supportsCreateOperation: boolean
 }): Record<string, unknown> {
   const { options } = args
+  if (options.target?.kind === 'agent-process') {
+    throw new Error('execution_owner_unavailable')
+  }
+  const command = options.target?.command
   return {
     cols: options.cols,
     rows: options.rows,
@@ -20,7 +24,7 @@ export function buildSshPtySpawnRequest(args: {
     }),
     ...(options.envToDelete?.length ? { envToDelete: options.envToDelete } : {}),
     // Why: the relay needs launch identity for plugin env overlays and provider-side delivery.
-    ...(options.command ? { command: options.command } : {}),
+    ...(command ? { command } : {}),
     ...(options.launchAgent ? { launchAgent: options.launchAgent } : {}),
     ...(options.worktreeId ? { worktreeId: options.worktreeId } : {}),
     ...(options.historyIsolationEnabled !== undefined

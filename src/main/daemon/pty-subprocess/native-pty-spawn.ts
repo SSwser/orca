@@ -18,13 +18,18 @@ export type SpawnedDaemonPty = {
 
 /** Walks the Windows PowerShell -> cmd.exe fallback chain when ConPTY rejects the primary shell. */
 export function spawnNativeDaemonPty(args: {
-  shellPath: string
-  shellArgs: string[]
+  target:
+    | {
+        kind: 'shell'
+        shellPath: string
+        shellArgs: string[]
+        windowsFallbackAttempts: WindowsShellSpawnAttempt[]
+      }
+    | { kind: 'agent-process'; executable: string; argv: string[] }
   spawnCwd: string
   env: Record<string, string>
   cols: number
   rows: number
-  windowsFallbackAttempts: WindowsShellSpawnAttempt[]
   requireHostCrashContainment?: boolean
   onMacosTccSpawnStrategy?: (strategy: 'wrapped' | 'direct') => void
 }): SpawnedDaemonPty {
@@ -53,25 +58,28 @@ export function spawnNativeDaemonPty(args: {
     return proc
   }
 
+  const executable =
+    args.target.kind === 'agent-process' ? args.target.executable : args.target.shellPath
+  const argv = args.target.kind === 'agent-process' ? args.target.argv : args.target.shellArgs
   try {
-    const process_ = spawnAt(args.shellPath, args.shellArgs, args.spawnCwd)
+    const process_ = spawnAt(executable, argv, args.spawnCwd)
     return {
       process: process_,
-      shellPath: args.shellPath,
+      shellPath: executable,
       spawnCwd: args.spawnCwd,
       reportsChildExitStatus,
       hostCrashContained
     }
   } catch (primaryErr) {
-    if (process.platform !== 'win32') {
+    if (process.platform !== 'win32' || args.target.kind === 'agent-process') {
       throw primaryErr
     }
-    for (const attempt of args.windowsFallbackAttempts.slice(1)) {
+    for (const attempt of args.target.windowsFallbackAttempts.slice(1)) {
       try {
         const process = spawnAt(attempt.shellPath, attempt.shellArgs, attempt.effectiveCwd)
         const message = primaryErr instanceof Error ? primaryErr.message : String(primaryErr)
         console.warn(
-          `[daemon/pty] Primary shell "${args.shellPath}" failed (${message}), fell back to "${attempt.shellPath}"`
+          `[daemon/pty] Primary shell "${args.target.shellPath}" failed (${message}), fell back to "${attempt.shellPath}"`
         )
         return {
           process,

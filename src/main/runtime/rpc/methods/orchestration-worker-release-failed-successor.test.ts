@@ -62,6 +62,10 @@ describe('orchestration worker release after infrastructure failure', () => {
     } as never)
     vi.spyOn(runtime, 'showRepo').mockResolvedValue({ id: 'repo', kind: 'git' } as never)
     vi.spyOn(runtime, 'validateOrchestrationAgentLauncher').mockImplementation(() => undefined)
+    vi.spyOn(runtime, 'getTerminalOrchestrationCliCommand').mockReturnValue('orca')
+    vi.spyOn(runtime, 'resolveWorkerAgentProcessAdmission').mockReturnValue({
+      targetFingerprint: 'c'.repeat(64)
+    })
     vi.spyOn(runtime, 'createTerminal').mockResolvedValue({ handle: 'term_retry' } as never)
     runId = db.createRun({
       objective: 'failed successor release',
@@ -114,7 +118,16 @@ describe('orchestration worker release after infrastructure failure', () => {
     const { dispatchId } = createWorker()
     abandon(dispatchId)
     inspectProcessLiveness.mockResolvedValue('exited')
-    vi.mocked(runtime.getOrchestrationDispatchAuthority).mockReturnValue(null)
+    vi.mocked(runtime.getOrchestrationDispatchAuthority).mockImplementation((handle) =>
+      handle === 'term_coord'
+        ? ({
+            terminalHandle: handle,
+            paneKey: COORDINATOR_PANE,
+            processIncarnation: 'runtime_test:term_coord:1',
+            hostScope: { kind: 'local', hostId: 'local' }
+          } as never)
+        : null
+    )
 
     await expect(
       call('orchestration.workerRelease', { dispatch: dispatchId })
@@ -159,7 +172,16 @@ describe('orchestration worker release after infrastructure failure', () => {
     const { taskId, dispatchId } = createWorker()
     abandon(dispatchId)
     inspectProcessLiveness.mockResolvedValue('unverifiable')
-    vi.mocked(runtime.getOrchestrationDispatchAuthority).mockReturnValue(null)
+    vi.mocked(runtime.getOrchestrationDispatchAuthority).mockImplementation((handle) =>
+      handle === 'term_coord'
+        ? ({
+            terminalHandle: handle,
+            paneKey: COORDINATOR_PANE,
+            processIncarnation: 'runtime_test:term_coord:1',
+            hostScope: { kind: 'local', hostId: 'local' }
+          } as never)
+        : null
+    )
 
     const receipts = await Promise.all([
       call('orchestration.workerRelease', { dispatch: dispatchId }),

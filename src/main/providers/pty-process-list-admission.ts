@@ -1,4 +1,7 @@
-import { isAgentSessionOwnerBinding } from '../../shared/agent-session-host-authority'
+import {
+  isAgentSessionCreateOperationIdentity,
+  isAgentSessionOwnerBinding
+} from '../../shared/agent-session-host-authority'
 import { MAX_CLAIMED_AGENT_PTY_OWNER_ENTRIES } from '../../shared/claimed-agent-pty-owner'
 import { cloneAgentSessionOwnerBinding } from '../../shared/claimed-agent-pty-owner-snapshot'
 import { isPtyIncarnationId } from '../../shared/pty-incarnation'
@@ -59,6 +62,11 @@ export class PtyProcessListAdmission {
     const restartCustodyBytes = restartCustody
       ? Buffer.byteLength(restartCustody.daemonLaunchNonce, 'utf8')
       : 0
+    const operation = value.agentSessionCreateOperation
+    const operationBytes = operation
+      ? Buffer.byteLength(operation.operationId, 'utf8') +
+        Buffer.byteLength(operation.payloadFingerprint, 'utf8')
+      : 0
     if (
       idBytes === null ||
       cwdBytes === null ||
@@ -68,6 +76,7 @@ export class PtyProcessListAdmission {
       wslDistroBytes === null ||
       (value.restartCustody !== undefined && !restartCustody) ||
       (value.incarnationId !== undefined && !isPtyIncarnationId(value.incarnationId)) ||
+      (operation !== undefined && !isAgentSessionCreateOperationIdentity(operation)) ||
       (value.agentSessionOwners !== undefined && !Array.isArray(value.agentSessionOwners))
     ) {
       throw new Error('invalid_pty_process_list')
@@ -99,6 +108,7 @@ export class PtyProcessListAdmission {
       terminalHandleBytes +
       wslDistroBytes +
       restartCustodyBytes +
+      operationBytes +
       ownerBytes
     if (
       nextEntries > MAX_AGGREGATED_PTY_PROCESS_LIST_ENTRIES ||
@@ -120,6 +130,7 @@ export class PtyProcessListAdmission {
       ...(value.worktreeId !== undefined ? { worktreeId: value.worktreeId } : {}),
       ...(value.terminalHandle !== undefined ? { terminalHandle: value.terminalHandle } : {}),
       ...(value.wslDistro !== undefined ? { wslDistro: value.wslDistro } : {}),
+      ...(operation ? { agentSessionCreateOperation: { ...operation } } : {}),
       ...(normalizedOwners !== undefined ? { agentSessionOwners: normalizedOwners } : {})
     }
   }

@@ -65,8 +65,9 @@ export async function buildPtyIpcSpawnOptions(
   if (ctx.combinedEnvToDelete) {
     ctx.spawnOptions.envToDelete = ctx.combinedEnvToDelete
   }
-  if (ctx.launchCommand !== undefined) {
-    ctx.spawnOptions.command = ctx.launchCommand
+  ctx.spawnOptions.target = {
+    kind: 'shell-command',
+    ...(ctx.launchCommand !== undefined ? { command: ctx.launchCommand } : {})
   }
   if (args.commandDelivery !== undefined) {
     ctx.spawnOptions.commandDelivery = args.commandDelivery

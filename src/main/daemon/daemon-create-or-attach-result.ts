@@ -1,6 +1,9 @@
 import type { TuiAgent } from '../../shared/tui-agent'
 import type { ShellReadyState, TerminalSnapshot } from './types'
-import type { AgentSessionClaimedSpawnResult } from '../../shared/agent-session-host-authority'
+import type {
+  AgentSessionClaimedSpawnResult,
+  AgentSessionCreateOperationIdentity
+} from '../../shared/agent-session-host-authority'
 import type { PtyIncarnationId } from '../../shared/pty-incarnation'
 
 export type DaemonCreateOrAttachResult = {
@@ -13,6 +16,7 @@ export type DaemonCreateOrAttachResult = {
   /** Undefined only when talking to a daemon predating WSL session context. */
   wslDistro?: string | null
   agentSessionEnsure?: AgentSessionClaimedSpawnResult
+  agentSessionCreateOperation?: AgentSessionCreateOperationIdentity
   incarnationId?: PtyIncarnationId
   hostCrashContained?: true
 }
@@ -22,16 +26,21 @@ export function getDaemonSessionResultMetadata(session: {
   historySeeded: boolean | undefined
   wslDistro: string | null
   hostCrashContained: boolean
+  agentSessionCreateOperation: AgentSessionCreateOperationIdentity | null
 }): {
   launchAgent?: TuiAgent
   historySeeded?: boolean
   wslDistro: string | null
   hostCrashContained?: true
+  agentSessionCreateOperation?: AgentSessionCreateOperationIdentity
 } {
   return {
     ...(session.launchAgent ? { launchAgent: session.launchAgent } : {}),
     ...(session.historySeeded !== undefined ? { historySeeded: session.historySeeded } : {}),
     ...(session.hostCrashContained ? { hostCrashContained: true } : {}),
+    ...(session.agentSessionCreateOperation
+      ? { agentSessionCreateOperation: session.agentSessionCreateOperation }
+      : {}),
     // Why: null authoritatively identifies a native session; omission is
     // reserved for older daemons that predate this wire field.
     wslDistro: session.wslDistro

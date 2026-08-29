@@ -18,37 +18,64 @@ type ReconciliationInput = {
   resource: WorkerTerminalResourceRow
 }
 
+async function inspectReleaseLiveness({
+  runtime,
+  db,
+  dispatchId,
+  resource
+}: ReconciliationInput): Promise<'live' | 'exited' | 'unverifiable'> {
+  if (workerTerminalHasStopOwnedExitEvidence(db, dispatchId, resource)) {
+    return 'exited'
+  }
+  return resource.process_incarnation
+    ? await runtime.inspectTerminalProcessIncarnationLiveness(
+        resource.process_incarnation,
+        resource.host_scope
+      )
+    : 'unverifiable'
+}
+
+function settleExitedRelease(
+  { runtime, db, dispatchId, resource }: ReconciliationInput,
+  liveness: 'live' | 'exited' | 'unverifiable'
+): WorkerReleaseReceipt | null {
+  if (!resource.process_incarnation || liveness !== 'exited') {
+    return null
+  }
+  const reconciled = db.settleDeadWorkerTerminalRelease({
+    requestingDispatchId: dispatchId,
+    resourceId: resource.id,
+    processIncarnation: resource.process_incarnation
+  })
+  if (reconciled.disposition === 'released') {
+    runtime.notifyMessageArrived(`dispatch:${dispatchId}`, 'status')
+    return {
+      dispatchId,
+      state: 'released',
+      processAction: 'none',
+      archive: archiveSummary(reconciled.resource)
+    }
+  }
+  return reconciled.resource.lifecycle_state === 'released'
+    ? {
+        dispatchId,
+        state: 'already_released',
+        processAction: 'none',
+        archive: archiveSummary(reconciled.resource)
+      }
+    : null
+}
+
 export async function reconcileSettledWorkerTerminalRelease({
   runtime,
   db,
   dispatchId,
   resource
 }: ReconciliationInput): Promise<WorkerReleaseReceipt> {
-  const processIncarnation = resource.process_incarnation
-  const stopOwnedExit = workerTerminalHasStopOwnedExitEvidence(db, dispatchId, resource)
-  const liveness = stopOwnedExit
-    ? 'exited'
-    : processIncarnation
-      ? await runtime.inspectTerminalProcessIncarnationLiveness(
-          processIncarnation,
-          resource.host_scope
-        )
-      : 'unverifiable'
-  if (processIncarnation && liveness === 'exited') {
-    const reconciled = db.settleDeadWorkerTerminalRelease({
-      requestingDispatchId: dispatchId,
-      resourceId: resource.id,
-      processIncarnation
-    })
-    if (reconciled.disposition === 'released') {
-      runtime.notifyMessageArrived(`dispatch:${dispatchId}`, 'status')
-      return {
-        dispatchId,
-        state: 'released',
-        processAction: 'none',
-        archive: archiveSummary(reconciled.resource)
-      }
-    }
+  const liveness = await inspectReleaseLiveness({ runtime, db, dispatchId, resource })
+  const settled = settleExitedRelease({ runtime, db, dispatchId, resource }, liveness)
+  if (settled) {
+    return settled
   }
   db.ensureWorkerTerminalReleaseUnknownMessage({ dispatchId, resourceId: resource.id })
   runtime.notifyMessageArrived(`dispatch:${dispatchId}`, 'status')
@@ -74,38 +101,10 @@ export async function reconcileUnknownWorkerTerminalRelease({
   resource
 }: ReconciliationInput): Promise<WorkerReleaseReceipt> {
   const processIncarnation = resource.process_incarnation
-  const stopOwnedExit = workerTerminalHasStopOwnedExitEvidence(db, dispatchId, resource)
-  const liveness = stopOwnedExit
-    ? 'exited'
-    : processIncarnation
-      ? await runtime.inspectTerminalProcessIncarnationLiveness(
-          processIncarnation,
-          resource.host_scope
-        )
-      : 'unverifiable'
-  if (processIncarnation && liveness === 'exited') {
-    const reconciled = db.settleDeadWorkerTerminalRelease({
-      requestingDispatchId: dispatchId,
-      resourceId: resource.id,
-      processIncarnation
-    })
-    if (reconciled.disposition === 'released') {
-      runtime.notifyMessageArrived(`dispatch:${dispatchId}`, 'status')
-      return {
-        dispatchId,
-        state: 'released',
-        processAction: 'none',
-        archive: archiveSummary(reconciled.resource)
-      }
-    }
-    if (reconciled.resource.lifecycle_state === 'released') {
-      return {
-        dispatchId,
-        state: 'already_released',
-        processAction: 'none',
-        archive: archiveSummary(reconciled.resource)
-      }
-    }
+  const liveness = await inspectReleaseLiveness({ runtime, db, dispatchId, resource })
+  const settled = settleExitedRelease({ runtime, db, dispatchId, resource }, liveness)
+  if (settled) {
+    return settled
   }
   const exactLiveLeaseCurrent = Boolean(
     processIncarnation &&

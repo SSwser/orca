@@ -1,6 +1,5 @@
 import type { WorkerReportOutcome, WorkerReportSettlement } from '../../types'
 import type { OrchestrationDb } from '../orchestration-db'
-import { AGENT_PROMPT_STALLED_ERROR } from '../../../agent-prompt-submission-verification'
 import { settleActiveDispatchesForTask } from './dispatch-completion'
 import { getActiveDispatchForTask } from './task-dispatch-reconciliation'
 
@@ -59,25 +58,13 @@ export function settleWorkerReportInTransaction(
   const defersTaskFinalization = Boolean(
     reportingWorker && this.getWorkerTerminalResourceByOwner(params.dispatchId)
   )
-  // Why (#16095): worker-start records a stalled prompt as failed, but the preamble was written
-  // before verification ran — the worker may have been executing it the whole time. Its own report
-  // is first-hand evidence and must be able to correct that record instead of being thrown away.
-  // Checked before the duplicate short-circuit: a `failed` report lands on the very statuses that
-  // short-circuit reads as already settled, dropping the worker's real cause and result body.
-  const settledByUnobservedPrompt =
-    dispatch.status === 'failed' &&
-    dispatch.last_failure === AGENT_PROMPT_STALLED_ERROR &&
-    task.status === 'failed'
   if (
-    !settledByUnobservedPrompt &&
     dispatch.status === expectedDispatchStatus &&
     (task.status === expectedTaskStatus || (defersTaskFinalization && task.status === 'dispatched'))
   ) {
     return { action: 'settled', outcome: params.outcome, duplicate: true }
   }
-  const previous = settledByUnobservedPrompt
-    ? { status: 'failed', workerState: 'failed' }
-    : { status: 'dispatched', workerState: 'ready' }
+  const previous = { status: 'dispatched', workerState: 'ready' }
   if (dispatch.status !== previous.status || task.status !== previous.status) {
     return {
       action: 'rejected',

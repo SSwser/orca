@@ -146,7 +146,7 @@ async function startFixture(
       cols: 80,
       rows: 24,
       cwd: tempHome,
-      command: fixture.command,
+      target: { kind: 'shell-command', command: fixture.command },
       shellOverride: fixture.shellPath,
       env: {
         HOME: tempHome,

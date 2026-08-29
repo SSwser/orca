@@ -457,7 +457,7 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
       await adapter.spawn({
         cols: 80,
         rows: 24,
-        command: 'codex',
+        target: { kind: 'shell-command', command: 'codex' },
         env: { SHELL: '/bin/zsh' }
       })
 
@@ -469,7 +469,7 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
       await adapter.spawn({
         cols: 80,
         rows: 24,
-        command: "codex 'linked issue context'",
+        target: { kind: 'shell-command', command: "codex 'linked issue context'" },
         startupCommandDelivery: 'shell-ready',
         env: { SHELL: '/bin/zsh' }
       })

@@ -222,7 +222,7 @@ export async function attachStablePaneOwner(
       expectedIncarnationId: owner.runtimeIncarnationId ?? owner.persistedIncarnationId,
       expectedIncarnationIsAuthoritative: owner.runtimeIncarnationId !== undefined,
       isNewSession: undefined,
-      command: undefined,
+      target: { kind: 'shell-command' },
       commandDelivery: undefined,
       startupCommandDelivery: undefined,
       launchAgent: undefined,

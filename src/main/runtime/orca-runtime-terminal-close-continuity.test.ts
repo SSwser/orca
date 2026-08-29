@@ -4,6 +4,7 @@ import { makePaneKey } from '../../shared/stable-pane-id'
 import type { WorkspaceSessionState } from '../../shared/workspace-session-state-types'
 import { OrcaRuntimeService } from './orca-runtime'
 import { OrchestrationDb } from './orchestration/db'
+import { prepareContainedWorkerTerminal } from './worker-terminal-containment-test-state'
 import {
   CANARY_INCARNATION_ID,
   CANARY_LEAF_ID,
@@ -325,6 +326,7 @@ function createHarness(
   syncFixtureGraph()
   return {
     runtime,
+    db,
     acknowledged,
     closeTerminal,
     closeTerminalTab,
@@ -398,57 +400,40 @@ function createPtyBackedPublishedSurfaceHarness() {
 describe('terminal close and handle incarnation continuity', () => {
   it('projects contained custody as non-actionable and blocks every terminal action', async () => {
     const harness = createHarness()
-    const db = new OrchestrationDb(':memory:')
-    harness.runtime.setOrchestrationDb(db)
     const [{ handle }] = (await harness.runtime.listTerminals(`id:${WORKTREE_ID}`)).terminals
-    const resource = db.createWorkerTerminalResourceStatement({
-      dispatchId: 'ctx-contained',
-      worktreeId: WORKTREE_ID,
-      terminalHandle: handle,
+    prepareContainedWorkerTerminal({
+      db: harness.db,
+      handle,
       paneKey: makePaneKey(TAB_ID, LEAF_ID),
-      processIncarnation: 'contained-process',
-      lifecycleState: 'owned'
+      worktreeId: WORKTREE_ID
     })
-    ;(
-      db as unknown as {
-        db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } }
-      }
-    ).db
-      .prepare(
-        "UPDATE worker_terminal_resources SET lifecycle_state = 'contained', retained_reason = 'lost_custody' WHERE id = ?"
-      )
-      .run(resource.id)
 
-    try {
-      await expect(harness.runtime.listTerminals(`id:${WORKTREE_ID}`)).resolves.toMatchObject({
-        terminals: [
-          expect.objectContaining({
-            handle,
-            connected: true,
-            writable: false,
-            custodyState: 'contained'
-          })
-        ]
-      })
-      await expect(harness.runtime.closeTerminal(handle)).resolves.toMatchObject({
-        ptyKilled: false,
-        ptyStopVerdict: 'unverifiable'
-      })
-      await expect(harness.runtime.closeTerminalTab(handle)).resolves.toMatchObject({
-        ptyKilled: false,
-        ptyStopVerdict: 'unverifiable',
-        closeMode: 'tab'
-      })
-      await expect(harness.runtime.sendTerminal(handle, { text: 'unsafe' })).rejects.toThrow(
-        'terminal_not_writable'
-      )
-      await expect(harness.runtime.splitTerminal(handle)).rejects.toThrow('terminal_not_writable')
-      expect(harness.kill).not.toHaveBeenCalled()
-      expect(harness.closeTerminal).not.toHaveBeenCalled()
-      expect(harness.closeTerminalTab).not.toHaveBeenCalled()
-    } finally {
-      db.close()
-    }
+    await expect(harness.runtime.listTerminals(`id:${WORKTREE_ID}`)).resolves.toMatchObject({
+      terminals: [
+        expect.objectContaining({
+          handle,
+          connected: true,
+          writable: false,
+          custodyState: 'contained'
+        })
+      ]
+    })
+    await expect(harness.runtime.closeTerminal(handle)).resolves.toMatchObject({
+      ptyKilled: false,
+      ptyStopVerdict: 'unverifiable'
+    })
+    await expect(harness.runtime.closeTerminalTab(handle)).resolves.toMatchObject({
+      ptyKilled: false,
+      ptyStopVerdict: 'unverifiable',
+      closeMode: 'tab'
+    })
+    await expect(harness.runtime.sendTerminal(handle, { text: 'unsafe' })).rejects.toThrow(
+      'terminal_not_writable'
+    )
+    await expect(harness.runtime.splitTerminal(handle)).rejects.toThrow('terminal_not_writable')
+    expect(harness.kill).not.toHaveBeenCalled()
+    expect(harness.closeTerminal).not.toHaveBeenCalled()
+    expect(harness.closeTerminalTab).not.toHaveBeenCalled()
   })
 
   it('does not acknowledge final-pane close before durable tab retirement', async () => {

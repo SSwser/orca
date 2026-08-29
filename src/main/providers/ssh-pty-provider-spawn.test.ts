@@ -291,7 +291,7 @@ describe('spawn', () => {
     await provider.spawn({
       cols: 120,
       rows: 40,
-      command: 'cd /repo && custom-agent-wrapper',
+      target: { kind: 'shell-command', command: 'cd /repo && custom-agent-wrapper' },
       launchAgent: 'claude'
     })
 
@@ -421,7 +421,7 @@ describe('spawn', () => {
     await provider.spawn({
       cols: 120,
       rows: 40,
-      command: 'echo from-runtime',
+      target: { kind: 'shell-command', command: 'echo from-runtime' },
       commandDelivery: 'provider',
       startupCommandDelivery: 'shell-ready'
     })

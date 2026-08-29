@@ -175,7 +175,7 @@ describe('TerminalHost', () => {
         sessionId: 'session-1',
         cols: 80,
         rows: 24,
-        command: 'echo hello',
+        target: { kind: 'shell-command', command: 'echo hello' },
         shellReadySupported: true,
         streamClient: { onData: vi.fn(), onExit: vi.fn() }
       })
@@ -203,7 +203,7 @@ describe('TerminalHost', () => {
           sessionId: 'session-1',
           cols: 80,
           rows: 24,
-          command: 'echo hello',
+          target: { kind: 'shell-command', command: 'echo hello' },
           shellReadySupported: true,
           streamClient: { onData: vi.fn(), onExit: vi.fn() }
         })
@@ -239,7 +239,7 @@ describe('TerminalHost', () => {
         sessionId: 'session-1',
         cols: 80,
         rows: 24,
-        command: 'echo hello',
+        target: { kind: 'shell-command', command: 'echo hello' },
         shellReadySupported: true,
         streamClient: { onData: vi.fn(), onExit: vi.fn() }
       })
@@ -267,7 +267,7 @@ describe('TerminalHost', () => {
         sessionId: 'session-1',
         cols: 80,
         rows: 24,
-        command: 'claude "line one\nline two"',
+        target: { kind: 'shell-command', command: 'claude "line one\nline two"' },
         shellReadySupported: true,
         streamClient: { onData: vi.fn(), onExit: vi.fn() }
       })
@@ -295,7 +295,7 @@ describe('TerminalHost', () => {
         sessionId: 'session-1',
         cols: 80,
         rows: 24,
-        command: 'echo hello',
+        target: { kind: 'shell-command', command: 'echo hello' },
         shellReadySupported: true,
         streamClient: { onData: vi.fn(), onExit: vi.fn() }
       })
@@ -321,7 +321,7 @@ describe('TerminalHost', () => {
         sessionId: 'session-1',
         cols: 80,
         rows: 24,
-        command: 'codex --no-alt-screen',
+        target: { kind: 'shell-command', command: 'codex --no-alt-screen' },
         streamClient: { onData: vi.fn(), onExit: vi.fn() }
       })
 

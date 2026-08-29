@@ -227,6 +227,61 @@ describe('Last-status persistence', () => {
     }
   })
 
+  it('retains the first provider turn after the live status advances to done', async () => {
+    const launchToken = 'worker-launch-token'
+    const launchTokenHash = createHash('sha256').update(launchToken).digest('hex')
+    const first = new AgentHookServer()
+    await first.start({ env: 'production', userDataPath })
+    first.ingestRemote(
+      {
+        paneKey: PANE,
+        launchToken,
+        tabId: 'tab-1',
+        worktreeId: 'wt-1',
+        providerSession: { key: 'session_id', id: 'worker-session-1' },
+        payload: { state: 'working', prompt: 'first turn', agentType: 'codex' }
+      },
+      null
+    )
+    const acceptedAt = first.getStatusSnapshotForPane(PANE)[0]!.stateStartedAt
+    first.ingestRemote(
+      {
+        paneKey: PANE,
+        launchToken,
+        tabId: 'tab-1',
+        worktreeId: 'wt-1',
+        providerSession: { key: 'session_id', id: 'worker-session-1' },
+        payload: { state: 'done', prompt: '', agentType: 'codex' }
+      },
+      null
+    )
+    first.flushStatusPersistSync()
+    first.stop()
+
+    const restored = new AgentHookServer()
+    await restored.start({ env: 'production', userDataPath })
+    try {
+      expect(
+        restored.attestCompatibilityAuthority({
+          paneKey: PANE,
+          launchTokenHash,
+          connectionId: null,
+          terminalProvenance: 'restored'
+        })
+      ).toMatchObject({
+        paneKey: PANE,
+        source: 'hydrated_commitment',
+        providerTurn: {
+          agent: 'codex',
+          providerSession: { key: 'session_id', id: 'worker-session-1' },
+          acceptedAt
+        }
+      })
+    } finally {
+      restored.stop()
+    }
+  })
+
   it('persists and hydrates Pi session identity without creating status telemetry', async () => {
     const firstServer = new AgentHookServer()
     const firstRendererListener = vi.fn()

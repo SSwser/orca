@@ -1,23 +1,18 @@
-import { buildDispatchPreamble } from '../../orchestration/preamble'
+import type { AgentLaunchPreferences } from '../../../../shared/agent-session-host-authority'
 import type { OrchestrationDb } from '../../orchestration/db'
-import { OrchestrationError } from '../../orchestration/orchestration-error'
+import { buildDispatchPreamble } from '../../orchestration/preamble'
 import type { DispatchContextRow, TaskRow } from '../../orchestration/types'
 import type { OrcaRuntimeService } from '../../orca-runtime'
-import {
-  createAgentPromptSubmissionUnconfirmedError,
-  isAgentPromptSubmissionUnconfirmedError
-} from '../../agent-prompt-submission-verification'
 import {
   acquireWorkerGenerationEffect,
   operationInProgressReceipt
 } from './orchestration-worker-generation-effect'
 import {
-  buildWorkerGenerationPromptOperation,
+  buildWorkerExecutionStartOperation,
   type WorkerGenerationOperationIdentities
 } from './orchestration-worker-generation-identity'
 import {
   persistGatedSetupSpawnFailure,
-  persistWorkerReadinessStage,
   persistWorkerSetupWaitOutcome
 } from './orchestration-worker-setup-gate'
 import type { WorkerStartInput } from './orchestration-worker-start-schema'
@@ -39,118 +34,62 @@ export async function activateWorkerGeneration(args: {
   runtimeEpoch: string
   claimantId: string
   resolvedWorktree: Awaited<ReturnType<OrcaRuntimeService['showManagedTerminalWorkspace']>>
-  terminalHandle: string
-  terminalOperationNeedsCompletion: boolean
   setupReceipt: WorkerSetupReceipt
   effects: WorkerEffect[]
   launchReceipt: unknown
+  launchPreferences?: AgentLaunchPreferences
   terminalRevealWarning?: string
   setFailedStage: (stage: string) => void
 }): Promise<unknown> {
-  const {
-    runtime,
-    db,
-    runId,
-    task,
-    dispatch,
-    params,
-    operations,
-    runtimeEpoch,
-    claimantId,
-    resolvedWorktree,
-    terminalHandle,
-    terminalOperationNeedsCompletion,
-    setupReceipt,
-    effects
-  } = args
+  const { runtime, db, runId, task, dispatch, params, operations, effects } = args
+  const terminalHandle = operations.executionStart.terminalHandle
   const setupStage = {
     db,
     dispatchId: dispatch.id,
-    worktreeId: resolvedWorktree.id,
+    worktreeId: args.resolvedWorktree.id,
     terminalHandle,
-    setup: setupReceipt,
+    setup: args.setupReceipt,
     effects
   }
   if (persistGatedSetupSpawnFailure(setupStage)) {
     args.setFailedStage('setup_start')
     throw new Error('Setup terminal failed to start before the gated agent launch.')
   }
-  persistWorkerReadinessStage(setupStage)
-  args.setFailedStage('agent_readiness')
-  const wait = await runtime.waitForTerminal(terminalHandle, {
-    condition: 'tui-idle',
-    timeoutMs: params.timeoutMs ?? 60_000,
-    requireAgentInputReady: true
-  })
-  persistWorkerSetupWaitOutcome({ ...setupStage, wait })
-  if (!wait.satisfied) {
-    if (setupReceipt.state === 'failed') {
-      args.setFailedStage('setup_wait')
-    }
-    throw new Error(
-      wait.blockedReason
-        ? `Agent startup blocked: ${wait.blockedReason}`
-        : `Agent did not become ready (${wait.status}).`
+  if (
+    args.setupReceipt.startupPolicy === 'wait-for-setup' &&
+    args.setupReceipt.state === 'running'
+  ) {
+    const setupTerminal = effects.find(
+      (effect) => effect.kind === 'terminal' && effect.role === 'setup' && effect.id
     )
-  }
-  const terminalAuthority = requireWorkerAuthority(runtime, terminalHandle, {
-    requireNativeWindowsRestartCustody: process.platform === 'win32' && !params.terminal
-  })
-  if (terminalOperationNeedsCompletion) {
-    db.completeWorkerGenerationOperation({
-      dispatchId: dispatch.id,
-      effectKind: 'terminal',
-      ...operations.terminal,
-      claimantId,
-      receipt: { terminalHandle, worktreeId: resolvedWorktree.id, ...terminalAuthority }
-    })
-  }
-  const authorityOperation = await acquireWorkerGenerationEffect({
-    db,
-    dispatchId: dispatch.id,
-    effectKind: 'authority',
-    identity: operations.authority,
-    runtimeEpoch,
-    claimantId,
-    inspect: async () => {
-      const currentDispatch = db.getDispatchContextById(dispatch.id)
-      if (!currentDispatch?.assignee_handle) {
-        return { verdict: 'not_started' }
-      }
-      if (
-        currentDispatch.assignee_handle !== terminalHandle ||
-        currentDispatch.assignee_pane_key !== terminalAuthority.paneKey ||
-        currentDispatch.process_incarnation !== terminalAuthority.processIncarnation
-      ) {
-        return { verdict: 'conflict' }
-      }
-      return { verdict: 'unverifiable' }
+    if (!setupTerminal?.id) {
+      args.setFailedStage('setup_wait')
+      throw new Error('Setup terminal identity is unavailable for the gated agent launch.')
     }
-  })
-  if (authorityOperation.disposition === 'in_progress') {
-    return operationInProgressReceipt({
-      db,
-      runId,
-      taskId: task.id,
-      dispatchId: dispatch.id,
-      effectKind: 'authority',
-      effects
+    args.setFailedStage('setup_wait')
+    const wait = await runtime.waitForTerminal(setupTerminal.id, {
+      condition: 'exit',
+      timeoutMs: params.timeoutMs ?? 60_000
     })
+    persistWorkerSetupWaitOutcome({ ...setupStage, wait })
+    if ((args.setupReceipt as WorkerSetupReceipt).state !== 'succeeded') {
+      throw new Error(
+        wait.status === 'exited'
+          ? 'Setup failed before the gated agent launch.'
+          : 'Setup did not finish before the gated agent launch timeout.'
+      )
+    }
   }
-  const capability =
-    authorityOperation.disposition === 'completed'
-      ? (authorityOperation.receipt as { capability: string }).capability
-      : db.prepareStartingWorkerAuthority({
-          dispatchId: dispatch.id,
-          handle: terminalHandle,
-          ...terminalAuthority,
-          worktreeId: resolvedWorktree.id,
-          effects,
-          setupState: setupReceipt.state,
-          terminalOwnership: params.terminal ? 'external' : 'created',
-          generationOperation: { ...operations.authority, claimantId }
-        })
-  args.setFailedStage('dispatch_input')
+
+  const capability = db.reserveStartingWorkerCapability(dispatch.id)
+  const targetFingerprint = (
+    JSON.parse(db.getWorkerDispatch(dispatch.id)?.start_options ?? '{}') as {
+      executionTargetFingerprint?: unknown
+    }
+  ).executionTargetFingerprint
+  if (typeof targetFingerprint !== 'string' || targetFingerprint.length !== 64) {
+    throw new Error('worker_execution_start_unsupported')
+  }
   const prompt = buildDispatchPreamble({
     taskId: task.id,
     dispatchId: dispatch.id,
@@ -161,110 +100,139 @@ export async function activateWorkerGeneration(args: {
     devMode: params.devMode,
     cliCommand: runtime.getTerminalOrchestrationCliCommand(terminalHandle)
   })
-  const promptOperation = buildWorkerGenerationPromptOperation({
+  const operation = buildWorkerExecutionStartOperation({
     dispatchId: dispatch.id,
-    terminalOperationId: operations.terminal.operationId,
+    executionSeedOperationId: operations.executionStart.operationId,
     terminalHandle,
-    prompt
+    prompt,
+    capability,
+    targetFingerprint
   })
-  const promptOperationClaim = await acquireWorkerGenerationEffect({
+  const launchToken = runtime.deriveWorkerAgentLaunchToken(capability)
+  const executionStart = {
+    ...operation,
+    targetFingerprint,
+    terminalHandle,
+    launchToken,
+    writeFence: { ownerId: dispatch.id, generation: operation.operationId },
+    semanticBaselineAt: Date.parse(dispatch.created_at),
+    timeoutMs: params.timeoutMs ?? 60_000
+  }
+  const claim = await acquireWorkerGenerationEffect({
     db,
     dispatchId: dispatch.id,
-    effectKind: 'prompt',
-    identity: promptOperation,
-    runtimeEpoch,
-    claimantId,
-    inspect: async () =>
-      await runtime.inspectTerminalWorkerPromptOperation(terminalHandle, promptOperation)
+    effectKind: 'execution_start',
+    identity: operation,
+    runtimeEpoch: args.runtimeEpoch,
+    claimantId: args.claimantId,
+    inspect: async () => {
+      const inspection = await runtime.inspectAgentSessionExecutionStart(
+        `id:${args.resolvedWorktree.id}`,
+        executionStart
+      )
+      if (inspection.verdict === 'accepted') {
+        return { verdict: 'accepted', receipt: inspection.receipt }
+      }
+      return inspection.verdict === 'started'
+        ? { verdict: 'started' }
+        : { verdict: inspection.verdict }
+    }
   })
-  if (promptOperationClaim.disposition === 'in_progress') {
+  if (claim.disposition === 'in_progress') {
     return operationInProgressReceipt({
       db,
       runId,
       taskId: task.id,
       dispatchId: dispatch.id,
-      effectKind: 'prompt',
+      effectKind: 'execution_start',
       effects
     })
   }
-  if (db.getWorkerDispatch(dispatch.id)?.state === 'start_unknown') {
-    db.resumeWorkerStartUnknown(dispatch.id)
-  }
-  if (promptOperationClaim.disposition === 'execute') {
-    let acceptance: unknown
-    try {
-      acceptance = await runtime.sendTerminalAgentPrompt(terminalHandle, prompt, {
-        workerPromptOperation: promptOperation
-      })
-    } catch (error) {
-      if ((error as { code?: unknown })?.code !== 'operation_unknown') {
-        throw error
-      }
-      let inspection
-      try {
-        inspection = await runtime.inspectTerminalWorkerPromptOperation(
-          terminalHandle,
-          promptOperation
+
+  args.setFailedStage('execution_start')
+  const result =
+    claim.disposition === 'completed'
+      ? null
+      : await runtime.createAgentSession(
+          {
+            clientOperationId: `${executionStart.semanticBaselineAt}-${operation.payloadFingerprint.slice(0, 32)}`,
+            worktree: `id:${args.resolvedWorktree.id}`,
+            agent: 'codex',
+            prompt,
+            promptDelivery: 'auto-submit',
+            presentation: 'background',
+            placement: {
+              tabId: operations.executionStart.tabId,
+              leafId: operations.executionStart.leafId
+            },
+            ...(args.launchPreferences ? { launchPreferences: args.launchPreferences } : {}),
+            executionStart
+          },
+          { clientKind: 'runtime' }
         )
-      } catch (inspectionError) {
-        if (isAgentPromptSubmissionUnconfirmedError(inspectionError)) {
-          db.markWorkerGenerationOperationUnverifiable({
-            dispatchId: dispatch.id,
-            effectKind: 'prompt',
-            ...promptOperation,
-            claimantId
-          })
-        }
-        throw inspectionError
-      }
-      if (inspection.verdict === 'conflict') {
-        throw new OrchestrationError(
-          'request_mismatch',
-          'Worker generation prompt owner reported an identity conflict.'
-        )
-      }
-      if (inspection.verdict !== 'completed') {
-        throw error
-      }
-      acceptance = inspection.receipt
-    }
-    if (!hasSemanticPromptProof(acceptance)) {
-      throw createAgentPromptSubmissionUnconfirmedError()
-    }
-    db.completeWorkerGenerationOperation({
-      dispatchId: dispatch.id,
-      effectKind: 'prompt',
-      ...promptOperation,
-      claimantId,
-      receipt: { terminalHandle, ...terminalAuthority, acceptance }
+  const receipt = claim.disposition === 'completed' ? claim.receipt : result?.executionStartReceipt
+  if (!receipt || typeof receipt !== 'object') {
+    throw Object.assign(new Error('worker_execution_start_unconfirmed'), {
+      agentSessionOperationOutcome: 'unknown' as const
     })
-    effects.push({
+  }
+  const exact = receipt as {
+    paneKey: string
+    processIncarnation: string
+    hostScope: unknown
+    semanticObservedAt: number
+  }
+  if (!Number.isFinite(exact.semanticObservedAt)) {
+    throw new Error('worker_execution_start_unconfirmed')
+  }
+  const authority = requireWorkerAuthority(runtime, terminalHandle, {
+    requireNativeWindowsRestartCustody: process.platform === 'win32'
+  })
+  if (
+    authority.paneKey !== exact.paneKey ||
+    authority.processIncarnation !== exact.processIncarnation
+  ) {
+    throw new Error('worker_execution_start_conflict')
+  }
+  db.prepareStartingWorkerAuthority({
+    dispatchId: dispatch.id,
+    handle: terminalHandle,
+    ...authority,
+    hostScope: JSON.stringify(exact.hostScope),
+    capability,
+    worktreeId: args.resolvedWorktree.id,
+    effects,
+    setupState: args.setupReceipt.state,
+    terminalOwnership: 'created',
+    ...(claim.disposition !== 'completed'
+      ? { generationOperation: { ...operation, claimantId: args.claimantId, receipt } }
+      : {})
+  })
+  effects.push(
+    {
+      kind: 'terminal',
+      role: 'agent',
+      action:
+        result?.disposition === 'replayed' || claim.disposition === 'completed'
+          ? 'replayed'
+          : 'created',
+      id: terminalHandle,
+      surface: result?.terminal.surface ?? 'background'
+    },
+    {
       kind: 'dispatch_input',
       role: 'agent',
       id: terminalHandle,
-      state: 'accepted'
-    })
-  } else {
-    if (promptOperationClaim.disposition !== 'completed') {
-      throw createAgentPromptSubmissionUnconfirmedError()
+      state: claim.disposition === 'completed' ? 'replayed' : 'accepted'
     }
-    if (!hasSemanticPromptProof(promptOperationClaim.receipt)) {
-      throw createAgentPromptSubmissionUnconfirmedError()
-    }
-    effects.push({
-      kind: 'dispatch_input',
-      role: 'agent',
-      id: terminalHandle,
-      state: 'replayed'
-    })
-  }
+  )
   const worker = db.markWorkerDispatchReady(dispatch.id, effects)
   monitorWorkerSetup({
     runtime,
     db,
     runId,
     dispatchId: dispatch.id,
-    setupReceipt,
+    setupReceipt: args.setupReceipt,
     effects
   })
   return {
@@ -273,25 +241,11 @@ export async function activateWorkerGeneration(args: {
     dispatchId: dispatch.id,
     state: worker.state,
     stage: worker.stage,
-    setup: setupReceipt,
+    setup: args.setupReceipt,
     launch: args.launchReceipt,
     timeoutMs: params.timeoutMs ?? 60_000,
     effects,
     residualResources: [],
     ...(args.terminalRevealWarning ? { warning: args.terminalRevealWarning } : {})
   }
-}
-
-function hasSemanticPromptProof(receipt: unknown): boolean {
-  if (!receipt || typeof receipt !== 'object') {
-    return false
-  }
-  const candidate = receipt as {
-    semanticObservedAt?: unknown
-    acceptance?: { semanticObservedAt?: unknown }
-  }
-  return (
-    typeof candidate.semanticObservedAt === 'number' ||
-    typeof candidate.acceptance?.semanticObservedAt === 'number'
-  )
 }

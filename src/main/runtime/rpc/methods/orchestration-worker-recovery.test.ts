@@ -5,6 +5,7 @@ import { ORCHESTRATION_METHODS } from './orchestration'
 import { executeAcceptedLocalWorkerStart } from './orchestration-worker-start-executor'
 import { buildWorkerGenerationOperationIdentities } from './orchestration-worker-generation-identity'
 import { prepareLocalWorkerExecution } from './orchestration-worker-start-preparation'
+import { prepareWorkerExecutionAdmission } from './orchestration-worker-execution-admission'
 import { RECOVERY_TEST } from './orchestration-worker-recovery-test-constants'
 
 describe('orchestration.workerRecover', () => {
@@ -114,6 +115,45 @@ describe('orchestration.workerRecover', () => {
     expect(createTerminal).not.toHaveBeenCalled()
     expect(sendPrompt).not.toHaveBeenCalled()
   })
+
+  it('rejects a declared recovery caller that disagrees with attested evidence', async () => {
+    const fixture = createFixture()
+    vi.spyOn(runtime, 'verifyOrchestrationCompatibilityCaller').mockReturnValue({
+      terminalHandle: 'term_attested',
+      paneKey: 'tab_attested:leaf_attested',
+      processIncarnation: 'runtime_test:attested:1',
+      launchTokenHash: 'attested-launch-token-hash',
+      hostScope: { kind: 'local', hostId: 'local' }
+    })
+    const method = ORCHESTRATION_METHODS.find(
+      (candidate) => candidate.name === 'orchestration.workerRecover'
+    )!
+    const params = method.params!.parse({
+      dispatch: fixture.source.dispatch.id,
+      resource: fixture.resource.id,
+      delivery: fixture.delivery.id,
+      resolution: 'accept_archived_result',
+      from: 'term_coord',
+      authorization: 'accept_authoritative_archived_result_with_lost_custody'
+    })
+
+    await expect(
+      method.handler(params, {
+        runtime,
+        orchestrationCompatibilityEvidence: {
+          terminalHandle: 'term_attested',
+          paneKey: 'tab_attested:leaf_attested',
+          launchToken: 'attested-launch-token'
+        },
+        orchestrationMutation: {
+          callerFingerprint: 'caller',
+          requestId: 'mismatched-caller',
+          method: 'orchestration.workerRecover',
+          payloadHash: 'mismatched-caller-hash'
+        }
+      })
+    ).rejects.toMatchObject({ code: 'consumer_fenced' })
+  })
   function mockSuccessorRuntime() {
     let successorHandle = 'term_successor'
     let successorWorktreeId = 'repo::successor'
@@ -143,11 +183,10 @@ describe('orchestration.workerRecover', () => {
     vi.spyOn(runtime, 'showRepo').mockResolvedValue({ id: 'repo', kind: 'git' } as never)
     vi.spyOn(runtime, 'resolveLocalManagedRepoCommit').mockResolvedValue(RECOVERY_TEST.revision)
     vi.spyOn(runtime, 'validateOrchestrationAgentLauncher').mockImplementation(() => undefined)
-    vi.spyOn(runtime, 'createManagedWorktree').mockImplementation(async (args) => {
-      successorHandle = args.workerGenerationTerminalOperation?.terminalHandle ?? successorHandle
+    vi.spyOn(runtime, 'createManagedWorktree').mockImplementation(async () => {
       return {
         worktree: { id: successorWorktreeId, repoId: 'repo' },
-        startupTerminal: { spawned: true, handle: successorHandle },
+        startupTerminal: { spawned: false },
         setupReceipt: {
           requested: 'run',
           hookFound: false,
@@ -171,28 +210,54 @@ describe('orchestration.workerRecover', () => {
       status: 'running',
       exitCode: null
     })
-    vi.spyOn(runtime, 'getOrchestrationDispatchAuthority').mockReturnValue({
-      terminalHandle: successorHandle,
-      paneKey: RECOVERY_TEST.successorPane,
-      processIncarnation: 'new-daemon:pty:process',
-      hostScope: {
-        kind: 'local',
-        hostId: 'local',
-        restartCustody: {
-          kind: 'windows_daemon_job',
-          daemonPid: 9000,
-          daemonStartedAtMs: 1_786_000_000_000,
-          daemonLaunchNonce: 'recovery-test-daemon'
+    const hostScope = {
+      kind: 'local' as const,
+      hostId: 'local',
+      restartCustody: {
+        kind: 'windows_daemon_job' as const,
+        daemonPid: 9000,
+        daemonStartedAtMs: 1_786_000_000_000,
+        daemonLaunchNonce: 'recovery-test-daemon'
+      }
+    }
+    vi.spyOn(runtime, 'getOrchestrationDispatchAuthority').mockImplementation(
+      (handle) =>
+        ({
+          terminalHandle: handle,
+          paneKey:
+            handle === 'term_coord' ? RECOVERY_TEST.coordinatorPane : RECOVERY_TEST.successorPane,
+          processIncarnation:
+            handle === 'term_coord' ? 'new-daemon:coord:process' : 'new-daemon:pty:process',
+          hostScope
+        }) as never
+    )
+    vi.spyOn(runtime, 'getTerminalOrchestrationCliCommand').mockReturnValue('orca')
+    vi.spyOn(runtime, 'resolveWorkerAgentProcessAdmission').mockReturnValue({
+      targetFingerprint: 'c'.repeat(64)
+    })
+    vi.spyOn(runtime, 'createAgentSession').mockImplementation(async (request) => {
+      const start = request.executionStart!
+      successorHandle = start.terminalHandle
+      return {
+        terminal: {
+          handle: successorHandle,
+          worktreeId: successorWorktreeId,
+          title: 'Codex',
+          surface: 'background'
+        },
+        disposition: 'created',
+        executionStartReceipt: {
+          ...start,
+          launchTokenHash: 'test-launch-token-hash',
+          paneKey: RECOVERY_TEST.successorPane,
+          processIncarnation: 'new-daemon:pty:process',
+          hostScope,
+          providerSession: { key: 'session_id', id: 'codex-successor' },
+          turnStartedAt: Date.now(),
+          semanticObservedAt: Date.now()
         }
       }
-    } as never)
-    vi.spyOn(runtime, 'getTerminalOrchestrationCliCommand').mockReturnValue('orca')
-    vi.spyOn(runtime, 'sendTerminalAgentPrompt').mockImplementation(
-      async (handle, _prompt, options) => {
-        options?.beforeWrite?.('pty-successor')
-        return { handle, accepted: true, bytesWritten: 1, semanticObservedAt: Date.now() }
-      }
-    )
+    })
     return {
       get successorHandle() {
         return successorHandle
@@ -242,6 +307,14 @@ describe('orchestration.workerRecover', () => {
       agent: 'codex'
     }
     const prepared = await prepareLocalWorkerExecution({ runtime, params })
+    const admission = prepareWorkerExecutionAdmission({
+      runtime,
+      task: fixture.task,
+      coordinatorHandle: params.from,
+      startOptions: prepared.startOptions,
+      launchPreferences: prepared.launch.preferences
+    })
+    prepared.startOptions = admission.startOptions
     const accepted = db.acceptLostCustodyWorkerRecovery({
       runId: fixture.run.id,
       consumerGeneration: fixture.run.consumer_generation,
@@ -255,7 +328,10 @@ describe('orchestration.workerRecover', () => {
       successorPlacement: 'new-child',
       successorName: 'successor-generation',
       authorization: 'acknowledge_possible_duplicate_external_effects',
-      startOptions: prepared.startOptions,
+      startOptions: admission.startOptions,
+      successorDispatchId: admission.dispatchId,
+      provisionalCapability: admission.provisionalCapability,
+      launchTokenHash: admission.launchTokenHash,
       runtimeEpoch: runtime.getRuntimeId(),
       mutationReceipt: {
         callerFingerprint: 'crash-seam-caller',
@@ -267,13 +343,10 @@ describe('orchestration.workerRecover', () => {
     return { prepared, started: accepted.successor }
   }
 
-  function completedWorktreeReceipt(
-    operations: ReturnType<typeof buildWorkerGenerationOperationIdentities>
-  ) {
+  function completedWorktreeReceipt() {
     return {
       worktreeId: 'repo::successor',
       instanceId: 'successor-instance',
-      terminalHandle: operations.terminal.terminalHandle,
       setup: {
         requested: 'run' as const,
         effective: 'run' as const,
@@ -317,7 +390,7 @@ describe('orchestration.workerRecover', () => {
     expect(runtime.createManagedWorktree).not.toHaveBeenCalledWith(
       expect.objectContaining({ repoSelector: 'repo::old-generation' })
     )
-    expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledOnce()
+    expect(runtime.createAgentSession).toHaveBeenCalledOnce()
     expect(db.getWorkerTerminalResource(fixture.resource.id)?.lifecycle_state).toBe('contained')
     expect(db.getDeliveryRaw(fixture.delivery.id)?.status).toBe('contained')
     const successor = db.getWorkerDispatch(result.dispatchId as string)!
@@ -374,7 +447,7 @@ describe('orchestration.workerRecover', () => {
     )
     expect(db.getDeliveryRaw(fixture.delivery.id)?.status).toBe('outstanding')
     expect(runtime.createManagedWorktree).not.toHaveBeenCalled()
-    expect(runtime.sendTerminalAgentPrompt).not.toHaveBeenCalled()
+    expect(runtime.createAgentSession).not.toHaveBeenCalled()
   })
   it('rejects the lost-custody physical workspace before containment or Git resolution', async () => {
     const fixture = createFixture()
@@ -400,13 +473,13 @@ describe('orchestration.workerRecover', () => {
     const { method, params, context } = invocation(fixture)
     const first = (await method.handler(params, context)) as Record<string, unknown>
     vi.mocked(runtime.createManagedWorktree).mockClear()
-    vi.mocked(runtime.sendTerminalAgentPrompt).mockClear()
+    vi.mocked(runtime.createAgentSession).mockClear()
 
     const replay = await method.handler(params, context)
 
     expect(replay).toMatchObject({ dispatchId: first.dispatchId, state: 'ready' })
     expect(runtime.createManagedWorktree).not.toHaveBeenCalled()
-    expect(runtime.sendTerminalAgentPrompt).not.toHaveBeenCalled()
+    expect(runtime.createAgentSession).not.toHaveBeenCalled()
   })
   it('runs one successor effect chain for independent concurrent requests', async () => {
     const fixture = createFixture()
@@ -415,12 +488,11 @@ describe('orchestration.workerRecover', () => {
     const worktreeGate = new Promise<void>((resolve) => {
       releaseWorktree = resolve
     })
-    vi.mocked(runtime.createManagedWorktree).mockImplementation(async (args) => {
+    vi.mocked(runtime.createManagedWorktree).mockImplementation(async () => {
       await worktreeGate
-      const handle = args.workerGenerationTerminalOperation!.terminalHandle
       return {
         worktree: { id: 'repo::successor', repoId: 'repo' },
-        startupTerminal: { spawned: true, handle },
+        startupTerminal: { spawned: false },
         setupReceipt: {
           requested: 'run',
           hookFound: false,
@@ -445,7 +517,7 @@ describe('orchestration.workerRecover', () => {
       processAction: 'none'
     })
     expect(runtime.createManagedWorktree).toHaveBeenCalledOnce()
-    expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledOnce()
+    expect(runtime.createAgentSession).toHaveBeenCalledOnce()
     expect(db.db.prepare('SELECT COUNT(*) AS count FROM worker_dispatches').get()).toEqual({
       count: 2
     })
@@ -466,11 +538,11 @@ describe('orchestration.workerRecover', () => {
     vi.mocked(runtime.createManagedWorktree).mockClear()
 
     await expect(method.handler(params, context)).resolves.toMatchObject({
-      state: 'outcome_unknown',
+      state: 'starting',
       processAction: 'none'
     })
     expect(runtime.createManagedWorktree).not.toHaveBeenCalled()
-    expect(runtime.sendTerminalAgentPrompt).not.toHaveBeenCalled()
+    expect(runtime.createAgentSession).not.toHaveBeenCalled()
   })
   it('resumes when only the worktree claim was persisted', async () => {
     const fixture = createFixture()
@@ -504,7 +576,7 @@ describe('orchestration.workerRecover', () => {
       stage: 'input_accepted'
     })
     expect(runtime.createManagedWorktree).toHaveBeenCalledOnce()
-    expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledOnce()
+    expect(runtime.createAgentSession).toHaveBeenCalledOnce()
   })
   it('resumes an exact worktree owner result that was not persisted in the database', async () => {
     const fixture = createFixture()
@@ -514,15 +586,13 @@ describe('orchestration.workerRecover', () => {
       dispatchId: accepted.started.dispatch.id,
       startOptions: accepted.prepared.startOptions
     })
-    for (const effectKind of ['worktree', 'terminal'] as const) {
-      db.claimWorkerGenerationOperation({
-        dispatchId: accepted.started.dispatch.id,
-        effectKind,
-        ...operations[effectKind],
-        claimantId: `prior-runtime:${effectKind}`
-      })
-    }
-    const ownerReceipt = completedWorktreeReceipt(operations)
+    db.claimWorkerGenerationOperation({
+      dispatchId: accepted.started.dispatch.id,
+      effectKind: 'worktree',
+      ...operations.worktree,
+      claimantId: 'prior-runtime:worktree'
+    })
+    const ownerReceipt = completedWorktreeReceipt()
     vi.spyOn(runtime, 'inspectManagedWorkerGenerationOperation').mockResolvedValue({
       verdict: 'completed',
       worktree: { id: 'repo::successor', repoId: 'repo' } as never,
@@ -542,9 +612,9 @@ describe('orchestration.workerRecover', () => {
       stage: 'input_accepted'
     })
     expect(runtime.createManagedWorktree).not.toHaveBeenCalled()
-    expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledOnce()
+    expect(runtime.createAgentSession).toHaveBeenCalledOnce()
   })
-  it('resumes exact terminal custody that was not persisted in the database', async () => {
+  it('resumes a started successor execution without resending its first turn', async () => {
     const fixture = createFixture()
     mockSuccessorRuntime()
     const accepted = await acceptPreparedSuccessor(fixture)
@@ -563,27 +633,23 @@ describe('orchestration.workerRecover', () => {
       effectKind: 'worktree',
       ...operations.worktree,
       claimantId: 'prior-runtime:worktree',
-      receipt: completedWorktreeReceipt(operations)
+      receipt: completedWorktreeReceipt()
     })
-    db.claimWorkerGenerationOperation({
-      dispatchId: accepted.started.dispatch.id,
-      effectKind: 'terminal',
-      ...operations.terminal,
-      claimantId: 'prior-runtime:terminal'
+    vi.mocked(runtime.createAgentSession).mockRejectedValueOnce(
+      Object.assign(new Error('create reply lost after provider start'), {
+        agentSessionOperationOutcome: 'unknown' as const
+      })
+    )
+
+    await expect(executePreparedSuccessor(fixture, accepted)).resolves.toMatchObject({
+      state: 'outcome_unknown',
+      stage: 'execution_start'
     })
-    const ownerReceipt = completedWorktreeReceipt(operations)
-    vi.spyOn(runtime, 'inspectManagedWorkerGenerationOperation').mockResolvedValue({
-      verdict: 'completed',
-      worktree: { id: 'repo::successor', repoId: 'repo' } as never,
-      receipt: {
-        ...ownerReceipt,
-        setup: {
-          requested: 'run',
-          hookFound: false,
-          startupPolicy: 'start-immediately',
-          state: 'not_configured'
-        }
-      }
+    vi.mocked(runtime.getRuntimeId).mockReturnValue('restarted-runtime')
+    vi.spyOn(runtime, 'inspectAgentSessionExecutionStart').mockResolvedValue({
+      verdict: 'started',
+      terminalHandle: operations.executionStart.terminalHandle,
+      processIncarnation: 'new-daemon:pty:process'
     })
 
     await expect(executePreparedSuccessor(fixture, accepted)).resolves.toMatchObject({
@@ -591,10 +657,10 @@ describe('orchestration.workerRecover', () => {
       stage: 'input_accepted'
     })
     expect(runtime.createManagedWorktree).not.toHaveBeenCalled()
-    expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledOnce()
+    expect(runtime.createAgentSession).toHaveBeenCalledTimes(2)
   })
 
-  it('resumes after authority and its durable receipt commit atomically', async () => {
+  it('commits the exact accepted successor receipt with Worker authority', async () => {
     const fixture = createFixture()
     mockSuccessorRuntime()
     const accepted = await acceptPreparedSuccessor(fixture)
@@ -602,210 +668,35 @@ describe('orchestration.workerRecover', () => {
       dispatchId: accepted.started.dispatch.id,
       startOptions: accepted.prepared.startOptions
     })
-    const worktreeReceipt = completedWorktreeReceipt(operations)
-    for (const [effectKind, identity, receipt] of [
-      ['worktree', operations.worktree, worktreeReceipt],
-      [
-        'terminal',
-        operations.terminal,
-        {
-          terminalHandle: operations.terminal.terminalHandle,
-          worktreeId: 'repo::successor',
-          paneKey: RECOVERY_TEST.successorPane,
-          processIncarnation: 'new-daemon:pty:process',
-          hostScope: JSON.stringify({ kind: 'local', hostId: 'local' })
-        }
-      ]
-    ] as const) {
-      db.claimWorkerGenerationOperation({
-        dispatchId: accepted.started.dispatch.id,
-        effectKind,
-        ...identity,
-        claimantId: `prior-runtime:${effectKind}`
-      })
-      db.completeWorkerGenerationOperation({
-        dispatchId: accepted.started.dispatch.id,
-        effectKind,
-        ...identity,
-        claimantId: `prior-runtime:${effectKind}`,
-        receipt
-      })
-    }
+    const worktreeReceipt = completedWorktreeReceipt()
     db.claimWorkerGenerationOperation({
       dispatchId: accepted.started.dispatch.id,
-      effectKind: 'authority',
-      ...operations.authority,
-      claimantId: 'prior-runtime:authority'
+      effectKind: 'worktree',
+      ...operations.worktree,
+      claimantId: 'prior-runtime:worktree'
     })
-    db.prepareStartingWorkerAuthority({
+    db.completeWorkerGenerationOperation({
       dispatchId: accepted.started.dispatch.id,
-      handle: operations.terminal.terminalHandle,
-      paneKey: RECOVERY_TEST.successorPane,
-      processIncarnation: 'new-daemon:pty:process',
-      hostScope: JSON.stringify({ kind: 'local', hostId: 'local' }),
-      worktreeId: 'repo::successor',
-      effects: [],
-      setupState: 'not_configured',
-      terminalOwnership: 'created',
-      generationOperation: { ...operations.authority, claimantId: 'prior-runtime:authority' }
+      effectKind: 'worktree',
+      ...operations.worktree,
+      claimantId: 'prior-runtime:worktree',
+      receipt: worktreeReceipt
     })
-
     await expect(executePreparedSuccessor(fixture, accepted)).resolves.toMatchObject({
       state: 'ready',
       stage: 'input_accepted'
     })
     expect(runtime.createManagedWorktree).not.toHaveBeenCalled()
-    expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledOnce()
-    expect(
-      db.readWorkerGenerationOperation({
-        dispatchId: accepted.started.dispatch.id,
-        effectKind: 'authority',
-        ...operations.authority
-      })
-    ).toMatchObject({ verdict: 'completed' })
-  })
-
-  it('does not complete prompt acceptance when the first PTY write fails', async () => {
-    const fixture = createFixture()
-    mockSuccessorRuntime()
-    vi.mocked(runtime.sendTerminalAgentPrompt).mockImplementation(
-      async (_handle, _prompt, options) => {
-        await options?.beforeWrite?.('pty-successor')
-        throw new Error('terminal_not_writable')
-      }
-    )
-    const accepted = await acceptPreparedSuccessor(fixture)
-
-    await expect(executePreparedSuccessor(fixture, accepted)).resolves.toMatchObject({
-      state: 'failed',
-      failedStage: 'dispatch_input'
-    })
-    expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledOnce()
-    const prompt = db.db
-      .prepare(
-        "SELECT state, receipt FROM worker_generation_operations WHERE dispatch_id = ? AND effect_kind = 'prompt'"
-      )
-      .get(accepted.started.dispatch.id) as { state: string; receipt: string | null }
-    expect(prompt).toEqual({ state: 'claimed', receipt: null })
-    expect(db.getWorkerDispatch(accepted.started.dispatch.id)).toMatchObject({
-      state: 'failed',
-      stage: 'dispatch_input'
-    })
-  })
-
-  it('does not complete prompt acceptance after only a prompt prefix is written', async () => {
-    const fixture = createFixture()
-    mockSuccessorRuntime()
-    vi.mocked(runtime.sendTerminalAgentPrompt).mockImplementation(
-      async (_handle, _prompt, options) => {
-        await options?.beforeWrite?.('pty-successor')
-        await options?.beforeWrite?.('pty-successor')
-        throw Object.assign(new Error('prompt write outcome unknown'), {
-          code: 'operation_unknown'
-        })
-      }
-    )
-    const accepted = await acceptPreparedSuccessor(fixture)
-
-    await expect(executePreparedSuccessor(fixture, accepted)).resolves.toMatchObject({
-      state: 'outcome_unknown'
-    })
+    expect(runtime.createAgentSession).toHaveBeenCalledOnce()
+    expect(db.getWorkerTerminalResourceByOwner(accepted.started.dispatch.id)).toBeDefined()
     expect(
       db.db
         .prepare(
-          "SELECT state, receipt FROM worker_generation_operations WHERE dispatch_id = ? AND effect_kind = 'prompt'"
+          "SELECT state FROM worker_generation_operations WHERE dispatch_id = ? AND effect_kind = 'execution_start'"
         )
         .get(accepted.started.dispatch.id)
-    ).toEqual({ state: 'claimed', receipt: null })
-    expect(db.getWorkerDispatch(accepted.started.dispatch.id)).toMatchObject({
-      state: 'start_unknown',
-      stage: 'dispatch_input'
-    })
-    vi.mocked(runtime.sendTerminalAgentPrompt).mockClear()
-
-    await expect(executePreparedSuccessor(fixture, accepted)).resolves.toMatchObject({
-      state: 'outcome_unknown',
-      processAction: 'none'
-    })
-    expect(runtime.sendTerminalAgentPrompt).not.toHaveBeenCalled()
+    ).toEqual({ state: 'completed' })
   })
-
-  it('resumes semantic prompt observation after restart without rewriting transport', async () => {
-    const fixture = createFixture()
-    mockSuccessorRuntime()
-    vi.mocked(runtime.sendTerminalAgentPrompt).mockRejectedValueOnce(
-      Object.assign(new Error('prompt reply lost'), { code: 'operation_unknown' })
-    )
-    const accepted = await acceptPreparedSuccessor(fixture)
-
-    await executePreparedSuccessor(fixture, accepted)
-    vi.mocked(runtime.getRuntimeId).mockReturnValue('restarted-runtime')
-    vi.mocked(runtime.sendTerminalAgentPrompt).mockClear()
-    const unconfirmed = Object.assign(new Error('submission_unconfirmed'), {
-      code: 'submission_unconfirmed'
-    })
-    const inspect = vi
-      .spyOn(runtime, 'inspectTerminalWorkerPromptOperation')
-      .mockRejectedValue(unconfirmed)
-
-    await expect(executePreparedSuccessor(fixture, accepted)).resolves.toMatchObject({
-      state: 'outcome_unknown',
-      failedStage: 'dispatch_input',
-      lastError: 'submission_unconfirmed'
-    })
-    expect(inspect).toHaveBeenCalledOnce()
-    expect(runtime.sendTerminalAgentPrompt).not.toHaveBeenCalled()
-  })
-
-  it.each([
-    ['not_started', 'ready', 1],
-    ['completed', 'ready', 0],
-    ['conflict', 'failed', 0],
-    ['unverifiable', 'outcome_unknown', 0]
-  ] as const)(
-    'applies the exact prompt owner %s readback without blind resend',
-    async (verdict, expectedState, expectedWrites) => {
-      const fixture = createFixture()
-      mockSuccessorRuntime()
-      vi.mocked(runtime.sendTerminalAgentPrompt).mockRejectedValueOnce(
-        Object.assign(new Error('prompt reply lost'), { code: 'operation_unknown' })
-      )
-      const accepted = await acceptPreparedSuccessor(fixture)
-      await expect(executePreparedSuccessor(fixture, accepted)).resolves.toMatchObject({
-        state: 'outcome_unknown',
-        failedStage: 'dispatch_input'
-      })
-      vi.mocked(runtime.getRuntimeId).mockReturnValue('restarted-runtime')
-      vi.mocked(runtime.sendTerminalAgentPrompt).mockClear()
-      vi.mocked(runtime.sendTerminalAgentPrompt).mockResolvedValue({
-        handle: 'term_successor',
-        accepted: true,
-        bytesWritten: 1,
-        semanticObservedAt: Date.now()
-      })
-      vi.spyOn(runtime, 'inspectTerminalWorkerPromptOperation').mockResolvedValue(
-        verdict === 'completed'
-          ? ({
-              verdict,
-              receipt: {
-                operationId: 'prompt-operation',
-                payloadFingerprint: 'prompt-fingerprint',
-                sessionIncarnationId: 'new-daemon:pty:process',
-                terminalHandle: 'term_successor',
-                completedAt: Date.now(),
-                semanticObservedAt: Date.now()
-              }
-            } as never)
-          : { verdict }
-      )
-
-      await expect(executePreparedSuccessor(fixture, accepted)).resolves.toMatchObject({
-        state: expectedState,
-        ...(verdict === 'unverifiable' ? { stage: 'prompt_operation_in_progress' } : {})
-      })
-      expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledTimes(expectedWrites)
-    }
-  )
 
   it.each(['live', 'unverifiable'] as const)(
     'keeps contained capacity withheld without process action when liveness is %s',
@@ -827,7 +718,7 @@ describe('orchestration.workerRecover', () => {
       ).resolves.toMatchObject({ state: 'contained', processAction: 'none' })
       expect(close).not.toHaveBeenCalled()
       expect(db.getWorkerTerminalResource(fixture.resource.id)?.lifecycle_state).toBe('contained')
-      expect(db.db.prepare('SELECT state FROM worker_terminal_capacity_debts').get()).toEqual({
+      expect(db.db.prepare('SELECT state FROM worker_execution_capacity_debts').get()).toEqual({
         state: 'withheld'
       })
     }

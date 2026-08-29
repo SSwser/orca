@@ -168,6 +168,7 @@ type PersistedAgentHookAuthorityCommitment = {
   tabId?: string
   worktreeId?: string
   observedAt: number
+  providerTurn?: AgentHookProviderTurnAcceptance
 }
 
 export type AgentHookStatusChangeEntry = {
@@ -190,11 +191,19 @@ export type AgentHookAuthorityEvidence = Readonly<{
   tabId?: string
   worktreeId?: string
   observedAt: number
+  providerTurn?: AgentHookProviderTurnAcceptance
+}>
+
+export type AgentHookProviderTurnAcceptance = Readonly<{
+  agent: AgentType
+  providerSession: AgentProviderSessionMetadata
+  acceptedAt: number
 }>
 
 export type AgentHookAuthorityAttestation = Readonly<{
   paneKey: string
   source: 'current_hook' | 'hydrated_commitment'
+  providerTurn?: AgentHookProviderTurnAcceptance
 }>
 
 type StatusChangeListener = (statuses: AgentHookStatusChangeEntry[]) => void
@@ -441,8 +450,36 @@ function sanitizePersistedAuthorityCommitment(
     connectionId,
     ...(typeof record.tabId === 'string' ? { tabId: record.tabId } : {}),
     ...(typeof record.worktreeId === 'string' ? { worktreeId: record.worktreeId } : {}),
-    observedAt
+    observedAt,
+    ...sanitizePersistedProviderTurn(record.providerTurn)
   })
+}
+
+function sanitizePersistedProviderTurn(
+  value: unknown
+): { providerTurn: AgentHookProviderTurnAcceptance } | Record<string, never> {
+  if (typeof value !== 'object' || value === null) {
+    return {}
+  }
+  const record = value as Record<string, unknown>
+  const agent = typeof record.agent === 'string' ? record.agent.trim() : ''
+  const providerSession = normalizeAgentProviderSession(record.providerSession)
+  const acceptedAt = record.acceptedAt
+  if (
+    !agent ||
+    !providerSession ||
+    typeof acceptedAt !== 'number' ||
+    !Number.isFinite(acceptedAt)
+  ) {
+    return {}
+  }
+  return {
+    providerTurn: Object.freeze({
+      agent: agent as AgentType,
+      providerSession: Object.freeze({ ...providerSession }),
+      acceptedAt
+    })
+  }
 }
 
 function authorityCommitmentsMatch(
@@ -456,6 +493,16 @@ function authorityCommitmentsMatch(
     left.tabId === right.tabId &&
     left.worktreeId === right.worktreeId
   )
+}
+
+function preserveFirstProviderTurn(
+  previous: AgentHookAuthorityEvidence | undefined,
+  next: AgentHookAuthorityEvidence
+): AgentHookAuthorityEvidence {
+  if (!previous?.providerTurn || !authorityCommitmentsMatch(previous, next)) {
+    return next
+  }
+  return Object.freeze({ ...next, providerTurn: previous.providerTurn })
 }
 
 function toAgentStatusIpcPayload(entry: EnrichedAgentHookEventPayload): AgentStatusIpcPayload {
@@ -842,8 +889,8 @@ export class AgentHookServer {
     if (statusDisposition === 'restart') {
       this.observations.rebind(event.paneKey)
     }
-    this.recordCurrentAuthorityObservation(event)
-    this.applyNormalizedStatus(event, normalized.onAccepted)
+    const enriched = this.applyNormalizedStatus(event, normalized.onAccepted)
+    this.recordCurrentAuthorityObservation(enriched)
     if (event.payload.state !== 'done') {
       this.withdrawReplayObservation(this.resolvePaneKeyAlias(event.paneKey))
     }
@@ -926,19 +973,28 @@ export class AgentHookServer {
       observations.length === 1 &&
       paneObservations.length === 1 &&
       this.resolvePaneKeyAlias(observations[0]!.paneKey) === paneKey
+    const attest = (
+      evidence: AgentHookAuthorityEvidence,
+      source: AgentHookAuthorityAttestation['source']
+    ): AgentHookAuthorityAttestation =>
+      Object.freeze({
+        paneKey,
+        source,
+        ...(evidence.providerTurn ? { providerTurn: evidence.providerTurn } : {})
+      })
     if (candidate.terminalProvenance === 'current_runtime') {
-      return hasUniqueCurrentObservation ? Object.freeze({ paneKey, source: 'current_hook' }) : null
+      return hasUniqueCurrentObservation ? attest(observations[0]!, 'current_hook') : null
     }
     if (commitments.length !== 1 || this.resolvePaneKeyAlias(commitments[0]!.paneKey) !== paneKey) {
       return null
     }
     if (observations.length === 0 && paneObservations.length === 0) {
-      return Object.freeze({ paneKey, source: 'hydrated_commitment' })
+      return attest(commitments[0]!, 'hydrated_commitment')
     }
     if (!hasUniqueCurrentObservation) {
       return null
     }
-    return Object.freeze({ paneKey, source: 'current_hook' })
+    return attest(observations[0]!, 'current_hook')
   }
 
   inferInterrupt(request: AgentInterruptInferenceRequest): boolean {
@@ -2528,8 +2584,7 @@ export class AgentHookServer {
           : undefined,
       payload: normalizedPayload
     }
-    this.recordCurrentAuthorityObservation(event)
-    this.applyNormalizedStatus(
+    const enriched = this.applyNormalizedStatus(
       event,
       applyClaudeBackgroundWork
         ? () => {
@@ -2541,6 +2596,7 @@ export class AgentHookServer {
           }
         : undefined
     )
+    this.recordCurrentAuthorityObservation(enriched)
   }
 
   async start(options?: {
@@ -2643,8 +2699,8 @@ export class AgentHookServer {
             // same key — later observations must not be ordered against the retired one.
             this.observations.rebind(event.paneKey)
           }
-          this.recordCurrentAuthorityObservation(event)
           const enriched = this.applyNormalizedStatus(event, normalized.onAccepted)
+          this.recordCurrentAuthorityObservation(enriched)
           this.scheduleAssistantMessageRetry(source, aliasedBody, enriched)
           this.scheduleCodexSubagentPoll(source, aliasedBody, enriched)
         }
@@ -3293,7 +3349,10 @@ export class AgentHookServer {
         dropped += 1
         continue
       }
-      this.persistedAuthorityCommitmentsByPaneKey.set(resolvedPaneKey, commitment)
+      this.persistedAuthorityCommitmentsByPaneKey.set(
+        resolvedPaneKey,
+        preserveFirstProviderTurn(existing, commitment)
+      )
       this.hydratedLaunchTokenHashByPaneKey.set(resolvedPaneKey, commitment.launchTokenHash)
     }
     if (dropped > 0) {
@@ -3329,9 +3388,13 @@ export class AgentHookServer {
   private recordCurrentAuthorityObservation(payload: AgentHookEventPayload): void {
     const evidence = this.toAuthorityEvidence(payload)
     if (evidence) {
-      this.currentAuthorityObservations.set(evidence.paneKey, evidence)
-      this.persistedAuthorityCommitmentsByPaneKey.set(evidence.paneKey, evidence)
-      this.hydratedLaunchTokenHashByPaneKey.set(evidence.paneKey, evidence.launchTokenHash)
+      const previous =
+        this.currentAuthorityObservations.get(evidence.paneKey) ??
+        this.persistedAuthorityCommitmentsByPaneKey.get(evidence.paneKey)
+      const retained = preserveFirstProviderTurn(previous, evidence)
+      this.currentAuthorityObservations.set(retained.paneKey, retained)
+      this.persistedAuthorityCommitmentsByPaneKey.set(retained.paneKey, retained)
+      this.hydratedLaunchTokenHashByPaneKey.set(retained.paneKey, retained.launchTokenHash)
     }
   }
 
@@ -3346,13 +3409,26 @@ export class AgentHookServer {
     if (!launchTokenHash) {
       return null
     }
+    const providerTurn =
+      payload.payload.state === 'working' &&
+      payload.payload.agentType &&
+      payload.providerSession &&
+      'stateStartedAt' in payload &&
+      Number.isFinite(payload.stateStartedAt)
+        ? Object.freeze({
+            agent: payload.payload.agentType,
+            providerSession: Object.freeze({ ...payload.providerSession }),
+            acceptedAt: payload.stateStartedAt
+          })
+        : undefined
     return Object.freeze({
       paneKey: payload.paneKey,
       launchTokenHash,
       connectionId: payload.connectionId,
       ...(payload.tabId ? { tabId: payload.tabId } : {}),
       ...(payload.worktreeId ? { worktreeId: payload.worktreeId } : {}),
-      observedAt: 'receivedAt' in payload ? payload.receivedAt : Date.now()
+      observedAt: 'receivedAt' in payload ? payload.receivedAt : Date.now(),
+      ...(providerTurn ? { providerTurn } : {})
     })
   }
 
@@ -3397,7 +3473,7 @@ export class AgentHookServer {
           delete authorityCommitments[paneKey]
           conflictedCommitments.add(paneKey)
         } else {
-          authorityCommitments[paneKey] = { ...commitment }
+          authorityCommitments[paneKey] = { ...preserveFirstProviderTurn(existing, commitment) }
         }
       }
     }

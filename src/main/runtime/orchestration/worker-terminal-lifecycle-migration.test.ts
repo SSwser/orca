@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import Database from '../../sqlite/sync-database'
 import { OrchestrationDb } from './db'
 import { SCHEMA_VERSION } from './db/contract-constants'
-import { migrateWorkerTerminalLifecycleV31 } from './db/schema/worker-terminal-lifecycle-v31'
+import { migrateWorkerExecutionLifecycleV31 } from './db/schema/worker-execution-lifecycle-v31'
 import { workerContainmentRecoveryTablesSql } from './db/schema/worker-containment-recovery-v31'
 import { migrateWorkerRecoveryOperationsV32 } from './db/schema/worker-recovery-operations-v32'
 
@@ -28,7 +28,7 @@ const LEGACY_RESOURCES: LegacyResource[] = [
   { id: 'owned', ownership: 'owned', release: 'not_requested' }
 ]
 
-describe('worker terminal lifecycle migration', () => {
+describe('worker execution lifecycle migration', () => {
   let db: OrchestrationDb | undefined
   let tempDir: string | undefined
 
@@ -121,7 +121,7 @@ describe('worker terminal lifecycle migration', () => {
 
     expect(sqlite.pragma('user_version', { simple: true })).toBe(32)
     expect(SCHEMA_VERSION).toBe(32)
-    const columns = sqlite.prepare('PRAGMA table_info(worker_terminal_resources)').all() as {
+    const columns = sqlite.prepare('PRAGMA table_info(worker_execution_resources)').all() as {
       name: string
     }[]
     expect(columns.map((column) => column.name)).toContain('lifecycle_state')
@@ -130,12 +130,12 @@ describe('worker terminal lifecycle migration', () => {
 
     const rows = sqlite
       .prepare(
-        `SELECT id, lifecycle_state, origin_dispatch_id, owner_dispatch_id,
+        `SELECT id, resource_kind, lifecycle_state, origin_dispatch_id, owner_dispatch_id,
                 prior_owner_dispatch_ids, worktree_id, terminal_handle, pane_key,
                 process_incarnation, host_scope, retained_reason, release_requested_at,
                 release_completed_at, release_error, archive_source, archive_status,
                 created_at, updated_at
-           FROM worker_terminal_resources ORDER BY id`
+           FROM worker_execution_resources ORDER BY id`
       )
       .all() as Record<string, string>[]
     expect(Object.fromEntries(rows.map((row) => [row.id, row.lifecycle_state]))).toEqual({
@@ -151,6 +151,7 @@ describe('worker terminal lifecycle migration', () => {
       user_owned: 'user_owned'
     })
     expect(rows.find((row) => row.id === 'release_unknown')).toMatchObject({
+      resource_kind: 'terminal',
       origin_dispatch_id: 'origin_release_unknown',
       owner_dispatch_id: 'owner_release_unknown',
       prior_owner_dispatch_ids: '["prior_release_unknown"]',
@@ -171,19 +172,19 @@ describe('worker terminal lifecycle migration', () => {
     const indexes = sqlite
       .prepare(
         `SELECT name FROM sqlite_master
-          WHERE type = 'index' AND tbl_name = 'worker_terminal_resources'`
+          WHERE type = 'index' AND tbl_name = 'worker_execution_resources'`
       )
       .all() as { name: string }[]
-    expect(indexes.map((row) => row.name)).toContain('idx_worker_terminal_resources_lifecycle')
+    expect(indexes.map((row) => row.name)).toContain('idx_worker_execution_resources_lifecycle')
     expect(
       sqlite
         .prepare(
-          "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('worker_lost_custody_recoveries', 'worker_workspace_generation_fences', 'worker_terminal_capacity_debts') ORDER BY name"
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('worker_lost_custody_recoveries', 'worker_workspace_generation_fences', 'worker_execution_capacity_debts') ORDER BY name"
         )
         .all()
     ).toEqual([
+      { name: 'worker_execution_capacity_debts' },
       { name: 'worker_lost_custody_recoveries' },
-      { name: 'worker_terminal_capacity_debts' },
       { name: 'worker_workspace_generation_fences' }
     ])
     const recoveryColumns = sqlite
@@ -222,6 +223,89 @@ describe('worker terminal lifecycle migration', () => {
     expect(recovery.sql).not.toContain('ownership_state')
     expect(recovery.sql).not.toContain('release_state')
     expect(operations.sql).toContain('state')
+    expect(operations.sql).not.toContain("'execution_resource'")
+    expect(operations.sql).not.toContain("'agent_turn'")
+    expect(() =>
+      sqlite
+        .prepare(
+          `INSERT INTO worker_execution_resources (
+             id, origin_dispatch_id, owner_dispatch_id, resource_kind, terminal_handle
+           ) VALUES (?, ?, ?, 'agent_session', ?)`
+        )
+        .run('unsupported-resource', 'unsupported-dispatch', 'unsupported-dispatch', 'term-session')
+    ).toThrow()
+  })
+
+  it('canonicalizes same-version v32 resource and capacity tables without losing evidence', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'orca-worker-v32-shape-migration-'))
+    const dbPath = join(tempDir, 'orchestration.db')
+    db = new OrchestrationDb(dbPath)
+    let sqlite = (db as unknown as { db: Database.Database }).db
+    sqlite
+      .prepare(
+        `INSERT INTO worker_execution_resources (
+           id, origin_dispatch_id, owner_dispatch_id, resource_kind, terminal_handle,
+           lifecycle_state, process_incarnation, host_scope
+         ) VALUES (?, ?, ?, 'terminal', ?, 'release_unknown', ?, ?)`
+      )
+      .run(
+        'resource-v32',
+        'dispatch-v32',
+        'dispatch-v32',
+        'terminal-v32',
+        'incarnation-v32',
+        'local'
+      )
+    sqlite
+      .prepare(
+        `INSERT INTO worker_execution_capacity_debts (resource_id, recovery_id)
+         VALUES (?, ?)`
+      )
+      .run('resource-v32', 'recovery-v32')
+    sqlite.exec(`
+      ALTER TABLE worker_execution_resources RENAME TO worker_terminal_resources;
+      ALTER TABLE worker_execution_capacity_debts RENAME TO worker_terminal_capacity_debts;
+    `)
+    db.close()
+    db = undefined
+
+    db = new OrchestrationDb(dbPath)
+    sqlite = (db as unknown as { db: Database.Database }).db
+
+    expect(db.getWorkerTerminalResource('resource-v32')).toMatchObject({
+      resource_kind: 'terminal',
+      lifecycle_state: 'release_unknown',
+      process_incarnation: 'incarnation-v32'
+    })
+    expect(
+      sqlite
+        .prepare(
+          'SELECT resource_id, recovery_id, state FROM worker_execution_capacity_debts WHERE resource_id = ?'
+        )
+        .get('resource-v32')
+    ).toEqual({ resource_id: 'resource-v32', recovery_id: 'recovery-v32', state: 'withheld' })
+    expect(
+      sqlite
+        .prepare(
+          `SELECT name FROM sqlite_master
+            WHERE type = 'table'
+              AND name IN ('worker_terminal_resources', 'worker_terminal_capacity_debts')`
+        )
+        .all()
+    ).toEqual([])
+    expect(
+      sqlite
+        .prepare(
+          `SELECT name FROM sqlite_master
+            WHERE type = 'index' AND tbl_name = 'worker_execution_resources'`
+        )
+        .all()
+    ).toEqual(
+      expect.arrayContaining([
+        { name: 'idx_worker_execution_resources_owner' },
+        { name: 'idx_worker_execution_resources_lifecycle' }
+      ])
+    )
   })
 
   it('rolls back and keeps v29 intact when a legacy state is unmappable', () => {
@@ -232,7 +316,7 @@ describe('worker terminal lifecycle migration', () => {
     let migrationError: unknown
     raw.exec('BEGIN IMMEDIATE')
     try {
-      migrateWorkerTerminalLifecycleV31(raw)
+      migrateWorkerExecutionLifecycleV31(raw)
       raw.pragma('user_version = 30')
       raw.exec('COMMIT')
     } catch (error) {
@@ -240,7 +324,7 @@ describe('worker terminal lifecycle migration', () => {
       raw.exec('ROLLBACK')
     }
     expect(migrationError).toMatchObject({
-      message: expect.stringMatching(/unmappable worker terminal lifecycle/i)
+      message: expect.stringMatching(/unmappable worker execution lifecycle/i)
     })
     expect(raw.pragma('user_version', { simple: true })).toBe(29)
     const columns = raw.prepare('PRAGMA table_info(worker_terminal_resources)').all() as {

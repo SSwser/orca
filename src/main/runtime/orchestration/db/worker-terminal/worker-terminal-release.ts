@@ -94,7 +94,7 @@ export function requestWorkerTerminalRelease(
       }
       this.db
         .prepare(
-          `UPDATE worker_terminal_resources
+          `UPDATE worker_execution_resources
            SET lifecycle_state = 'release_unknown', retained_reason = NULL,
                release_requested_at = COALESCE(release_requested_at, datetime('now')),
                release_error = 'The settled worker lost terminal custody; exact execution-host evidence is required.',
@@ -113,7 +113,7 @@ export function requestWorkerTerminalRelease(
     }
     this.db
       .prepare(
-        `UPDATE worker_terminal_resources
+        `UPDATE worker_execution_resources
          SET lifecycle_state = CASE
                WHEN lifecycle_state = 'release_closing' THEN 'release_closing'
                ELSE 'release_requested'
@@ -212,7 +212,7 @@ export function settleDeadWorkerTerminalRelease(
     }
     this.db
       .prepare(
-        `UPDATE worker_terminal_resources
+        `UPDATE worker_execution_resources
          SET lifecycle_state = 'released', retained_reason = NULL,
              release_requested_at = COALESCE(release_requested_at, datetime('now')),
              release_completed_at = datetime('now'), release_error = NULL,
@@ -260,7 +260,7 @@ export function resumeUnknownWorkerTerminalRelease(
     }
     this.db
       .prepare(
-        `UPDATE worker_terminal_resources
+        `UPDATE worker_execution_resources
          SET lifecycle_state = 'release_requested', release_error = NULL,
              updated_at = datetime('now')
          WHERE id = ? AND owner_dispatch_id = ? AND process_incarnation = ?

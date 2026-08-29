@@ -183,13 +183,14 @@ export function acknowledgeRunDelivery(
       if (message.type !== 'worker_done' || !message.payload) {
         continue
       }
+      let dispatchId: unknown
       try {
-        const dispatchId = (JSON.parse(message.payload) as { dispatchId?: unknown }).dispatchId
-        if (typeof dispatchId === 'string') {
-          finalizeWorkerTaskAfterResourceSettlement(this, dispatchId)
-        }
+        dispatchId = (JSON.parse(message.payload) as { dispatchId?: unknown }).dispatchId
       } catch {
         continue
+      }
+      if (typeof dispatchId === 'string') {
+        finalizeWorkerTaskAfterResourceSettlement(this, dispatchId)
       }
     }
     this.db

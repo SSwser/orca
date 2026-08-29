@@ -33,6 +33,24 @@ export const AGENT_SESSION_CLAIM_DIGEST_VERSION = 1 as const
 export const AGENT_SESSION_EXECUTION_OWNER_PROTOCOL_VERSION = 2 as const
 export const AGENT_SESSION_CREATE_OPERATION_PROTOCOL_VERSION = 1 as const
 
+export type AgentSessionCreateOperationIdentity = {
+  operationId: string
+  payloadFingerprint: string
+}
+
+export function isAgentSessionCreateOperationIdentity(
+  value: unknown
+): value is AgentSessionCreateOperationIdentity {
+  const candidate = value as Partial<AgentSessionCreateOperationIdentity> | null
+  return (
+    typeof candidate?.operationId === 'string' &&
+    candidate.operationId.length === 43 &&
+    /^[A-Za-z0-9_-]+$/.test(candidate.operationId) &&
+    typeof candidate.payloadFingerprint === 'string' &&
+    /^[0-9a-f]{64}$/.test(candidate.payloadFingerprint)
+  )
+}
+
 export const AGENT_SESSION_OPERATION_FUTURE_SKEW_MS = 5 * 60 * 1000
 export const AGENT_SESSION_MAX_NEW_OPERATION_AGE_MS = 24 * 60 * 60 * 1000
 
@@ -95,6 +113,40 @@ export type AgentLaunchPreferences = {
 
 export type AgentPromptDelivery = 'auto-submit' | 'draft'
 
+export type AgentSessionWriteFence = {
+  ownerId: string
+  generation: string
+}
+
+export type AgentSessionExecutionStartRequest = {
+  operationId: string
+  payloadFingerprint: string
+  targetFingerprint: string
+  terminalHandle: string
+  launchToken: string
+  writeFence: AgentSessionWriteFence
+  semanticBaselineAt: number
+  timeoutMs: number
+}
+
+export type AgentSessionExecutionStartReceipt = Omit<
+  AgentSessionExecutionStartRequest,
+  'launchToken'
+> & {
+  launchTokenHash: string
+  paneKey: string
+  processIncarnation: string
+  hostScope: unknown
+  providerSession: AgentProviderSessionMetadata
+  turnStartedAt: number
+  semanticObservedAt: number
+}
+
+export type AgentSessionExecutionStartInspection =
+  | { verdict: 'not_started' | 'conflict' | 'unverifiable' }
+  | { verdict: 'started'; terminalHandle: string; processIncarnation: string }
+  | { verdict: 'accepted'; receipt: AgentSessionExecutionStartReceipt }
+
 export type RuntimeEnsureAgentSessionRequest =
   | {
       kind: 'automatic'
@@ -132,11 +184,13 @@ export type RuntimeCreateAgentSessionRequest = {
   presentation?: RuntimeTerminalPresentation
   placement?: { tabId?: string; leafId?: string }
   viewMode?: 'terminal' | 'chat'
+  executionStart?: AgentSessionExecutionStartRequest
 }
 
 export type RuntimeCreateAgentSessionResult = {
   terminal: RuntimeTerminalCreate
   disposition: 'created' | 'replayed'
+  executionStartReceipt?: AgentSessionExecutionStartReceipt
 }
 
 export type RuntimeAgentSessionRpcCaller = {

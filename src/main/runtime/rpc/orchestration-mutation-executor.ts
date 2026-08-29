@@ -14,6 +14,7 @@ export type DurableMutationInvocation = {
   }
   recordReceipt: (receipt: unknown) => void
   deferCompletion: () => void
+  resumedWorkerStartDispatchId?: string
 }
 
 export class OrchestrationMutationExecutor {
@@ -65,9 +66,14 @@ export class OrchestrationMutationExecutor {
           return { disposition: row.state, row }
         })()
       : db.beginMutationReceipt(identity)
+    const pendingWorkerStartRecovery =
+      begun.disposition === 'pending' && request.method === 'orchestration.workerStart'
+        ? getPendingWorkerStartRecovery(request.method, begun.row.receipt)
+        : null
     const resumedPendingMutation =
       begun.disposition === 'pending' &&
-      ['orchestration.workerRelease', 'orchestration.workerRecover'].includes(request.method)
+      (pendingWorkerStartRecovery !== null ||
+        ['orchestration.workerRelease', 'orchestration.workerRecover'].includes(request.method))
 
     if (begun.disposition === 'completed') {
       const active = this.inFlight.get(key)
@@ -83,7 +89,8 @@ export class OrchestrationMutationExecutor {
       }
       if (
         request.method !== 'orchestration.workerRelease' &&
-        request.method !== 'orchestration.workerRecover'
+        request.method !== 'orchestration.workerRecover' &&
+        !pendingWorkerStartRecovery
       ) {
         const recovery = getPendingWorkerStartRecovery(request.method, begun.row.receipt)
         throw new OrchestrationError(
@@ -113,7 +120,14 @@ export class OrchestrationMutationExecutor {
       completionDeferred = true
     }
     const active = Promise.resolve().then(() =>
-      invoke({ identity, recordReceipt, deferCompletion })
+      invoke({
+        identity,
+        recordReceipt,
+        deferCompletion,
+        ...(pendingWorkerStartRecovery
+          ? { resumedWorkerStartDispatchId: pendingWorkerStartRecovery.dispatchId }
+          : {})
+      })
     )
     this.inFlight.set(key, active)
     try {

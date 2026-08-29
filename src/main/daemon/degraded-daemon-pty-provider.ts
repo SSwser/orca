@@ -19,7 +19,6 @@ import {
 } from './degraded-daemon-session-routing'
 import { DegradedDaemonFreshSpawnRouter } from './degraded-daemon-fresh-spawn-routing'
 import { DegradedDaemonOwnerRecovery } from './degraded-daemon-owner-recovery'
-import * as PromptOperations from './worker-prompt-operation-provider-routing'
 
 export class DegradedDaemonPtyProvider implements IPtyProvider {
   readonly isDegraded = true
@@ -115,21 +114,8 @@ export class DegradedDaemonPtyProvider implements IPtyProvider {
 
   async writeWithSettlement(id: string, data: string): Promise<boolean> {
     const provider = this.providerFor(id)
-    return provider.writeWithSettlement
-      ? await provider.writeWithSettlement(id, data)
-      : provider.write(id, data) !== false
+    return provider.writeWithSettlement ? await provider.writeWithSettlement(id, data) : false
   }
-
-  supportsWorkerPromptOperations = (id: string) =>
-    PromptOperations.supports(this.providerFor(id), id)
-  writeWorkerPromptOperation = (
-    id: string,
-    operation: Parameters<NonNullable<IPtyProvider['writeWorkerPromptOperation']>>[1]
-  ) => PromptOperations.write(this.providerFor(id), id, operation)
-  inspectWorkerPromptOperation = (
-    id: string,
-    identity: Parameters<NonNullable<IPtyProvider['inspectWorkerPromptOperation']>>[1]
-  ) => PromptOperations.inspect(this.providerFor(id), id, identity)
 
   resize(id: string, cols: number, rows: number): void {
     this.providerFor(id).resize(id, cols, rows)

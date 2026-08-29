@@ -464,6 +464,10 @@ export class LocalPtyProvider implements IPtyProvider {
    * Windows launches can pre-deliver startup commands in argv, so the stdin fallback only runs when needed.
    */
   async spawn(args: PtySpawnOptions): Promise<PtySpawnResult> {
+    if (args.target?.kind === 'agent-process') {
+      throw new Error('execution_owner_unavailable')
+    }
+    const command = args.target?.command
     const reattachId = normalizeLocalCallerSessionId(args.sessionId, args.attachOnly === true)
     if (reattachId) {
       const pendingShutdown = ptyShutdownOperations.get(reattachId)
@@ -484,15 +488,13 @@ export class LocalPtyProvider implements IPtyProvider {
     const id = allocatePtyId(reattachId ?? undefined)
     const incarnationId = randomUUID()
 
-    const startupAgentRecognition = args.command
-      ? recognizeAgentProcessFromCommandLine(args.command)
-      : null
+    const startupAgentRecognition = command ? recognizeAgentProcessFromCommandLine(command) : null
 
     const defaultCwd = getDefaultCwd()
     const cwd = args.cwd || defaultCwd
     // Why: gate on the effective cwd, not raw args.cwd — an omitted cwd becomes a safe default and must not be rejected as root-like.
-    if (args.command && startupAgentRecognition) {
-      assertSafeAgentStartupCwd(cwd, args.command)
+    if (command && startupAgentRecognition) {
+      assertSafeAgentStartupCwd(cwd, command)
     }
     const wslInfo = process.platform === 'win32' ? parseWslPath(cwd) : null
     const worktreeWslContext =
@@ -572,7 +574,7 @@ export class LocalPtyProvider implements IPtyProvider {
         cwd,
         defaultCwd,
         wslContext: launchWslContext,
-        startupCommand: args.command
+        startupCommand: command
       })
       const primaryAttempt = windowsFallbackAttempts[0]
       if (primaryAttempt) {
@@ -587,7 +589,7 @@ export class LocalPtyProvider implements IPtyProvider {
           cwd,
           defaultCwd,
           launchWslContext,
-          args.command
+          command
         )
         shellArgs = resolved.shellArgs
         effectiveCwd = resolved.effectiveCwd
@@ -646,7 +648,7 @@ export class LocalPtyProvider implements IPtyProvider {
       ? await awaitCancelableLocalPtySpawn(
           id,
           this.opts.buildSpawnEnv(id, spawnEnv, {
-            command: args.command,
+            command,
             launchAgent: args.launchAgent,
             codexHomePathOverride: args.codexHomePathOverride,
             cwd,
@@ -722,7 +724,7 @@ export class LocalPtyProvider implements IPtyProvider {
           cwd,
           defaultCwd,
           launchWslContext,
-          args.command,
+          command,
           codexLaunchPreflightCommand
         )
         shellArgs = resolved.shellArgs
@@ -787,10 +789,10 @@ export class LocalPtyProvider implements IPtyProvider {
       const isCodexStartupCommand = startupAgentRecognition?.agent === 'codex'
       // Why: payload-bearing Codex startup can be lost to rc-file noise; plain Codex stays markerless for startup speed.
       const waitsForShellReady =
-        Boolean(args.command) &&
+        Boolean(command) &&
         (!isCodexStartupCommand ||
           shouldUseShellReadyStartupDelivery({
-            command: args.command as string,
+            command: command as string,
             startupCommandDelivery: args.startupCommandDelivery
           }))
       // Why delete: ORCA_SHELL_FEATURES is Orca-owned, and only the launch
@@ -802,7 +804,7 @@ export class LocalPtyProvider implements IPtyProvider {
           selectShellStartupFeatures({
             shellPath: shell,
             env: finalEnv,
-            hasStartupCommand: Boolean(args.command),
+            hasStartupCommand: Boolean(command),
             waitsForShellReady,
             // Why identical: the identity marker exists so the readiness
             // handshake can bind output to the right shell PID.
@@ -812,7 +814,7 @@ export class LocalPtyProvider implements IPtyProvider {
       const shellLaunch = getFallbackShellReadyConfig(shellPath)
       Object.assign(finalEnv, shellLaunch.env)
       shellArgs = shellLaunch.args ?? shellArgs
-      shellReadyLaunch = args.command ? shellLaunch : null
+      shellReadyLaunch = command ? shellLaunch : null
       primaryLaunchEnvKeys = Object.keys(shellLaunch.env)
     }
 
@@ -850,7 +852,7 @@ export class LocalPtyProvider implements IPtyProvider {
     if (spawnResult.startupCommandDeliveredInShellArgs !== undefined) {
       startupCommandDeliveredInShellArgs = spawnResult.startupCommandDeliveredInShellArgs
     }
-    if (args.command && getFallbackShellReadyConfig) {
+    if (command && getFallbackShellReadyConfig) {
       shellReadyLaunch = getFallbackShellReadyConfig(shellPath)
     }
 
@@ -933,7 +935,7 @@ export class LocalPtyProvider implements IPtyProvider {
     let shellStartupOutputScanState = shellReadyLaunch?.supportsReadyMarker
       ? createShellStartupOutputScanState()
       : null
-    const shellReadyPromise = args.command
+    const shellReadyPromise = command
       ? new Promise<ShellReadySignal>((resolve) => {
           resolveShellReady = resolve
         })
@@ -979,7 +981,7 @@ export class LocalPtyProvider implements IPtyProvider {
         }
       })
     }
-    if (args.command) {
+    if (command) {
       if (shellReadyLaunch?.supportsReadyMarker) {
         shellReadyTimeout = setTimeout(() => {
           releaseHeldShellReadyBytes()
@@ -990,7 +992,7 @@ export class LocalPtyProvider implements IPtyProvider {
       }
     }
     let startupCommandCleanup: (() => void) | null = null
-    if (args.command) {
+    if (command) {
       ptyCleanupCallbacks.set(id, () => {
         if (shellReadyTimeout) {
           clearTimeout(shellReadyTimeout)
@@ -1065,7 +1067,7 @@ export class LocalPtyProvider implements IPtyProvider {
     }
     ptyDisposables.set(id, disposables)
 
-    if (args.command && !startupCommandDeliveredInShellArgs) {
+    if (command && !startupCommandDeliveredInShellArgs) {
       // Why: shells with bracketed paste armed take a multiline startup prompt literally; others use raw submit.
       const spawnedShellName = getSpawnedShellName(shellPath).toLowerCase()
       const bracketedPasteSafe =
@@ -1077,7 +1079,7 @@ export class LocalPtyProvider implements IPtyProvider {
       writeStartupCommandWhenShellReady(
         shellReadyPromise,
         proc,
-        args.command,
+        command,
         (cleanup) => {
           startupCommandCleanup = cleanup
         },

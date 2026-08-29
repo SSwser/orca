@@ -145,6 +145,7 @@ describe('createPtySubprocess', () => {
       sessionId: 'canceled-validation',
       cols: 80,
       rows: 24,
+      cwd: process.cwd(),
       isCanceled: () => canceled
     })
     await vi.waitFor(() => expect(validateWorkingDirectoryMock).toHaveBeenCalled())
@@ -250,7 +251,7 @@ describe('createPtySubprocess', () => {
         cols: 80,
         rows: 24,
         env: {},
-        command: 'echo hi'
+        target: { kind: 'shell-command', command: 'echo hi' }
       })
 
       expect(handle.shellPath).toBe('/bin/sh')
@@ -470,7 +471,7 @@ describe('createPtySubprocess', () => {
           sessionId: 'test',
           cols: 80,
           rows: 24,
-          command: 'opencode'
+          target: { kind: 'shell-command', command: 'opencode' }
         })
       ).resolves.not.toThrow()
 
@@ -503,7 +504,7 @@ describe('createPtySubprocess', () => {
           cols: 80,
           rows: 24,
           cwd: '/',
-          command: 'claude'
+          target: { kind: 'shell-command', command: 'claude' }
         })
       ).rejects.toThrow(/requires a non-root workspace/)
     } finally {

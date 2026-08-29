@@ -54,16 +54,17 @@ export function createPtyShellLaunchPlan(
   opts: PtySubprocessOptions,
   env: Record<string, string>
 ): PtyShellLaunchPlan {
+  const command = opts.target?.kind === 'shell-command' ? opts.target.command : undefined
   const resolvedWslContext = resolveWslSessionContext(opts)
   let shellPath = resolvedWslContext ? 'wsl.exe' : opts.shellOverride || resolvePtyShellPath(env)
   let shellArgs: string[]
   let startupCommandDeliveredInShellArgs = false
   let windowsFallbackAttempts: WindowsShellSpawnAttempt[] = []
-  const startupAgentRecognition = recognizeAgentProcessFromCommandLine(opts.command)
+  const startupAgentRecognition = recognizeAgentProcessFromCommandLine(command)
   const isCodexStartupCommand = startupAgentRecognition?.agent === 'codex'
   const requestedCwd = opts.cwd || resolveSafePtyDefaultCwd()
-  if (opts.command && startupAgentRecognition) {
-    assertSafeAgentStartupCwd(requestedCwd, opts.command)
+  if (command && startupAgentRecognition) {
+    assertSafeAgentStartupCwd(requestedCwd, command)
   }
   let spawnCwd = requestedCwd
   let validationCwd = spawnCwd
@@ -108,7 +109,7 @@ export function createPtyShellLaunchPlan(
       cwd: spawnCwd,
       defaultCwd: resolveSafePtyDefaultCwd(),
       wslContext: resolvedWslContext,
-      startupCommand: opts.command
+      startupCommand: command
     })
     const primaryAttempt = windowsFallbackAttempts[0]
     if (primaryAttempt) {
@@ -123,7 +124,7 @@ export function createPtyShellLaunchPlan(
         spawnCwd,
         resolveSafePtyDefaultCwd(),
         resolvedWslContext,
-        opts.command,
+        command,
         env.ORCA_CODEX_LAUNCH_PREFLIGHT
       )
       shellArgs = resolved.shellArgs
@@ -151,7 +152,7 @@ export function createPtyShellLaunchPlan(
               requestedCwd,
               resolveSafePtyDefaultCwd(),
               { distro: codexHomeWslInfo.distro },
-              opts.command,
+              command,
               env.ORCA_CODEX_LAUNCH_PREFLIGHT
             )
             shellArgs = resolved.shellArgs
@@ -191,10 +192,10 @@ export function createPtyShellLaunchPlan(
       )
     }
     const waitsForShellReady =
-      Boolean(opts.command) &&
+      Boolean(command) &&
       (!isCodexStartupCommand ||
         shouldUseShellReadyStartupDelivery({
-          command: opts.command as string,
+          command: command as string,
           startupCommandDelivery: opts.startupCommandDelivery
         }))
     delete env.ORCA_SHELL_FEATURES
@@ -203,7 +204,7 @@ export function createPtyShellLaunchPlan(
       selectShellStartupFeatures({
         shellPath,
         env,
-        hasStartupCommand: Boolean(opts.command),
+        hasStartupCommand: Boolean(command),
         waitsForShellReady,
         emitsStartupIdentity: waitsForShellReady
       })

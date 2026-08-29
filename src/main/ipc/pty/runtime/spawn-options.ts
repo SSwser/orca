@@ -89,8 +89,9 @@ export async function buildRuntimePtySpawnOptions(
   }
   deleteRequestedEnvKeys(ctx.env, ctx.spawnOptions.envToDelete)
   promoteAgentTeamsShimPath(ctx.env, ctx.requestedAgentTeamsPath)
-  if (ctx.launchCommand !== undefined) {
-    ctx.spawnOptions.command = ctx.launchCommand
+  ctx.spawnOptions.target = args.spawnTarget ?? {
+    kind: 'shell-command',
+    ...(ctx.launchCommand !== undefined ? { command: ctx.launchCommand } : {})
   }
   if (args.commandDelivery !== undefined) {
     ctx.spawnOptions.commandDelivery = args.commandDelivery
@@ -161,6 +162,9 @@ export async function buildRuntimePtySpawnOptions(
   }
   if (!ctx.preAdoptedStablePane && args.agentSessionCreateOperationId) {
     ctx.spawnOptions.agentSessionCreateOperationId = args.agentSessionCreateOperationId
+  }
+  if (!ctx.preAdoptedStablePane && args.agentSessionCreateOperation) {
+    ctx.spawnOptions.agentSessionCreateOperation = args.agentSessionCreateOperation
   }
   if (args.signal) {
     ctx.spawnOptions.signal = args.signal

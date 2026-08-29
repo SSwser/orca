@@ -166,7 +166,7 @@ describe('LocalPtyProvider', () => {
       await provider.spawn({
         cols: 80,
         rows: 24,
-        command: 'printf ready',
+        target: { kind: 'shell-command', command: 'printf ready' },
         env: { PATH: '/pre-hook/bin' }
       })
 
@@ -187,7 +187,11 @@ describe('LocalPtyProvider', () => {
         })
         spawnMock.mockReturnValue(mockProc)
 
-        await provider.spawn({ cols: 80, rows: 24, command: "printf 'linked issue context'" })
+        await provider.spawn({
+          cols: 80,
+          rows: 24,
+          target: { kind: 'shell-command', command: "printf 'linked issue context'" }
+        })
 
         expect(spawnMock.mock.calls[0]?.[0]).toBe('/bin/zsh')
         await Promise.resolve()
@@ -218,7 +222,11 @@ describe('LocalPtyProvider', () => {
       const received: string[] = []
       provider.configure({ onData: (_id, data) => received.push(data) })
 
-      await provider.spawn({ cols: 80, rows: 24, command: 'printf ready' })
+      await provider.spawn({
+        cols: 80,
+        rows: 24,
+        target: { kind: 'shell-command', command: 'printf ready' }
+      })
       const dataCallback = mockProc.onData.mock.calls[0]?.[0] as (data: string) => void
       for (const chunk of chunks) {
         dataCallback(chunk)
@@ -232,7 +240,11 @@ describe('LocalPtyProvider', () => {
       const onData = vi.fn()
       provider.configure({ onData })
       try {
-        await provider.spawn({ cols: 80, rows: 24, command: 'printf ready' })
+        await provider.spawn({
+          cols: 80,
+          rows: 24,
+          target: { kind: 'shell-command', command: 'printf ready' }
+        })
         const dataCallback = mockProc.onData.mock.calls[0]?.[0] as (data: string) => void
 
         dataCallback('\x1b]777;orca-shell-ready')
@@ -260,7 +272,11 @@ describe('LocalPtyProvider', () => {
       const onData = vi.fn()
       provider.configure({ onData })
 
-      await provider.spawn({ cols: 80, rows: 24, command: 'printf ready' })
+      await provider.spawn({
+        cols: 80,
+        rows: 24,
+        target: { kind: 'shell-command', command: 'printf ready' }
+      })
       const dataCallback = mockProc.onData.mock.calls[0]?.[0] as (data: string) => void
 
       dataCallback('\x1b]777;orca-shell-ready')

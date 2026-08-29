@@ -37,7 +37,7 @@ export async function createOrAttachClaimedAgentSession(args: {
   const adopted = await args.createOrAttach({
     ...args.options,
     sessionId: ensured.owner.ptyId,
-    command: undefined,
+    target: undefined,
     agentSessionEnsure: undefined,
     attachOnly: true
   })

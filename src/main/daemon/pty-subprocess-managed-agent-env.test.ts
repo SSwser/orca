@@ -273,7 +273,7 @@ describe('createPtySubprocess', () => {
         cols: 80,
         rows: 24,
         cwd: '/repo',
-        command: 'codex',
+        target: { kind: 'shell-command', command: 'codex' },
         env: { SHELL: '/bin/zsh' }
       })
     } finally {
@@ -300,7 +300,7 @@ describe('createPtySubprocess', () => {
         cols: 80,
         rows: 24,
         cwd: '/repo',
-        command: "codex 'linked issue context'",
+        target: { kind: 'shell-command', command: "codex 'linked issue context'" },
         startupCommandDelivery: 'shell-ready',
         env: { SHELL: '/bin/zsh' }
       })
@@ -328,7 +328,7 @@ describe('createPtySubprocess', () => {
         cols: 80,
         rows: 24,
         cwd: '/repo',
-        command: "codex --prefill 'linked issue context'",
+        target: { kind: 'shell-command', command: "codex --prefill 'linked issue context'" },
         env: { SHELL: '/bin/zsh' }
       })
     } finally {

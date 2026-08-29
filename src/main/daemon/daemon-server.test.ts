@@ -16,15 +16,6 @@ import {
   type DaemonServerPrivate
 } from './daemon-server-test-fixture'
 
-const SEMANTIC_BASELINE = {
-  observedAt: 1,
-  permissionSequence: 0,
-  workingSequence: 0,
-  explicitWorkingStartedAt: null,
-  outputSequence: 0,
-  status: 'idle' as const
-}
-
 function createTestDir(): string {
   return mkdtempSync(join(tmpdir(), 'daemon-server-test-'))
 }
@@ -113,6 +104,81 @@ describe('DaemonServer', () => {
       await expect(
         c.request('closeStartupQueryAuthority', { sessionId: 'test-session' })
       ).resolves.toEqual({ appliedSeq: 0 })
+    })
+
+    it('returns the exact Agent Session create operation over the daemon wire', async () => {
+      await startServer()
+      const c = await connectClient()
+      const operation = {
+        operationId: 'a'.repeat(43),
+        payloadFingerprint: 'b'.repeat(64)
+      }
+
+      const created = await c.request('createOrAttach', {
+        sessionId: 'agent-session-operation',
+        cols: 80,
+        rows: 24,
+        agentSessionCreateOperation: operation
+      })
+      const replayed = await c.request('createOrAttach', {
+        sessionId: 'agent-session-operation',
+        cols: 80,
+        rows: 24,
+        agentSessionCreateOperation: operation
+      })
+
+      expect(created).toMatchObject({ isNew: true, agentSessionCreateOperation: operation })
+      expect(replayed).toMatchObject({ isNew: false, agentSessionCreateOperation: operation })
+    })
+
+    it('passes one structured agent process target to the PTY owner without shell text', async () => {
+      const spawnSubprocess = vi.fn(() => createMockSubprocess())
+      server = new DaemonServer({ socketPath, tokenPath, spawnSubprocess })
+      await server.start()
+      const c = await connectClient()
+      const executable =
+        process.platform === 'win32'
+          ? 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+          : '/usr/bin/powershell'
+      const target = {
+        kind: 'agent-process' as const,
+        executable,
+        argv: ['-File', 'C:\\Program Files\\nodejs\\codex.ps1', 'line one\n"quoted" CJK 任务'],
+        envPatch: { set: { CODEX_HOME: 'C:\\profile' }, delete: ['STALE_CODEX_HOME'] },
+        expectedProcess: 'codex'
+      }
+
+      await c.request('createOrAttach', {
+        sessionId: 'structured-agent-process',
+        cols: 80,
+        rows: 24,
+        target
+      })
+
+      expect(spawnSubprocess).toHaveBeenCalledWith(expect.objectContaining({ target }))
+    })
+
+    it('rejects a non-absolute agent process before allocating a PTY', async () => {
+      const spawnSubprocess = vi.fn(() => createMockSubprocess())
+      server = new DaemonServer({ socketPath, tokenPath, spawnSubprocess })
+      await server.start()
+      const c = await connectClient()
+
+      await expect(
+        c.request('createOrAttach', {
+          sessionId: 'invalid-agent-process',
+          cols: 80,
+          rows: 24,
+          target: {
+            kind: 'agent-process',
+            executable: 'codex',
+            argv: ['prompt'],
+            envPatch: { set: {}, delete: [] },
+            expectedProcess: 'codex'
+          }
+        })
+      ).rejects.toThrow('terminal_spawn_target_invalid')
+      expect(spawnSubprocess).not.toHaveBeenCalled()
     })
 
     it('keeps RPC responsive and creates one subprocess while spawn preparation is pending', async () => {
@@ -385,68 +451,6 @@ describe('DaemonServer', () => {
 
       // Give the server time to process
       await new Promise((r) => setTimeout(r, 50))
-    })
-
-    it('retains a completed worker prompt operation when the submit reply is lost', async () => {
-      let subprocess!: ReturnType<typeof createMockSubprocess>
-      server = new DaemonServer({
-        socketPath,
-        tokenPath,
-        spawnSubprocess: () => {
-          subprocess = createMockSubprocess()
-          return subprocess
-        }
-      })
-      await server.start()
-      const firstClient = await connectClient()
-      const created = await firstClient.request<{ incarnationId: string }>('createOrAttach', {
-        sessionId: 'test-session',
-        cols: 80,
-        rows: 24,
-        env: { ORCA_TERMINAL_HANDLE: 'term_worker' }
-      })
-      const identity = {
-        operationId: 'prompt-operation',
-        payloadFingerprint: 'prompt-fingerprint',
-        sessionIncarnationId: created.incarnationId,
-        terminalHandle: 'term_worker'
-      }
-      const lostReplySocket = await connectRawHello('control', 'lost-prompt-reply')
-      lostReplySocket.on('data', () => {})
-      lostReplySocket.write(
-        encodeNdjson({
-          id: 'prompt-paste',
-          type: 'writeWorkerPromptOperation',
-          payload: {
-            sessionId: 'test-session',
-            ...identity,
-            step: { kind: 'paste', index: 0, count: 1, data: 'prompt' }
-          }
-        })
-      )
-      await vi.waitFor(() => expect(subprocess.writeAcknowledged).toHaveBeenCalledOnce())
-      lostReplySocket.write(
-        encodeNdjson({
-          id: 'prompt-submit',
-          type: 'writeWorkerPromptOperation',
-          payload: {
-            sessionId: 'test-session',
-            ...identity,
-            step: { kind: 'submit', data: '\r', semanticBaseline: SEMANTIC_BASELINE }
-          }
-        })
-      )
-      await vi.waitFor(() => expect(subprocess.writeAcknowledged).toHaveBeenCalledTimes(2))
-      lostReplySocket.destroy()
-      firstClient.disconnect()
-
-      const reconnected = await connectClient()
-      await expect(
-        reconnected.request('inspectWorkerPromptOperation', {
-          sessionId: 'test-session',
-          ...identity
-        })
-      ).resolves.toMatchObject({ verdict: 'completed', receipt: identity })
     })
 
     it('handles resize', async () => {

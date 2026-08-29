@@ -1,18 +1,31 @@
-import type { AgentLaunchPreferences } from '../../../../shared/agent-session-host-authority'
-import type { TuiAgent } from '../../../../shared/tui-agent'
 import type { OrcaRuntimeService } from '../../orca-runtime'
 import type { OrchestrationDb } from '../../orchestration/db'
 import type { WorkerGenerationOperationIdentity } from './orchestration-worker-generation-identity'
 import type { WorkerEffect, WorkerSetupReceipt } from './orchestration-worker-start-effects'
 
-export type { WorkerEffect, WorkerSetupReceipt } from './orchestration-worker-start-effects'
+export {
+  EXISTING_WORKTREE_SETUP_RECEIPT,
+  type WorkerEffect,
+  type WorkerSetupReceipt
+} from './orchestration-worker-start-effects'
 
 export function isUnknownWorkerStartOutcome(error: unknown, stage: string): boolean {
+  if (
+    error &&
+    typeof error === 'object' &&
+    (error as { agentSessionOperationOutcome?: unknown }).agentSessionOperationOutcome === 'unknown'
+  ) {
+    return true
+  }
   const code =
     error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
       ? (error as { code: string }).code
       : ''
-  if (code === 'operation_unknown' || code === 'submission_unconfirmed') {
+  if (
+    code === 'operation_unknown' ||
+    code === 'worker_execution_start_unconfirmed' ||
+    code === 'worker_execution_start_unverifiable'
+  ) {
     return true
   }
   if (stage !== 'worktree_create') {
@@ -48,62 +61,15 @@ export function requireWorkerAuthority(
   }
 }
 
-export async function createExistingWorktreeWorkerTerminal(args: {
-  runtime: OrcaRuntimeService
-  worktreeId: string
-  agent: TuiAgent
-  launchPreferences?: AgentLaunchPreferences
-  taskId: string
-  operation?: WorkerGenerationOperationIdentity & {
-    terminalHandle: string
-    tabId: string
-    leafId: string
-  }
-  effects: WorkerEffect[]
-}): Promise<{ handle: string; warning?: string }> {
-  const terminal = await args.runtime.createTerminal(`id:${args.worktreeId}`, {
-    // Why: the agent id is not a shell command — `cursor` resolves to the Cursor
-    // desktop app while its CLI is `cursor-agent`. Let the runtime build the
-    // configured launcher instead of executing the raw id.
-    startupAgent: args.agent,
-    requireHostCrashContainment: true,
-    ...(args.launchPreferences ? { launchPreferences: args.launchPreferences } : {}),
-    title: `worker-${args.taskId}`,
-    ...(args.operation
-      ? {
-          preAllocatedHandle: args.operation.terminalHandle,
-          tabId: args.operation.tabId,
-          leafId: args.operation.leafId,
-          agentSessionCreateOperationId: args.operation.operationId
-        }
-      : {}),
-    // Why: dispatching a worker is background work; it must not pull the sidebar
-    // to the worker's workspace while the user is reading somewhere else.
-    surfaceOwner: false
-  })
-  if (args.operation && terminal.handle !== args.operation.terminalHandle) {
-    throw new Error('worker_generation_terminal_identity_conflict')
-  }
-  args.effects.push({
-    kind: 'terminal',
-    role: 'agent',
-    action: 'created',
-    id: terminal.handle,
-    surface: terminal.surface,
-    warning: terminal.warning
-  })
-  return { handle: terminal.handle, warning: terminal.warning }
-}
-
 export function applyWaitForSetupOutcome(
   receipt: WorkerSetupReceipt,
   effects: WorkerEffect[],
-  wait: { satisfied: boolean; status: string }
+  wait: { satisfied: boolean; status: string; exitCode?: number | null }
 ): void {
   if (receipt.startupPolicy !== 'wait-for-setup' || receipt.state !== 'running') {
     return
   }
-  if (wait.satisfied) {
+  if (wait.satisfied && wait.exitCode === 0) {
     receipt.state = 'succeeded'
   } else if (wait.status === 'exited') {
     receipt.state = 'failed'
@@ -131,20 +97,12 @@ export async function createWorkerWorktree(args: {
     setup?: 'run' | 'skip' | 'inherit'
     from: string
   }
-  agent: TuiAgent
-  launchPreferences?: AgentLaunchPreferences
   operations?: {
     worktree: WorkerGenerationOperationIdentity & { branchName: string }
-    terminal: WorkerGenerationOperationIdentity & {
-      terminalHandle: string
-      tabId: string
-      leafId: string
-    }
   }
   effects: WorkerEffect[]
 }): Promise<{
   worktree: Awaited<ReturnType<OrcaRuntimeService['showManagedWorktree']>>
-  terminalHandle: string
   setupReceipt: WorkerSetupReceipt
 }> {
   const { runtime, db, dispatchId, requestedWorktree, coordinatorWorktree, params, effects } = args
@@ -162,25 +120,15 @@ export async function createWorkerWorktree(args: {
     setupDecision,
     awaitTerminalProvisioning: true,
     observeSetupCompletion: true,
-    createdWithAgent: args.agent,
-    startupAgent: args.agent,
-    requireStartupHostCrashContainment: true,
+    suppressInitialTerminal: true,
     ...(args.operations
       ? {
           workerGenerationOperation: {
             operationId: args.operations.worktree.operationId,
             payloadFingerprint: args.operations.worktree.payloadFingerprint
-          },
-          workerGenerationTerminalOperation: {
-            operationId: args.operations.terminal.operationId,
-            payloadFingerprint: args.operations.terminal.payloadFingerprint,
-            terminalHandle: args.operations.terminal.terminalHandle,
-            tabId: args.operations.terminal.tabId,
-            leafId: args.operations.terminal.leafId
           }
         }
       : {}),
-    ...(args.launchPreferences ? { startupLaunchPreferences: args.launchPreferences } : {}),
     activate: false,
     lineage: {
       parentWorktree: requestedWorktree === 'new-child' ? coordinatorWorktree.id : undefined,
@@ -188,10 +136,6 @@ export async function createWorkerWorktree(args: {
       callerTerminalHandle: params.from
     }
   })
-  const terminalHandle = created.startupTerminal?.handle
-  if (args.operations && terminalHandle !== args.operations.terminal.terminalHandle) {
-    throw new Error('worker_generation_terminal_identity_conflict')
-  }
   effects.push({
     kind: 'worktree',
     action: requestedWorktree === 'new-child' ? 'created_child' : 'created_top_level',
@@ -212,9 +156,6 @@ export async function createWorkerWorktree(args: {
     startupPolicy: created.setupReceipt?.startupPolicy ?? 'start-immediately',
     state: created.setupReceipt?.state ?? 'not_configured'
   }
-  if (!terminalHandle) {
-    throw new Error(created.warning ?? 'Agent-first worktree creation returned no terminal.')
-  }
   const listed = await runtime.listTerminals(`id:${created.worktree.id}`, undefined, {
     includeVisualLayouts: false
   })
@@ -222,13 +163,8 @@ export async function createWorkerWorktree(args: {
   for (const terminal of listed.terminals) {
     effects.push({
       kind: 'terminal',
-      role:
-        terminal.handle === terminalHandle
-          ? 'agent'
-          : terminal.handle === setupTerminalHandle
-            ? 'setup'
-            : 'configured_tab',
-      action: terminal.handle === terminalHandle ? 'reused_agent_terminal' : 'created',
+      role: terminal.handle === setupTerminalHandle ? 'setup' : 'configured_tab',
+      action: 'created',
       id: terminal.handle,
       tabId: terminal.tabId,
       leafId: terminal.leafId
@@ -250,7 +186,6 @@ export async function createWorkerWorktree(args: {
   })
   return {
     worktree: created.worktree as Awaited<ReturnType<OrcaRuntimeService['showManagedWorktree']>>,
-    terminalHandle,
     setupReceipt
   }
 }

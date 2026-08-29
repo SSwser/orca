@@ -31,3 +31,12 @@ export type WorkerSetupReceipt = {
     | 'spawn_failed'
     | 'not_applicable'
 }
+
+export const EXISTING_WORKTREE_SETUP_RECEIPT: WorkerSetupReceipt = {
+  requested: 'not_applicable',
+  effective: 'not_applicable',
+  source: 'existing_worktree',
+  hookFound: false,
+  startupPolicy: 'start-immediately',
+  state: 'not_applicable'
+}

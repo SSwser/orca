@@ -22,17 +22,13 @@ import { resolveNestedWorkerMaxDepth } from '../../shared/nested-worker-depth'
 import { sortDirEntries } from '../../shared/file-name-sort'
 import { isServerDriveListRequest, listWindowsDrives } from './windows-drive-listing'
 import { extractLastOsc7Uri, extractOscScanTail } from '../daemon/osc7-uri-extraction'
+import { ptySessionIdForAgentCreateOperation } from '../daemon/pty-session-id'
 import { parseFileUriPathParts } from '../daemon/osc7-file-uri'
 import type { AgentStatus } from '../../shared/agent-detection'
 import type { TerminalOscLinkRange } from '../../shared/terminal-osc-link-ranges'
 import type { TerminalOscColorQueryReplyColors } from '../../shared/terminal-osc-color-reply'
 import type { TerminalOutputSourceRange } from '../../shared/terminal-output-source-range'
 import { detectTerminalComposerDraft } from '../../shared/terminal-composer-draft'
-import type {
-  WorkerPromptOperationIdentity,
-  WorkerPromptOperationInspection,
-  WorkerPromptOperationRequest
-} from '../../shared/worker-prompt-operation'
 import type {
   RemoteTerminalSourceRangeConsumerHooks,
   RemoteTerminalSourceRangeReplacementPublication,
@@ -67,7 +63,10 @@ import { indexAgentStatusRowsByPaneKey } from '../agent-hooks/agent-status-pane-
 import type { AgentHookAuthorityAttestation } from '../agent-hooks/server'
 import type {
   AgentSessionClaimedSpawnResult,
+  AgentSessionCreateOperationIdentity,
   AgentSessionExecutionClaim,
+  AgentSessionExecutionStartInspection,
+  AgentSessionExecutionStartRequest,
   AgentSessionSurfaceBinding,
   AgentLaunchPreferences,
   RuntimeAgentSessionRpcCaller,
@@ -113,8 +112,6 @@ import {
 import {
   type AgentPromptActivity,
   type AgentPromptWaitTextCache,
-  createAgentPromptSubmissionUnconfirmedError,
-  isAgentPromptStalledError,
   readAgentPromptWaitText,
   resolveAgentPromptEffectTimeoutMs,
   verifyAgentPromptSubmission
@@ -586,6 +583,7 @@ import {
   type TerminalQuickCommandMutation
 } from '../../shared/terminal-quick-commands'
 import type { PtyIncarnationId } from '../../shared/pty-incarnation'
+import type { AgentProcessPtySpawnTarget } from '../../shared/pty-spawn-target'
 import {
   parsePtyRestartCustody,
   ptyRestartCustodiesEqual,
@@ -612,6 +610,10 @@ import {
   resolveTuiAgentLaunchEnv
 } from '../../shared/tui-agent-launch-defaults'
 import { resolveLocalWindowsAgentStartupShell } from '../../shared/windows-terminal-shell'
+import {
+  fingerprintAgentProcessTarget,
+  resolveLocalCodexAgentProcessTarget
+} from './local-codex-agent-process-target'
 import {
   getTuiAgentLaunchCommand,
   isTuiAgent,
@@ -1571,6 +1573,7 @@ type RuntimePtyWorktreeRecord = {
   ptyId: string
   incarnationId: PtyIncarnationId | null
   restartCustody: PtyRestartCustody | null
+  agentSessionCreateOperation: AgentSessionCreateOperationIdentity | null
   worktreeId: string
   connectionId: string | null
   runtimeSessionOwned: boolean
@@ -1634,6 +1637,7 @@ type TerminalAgentStatusSnapshot = {
 
 type TerminalCreateOptions = {
   command?: string
+  spawnTarget?: AgentProcessPtySpawnTarget
   claudeAgentTeamsSourceCommand?: string
   cwd?: string
   env?: Record<string, string>
@@ -1671,6 +1675,7 @@ type TerminalCreateOptions = {
   // identity; opaque terminal.create commands remain ordinary shells.
   agentSessionClaim?: AgentSessionExecutionClaim
   agentSessionCreateOperationId?: string
+  agentSessionCreateOperation?: AgentSessionCreateOperationIdentity
   signal?: AbortSignal
   // Why: idempotent create operations must retain their fence after the PTY
   // exists, even if later runtime publication fails.
@@ -2002,6 +2007,7 @@ type RuntimePtyController = {
     rows: number
     cwd?: string
     command?: string
+    spawnTarget?: AgentProcessPtySpawnTarget
     launchAgent?: TuiAgent
     commandDelivery?: 'renderer' | 'provider'
     startupCommandDelivery?: WorktreeStartupLaunch['startupCommandDelivery']
@@ -2025,6 +2031,7 @@ type RuntimePtyController = {
       surface: AgentSessionSurfaceBinding
     }
     agentSessionCreateOperationId?: string
+    agentSessionCreateOperation?: AgentSessionCreateOperationIdentity
     signal?: AbortSignal
     onPtySpawnCommitted?: () => void
     adoptedStablePane?: {
@@ -2045,18 +2052,10 @@ type RuntimePtyController = {
     wslDistro?: string
     stablePaneOwner?: { handle: string; tabId: string; leafId: string }
     agentSessionEnsure?: AgentSessionClaimedSpawnResult
+    agentSessionCreateOperation?: AgentSessionCreateOperationIdentity
   }>
   write(ptyId: string, data: string): boolean
   writeWithSettlement?(ptyId: string, data: string): Promise<boolean>
-  supportsWorkerPromptOperations?(ptyId: string): boolean
-  writeWorkerPromptOperation?(
-    ptyId: string,
-    operation: WorkerPromptOperationRequest
-  ): Promise<{ accepted: boolean }>
-  inspectWorkerPromptOperation?(
-    ptyId: string,
-    identity: WorkerPromptOperationIdentity
-  ): Promise<WorkerPromptOperationInspection>
   /** Attach-only adoption of a live local daemon session so its output streams
    *  to main without a renderer pane; never creates, resizes, or focuses.
    *  False on doubt (absent session, SSH-scoped id, non-daemon provider). */
@@ -2177,8 +2176,6 @@ const BRACKETED_PASTE_END = '\x1b[201~'
 const BRACKETED_PASTE_QUIET_MS = 1500
 // Why: both are windows *after* the paste is ingested, so each is added to the
 // payload's ingest bound rather than standing in for it (see getTerminalPasteIngestMs).
-// The quiet window stays at 1500: nothing measured describes an agent's post-paste
-// redraw cadence, and a shorter window submits mid-redraw.
 const AGENT_PROMPT_RENDER_TIMEOUT_MS = 8000
 const AGENT_PROMPT_RENDER_QUIET_MS = 1500
 // Codex can paint paste placeholders before its submit handler leaves paste state.
@@ -11514,6 +11511,7 @@ export class OrcaRuntimeService {
         incarnationId: PtyIncarnationId
         launchAgent: TuiAgent
       }
+      agentSessionCreateOperation?: AgentSessionCreateOperationIdentity
     },
     isWsl?: boolean
   ): void {
@@ -11534,7 +11532,10 @@ export class OrcaRuntimeService {
         : {}),
       ...(isWsl !== undefined ? { isWsl } : {}),
       ...(binding && paneKey ? { tabId: binding.tabId, paneKey } : {}),
-      ...(binding?.incarnationId ? { incarnationId: binding.incarnationId } : {})
+      ...(binding?.incarnationId ? { incarnationId: binding.incarnationId } : {}),
+      ...(binding?.agentSessionCreateOperation
+        ? { agentSessionCreateOperation: binding.agentSessionCreateOperation }
+        : {})
     })
     const agentLaunchAuthority = binding?.agentLaunchAuthority
     if (
@@ -19213,7 +19214,8 @@ export class OrcaRuntimeService {
 
   getExactWorkerProviderSession(
     handle: string,
-    observedAfter: number
+    observedAfter: number,
+    expectedLaunchToken?: string
   ): ExactWorkerProviderSession | null {
     const paneKey = this.getTerminalPaneKey(handle)
     const processIncarnation = this.getTerminalProcessIncarnation(handle)
@@ -19232,14 +19234,47 @@ export class OrcaRuntimeService {
       connectionId = undefined
       launchToken = undefined
     }
-    return selectExactWorkerProviderSession({
+    const terminalProvenance = launchToken ? 'current_runtime' : 'restored'
+    if (expectedLaunchToken) {
+      if (launchToken && launchToken !== expectedLaunchToken) {
+        return null
+      }
+      launchToken = expectedLaunchToken
+    }
+    const statuses = this.getAgentStatusSnapshotFn?.() ?? []
+    const selected = selectExactWorkerProviderSession({
       paneKey,
       processIncarnation,
       connectionId,
       launchToken,
       observedAfter,
-      statuses: this.getAgentStatusSnapshotFn?.() ?? []
+      statuses
     })
+    if (selected || !expectedLaunchToken) {
+      return selected
+    }
+    const launchTokenHash = createHash('sha256').update(expectedLaunchToken).digest('hex')
+    const attestation = this.attestAgentHookCompatibilityAuthorityFn?.({
+      paneKey,
+      launchTokenHash,
+      connectionId: connectionId ?? null,
+      terminalProvenance
+    })
+    const providerTurn = attestation?.providerTurn
+    if (
+      attestation?.paneKey !== paneKey ||
+      !providerTurn ||
+      providerTurn.acceptedAt < observedAfter
+    ) {
+      return null
+    }
+    return {
+      paneKey,
+      processIncarnation,
+      agent: providerTurn.agent,
+      providerSession: { ...providerTurn.providerSession },
+      observedAt: providerTurn.acceptedAt
+    }
   }
 
   validateOrchestrationAgentLauncher(agent: TuiAgent): void {
@@ -19572,10 +19607,8 @@ export class OrcaRuntimeService {
       beforeWrite?: (ptyId: string) => void | Promise<void>
       suffixFailureError?: string
       signal?: AbortSignal
-      workerPromptOperation?: { operationId: string; payloadFingerprint: string }
     } = {}
   ): Promise<RuntimeTerminalAgentPromptSend> {
-    const { workerPromptOperation: requestedWorkerPromptOperation, ...writeOptions } = options
     if (this.getTerminalCustodyState(handle)) {
       throw new Error('terminal_not_writable')
     }
@@ -19586,9 +19619,6 @@ export class OrcaRuntimeService {
         throw new Error('terminal_not_writable')
       }
       await assertTerminalInputWithinLimitWithYield(payload)
-      const workerPromptOperation = requestedWorkerPromptOperation
-        ? this.resolveWorkerPromptOperationIdentity(handle, pty.pty, requestedWorkerPromptOperation)
-        : undefined
       const generation = this.getPtyLifecycleGeneration(pty.pty.ptyId)
       const submits = await this.serializeAgentPromptSubmission(
         pty.pty.ptyId,
@@ -19596,18 +19626,17 @@ export class OrcaRuntimeService {
         async () => {
           this.assertLiveTerminalHandleTargetsPty(handle, pty.pty.ptyId)
           this.assertAgentPromptGeneration(pty.pty.ptyId, generation)
-          return await this.writeTerminalAgentPrompt(handle, pty.pty.ptyId, generation, payload, {
-            ...writeOptions,
-            workerPromptOperation
-          })
+          return await this.writeTerminalAgentPrompt(
+            handle,
+            pty.pty.ptyId,
+            generation,
+            payload,
+            options
+          )
         }
       )
       const bytesWritten = Buffer.byteLength(payload, 'utf8') + submits
       return { handle, accepted: true, bytesWritten, semanticObservedAt: Date.now() }
-    }
-
-    if (requestedWorkerPromptOperation) {
-      throw new Error('worker_prompt_operation_unsupported')
     }
 
     const { leaf } = this.getLiveLeafForHandle(handle)
@@ -19624,75 +19653,10 @@ export class OrcaRuntimeService {
     const submits = await this.serializeAgentPromptSubmission(leaf.ptyId, generation, async () => {
       this.assertLiveTerminalHandleTargetsPty(handle, leaf.ptyId!)
       this.assertAgentPromptGeneration(leaf.ptyId!, generation)
-      return await this.writeTerminalAgentPrompt(
-        handle,
-        leaf.ptyId!,
-        generation,
-        payload,
-        writeOptions
-      )
+      return await this.writeTerminalAgentPrompt(handle, leaf.ptyId!, generation, payload, options)
     })
     const bytesWritten = Buffer.byteLength(payload, 'utf8') + submits
     return { handle, accepted: true, bytesWritten, semanticObservedAt: Date.now() }
-  }
-
-  async inspectTerminalWorkerPromptOperation(
-    handle: string,
-    operation: { operationId: string; payloadFingerprint: string }
-  ): Promise<WorkerPromptOperationInspection> {
-    const pty = this.getLivePtyForHandle(handle)
-    if (!pty) {
-      return { verdict: 'unverifiable' }
-    }
-    let inspection: WorkerPromptOperationInspection
-    try {
-      const identity = this.resolveWorkerPromptOperationIdentity(handle, pty.pty, operation)
-      inspection = await this.ptyController!.inspectWorkerPromptOperation!(pty.pty.ptyId, identity)
-    } catch {
-      return { verdict: 'unverifiable' }
-    }
-    if (inspection.verdict !== 'completed') {
-      return inspection
-    }
-    try {
-      await verifyAgentPromptSubmission({
-        baseline: {
-          ...inspection.receipt.semanticBaseline,
-          generation: this.getPtyLifecycleGeneration(pty.pty.ptyId)
-        },
-        readActivity: () => this.getAgentPromptActivity(handle, pty.pty.ptyId),
-        timeoutMs: resolveAgentPromptEffectTimeoutMs(this.getPtyAgent(pty.pty.ptyId))
-      })
-    } catch (error) {
-      if (isAgentPromptStalledError(error)) {
-        throw createAgentPromptSubmissionUnconfirmedError()
-      }
-      throw error
-    }
-    return {
-      verdict: 'completed',
-      receipt: { ...inspection.receipt, semanticObservedAt: Date.now() }
-    }
-  }
-
-  private resolveWorkerPromptOperationIdentity(
-    handle: string,
-    pty: RuntimePtyWorktreeRecord,
-    operation: { operationId: string; payloadFingerprint: string }
-  ): WorkerPromptOperationIdentity {
-    if (
-      !pty.incarnationId ||
-      this.ptyController?.supportsWorkerPromptOperations?.(pty.ptyId) !== true ||
-      !this.ptyController.writeWorkerPromptOperation ||
-      !this.ptyController.inspectWorkerPromptOperation
-    ) {
-      throw new Error('worker_prompt_operation_unsupported')
-    }
-    return {
-      ...operation,
-      sessionIncarnationId: pty.incarnationId,
-      terminalHandle: handle
-    }
   }
 
   async getTerminalAgentStatus(handle: string): Promise<RuntimeTerminalAgentStatus> {
@@ -20405,7 +20369,6 @@ export class OrcaRuntimeService {
       beforeWrite?: (ptyId: string) => void | Promise<void>
       suffixFailureError?: string
       signal?: AbortSignal
-      workerPromptOperation?: WorkerPromptOperationIdentity
     } = {}
   ): Promise<number> {
     assertAgentPromptRequestActive(options.signal)
@@ -20436,14 +20399,7 @@ export class OrcaRuntimeService {
         if (index === chunks.length - 1) {
           renderGate?.arm()
         }
-        const wrote = options.workerPromptOperation
-          ? (
-              await this.ptyController?.writeWorkerPromptOperation?.(ptyId, {
-                ...options.workerPromptOperation,
-                step: { kind: 'paste', index, count: chunks.length, data: chunk }
-              })
-            )?.accepted === true
-          : (this.ptyController?.write(ptyId, chunk) ?? false)
+        const wrote = this.ptyController?.write(ptyId, chunk) ?? false
         if (!wrote) {
           throw new Error('terminal_not_writable')
         }
@@ -20459,9 +20415,7 @@ export class OrcaRuntimeService {
         !completedPaste &&
         this.getPtyLifecycleGeneration(ptyId) === generation
       ) {
-        if (!options.workerPromptOperation) {
-          this.ptyController?.write(ptyId, AGENT_PROMPT_BRACKETED_PASTE_END)
-        }
+        this.ptyController?.write(ptyId, AGENT_PROMPT_BRACKETED_PASTE_END)
       }
       renderGate?.dispose()
       throw error
@@ -20494,22 +20448,7 @@ export class OrcaRuntimeService {
     const waitTextCache: AgentPromptWaitTextCache = {}
     const baseline = this.getAgentPromptActivity(handle, ptyId, waitTextCache)
     this.assertAgentPromptPermissionSafe(permissionBaseline, baseline)
-    const semanticBaseline = {
-      observedAt: baseline.observedAt,
-      permissionSequence: baseline.permissionSequence,
-      workingSequence: baseline.workingSequence,
-      explicitWorkingStartedAt: baseline.explicitWorkingStartedAt,
-      outputSequence: baseline.outputSequence,
-      status: baseline.status
-    }
-    const suffixWrote = options.workerPromptOperation
-      ? (
-          await this.ptyController?.writeWorkerPromptOperation?.(ptyId, {
-            ...options.workerPromptOperation,
-            step: { kind: 'submit', data: AGENT_PROMPT_SUBMIT, semanticBaseline }
-          })
-        )?.accepted === true
-      : (this.ptyController?.write(ptyId, AGENT_PROMPT_SUBMIT) ?? false)
+    const suffixWrote = this.ptyController?.write(ptyId, AGENT_PROMPT_SUBMIT) ?? false
     if (!suffixWrote) {
       throw new Error(options.suffixFailureError ?? 'terminal_not_writable')
     }
@@ -25565,6 +25504,7 @@ export class OrcaRuntimeService {
     setupDecision?: 'run' | 'skip' | 'inherit'
     awaitTerminalProvisioning?: boolean
     observeSetupCompletion?: boolean
+    suppressInitialTerminal?: true
     createdWithAgent?: TuiAgent
     startupAgent?: TuiAgent
     requireStartupHostCrashContainment?: true
@@ -25577,13 +25517,6 @@ export class OrcaRuntimeService {
     workerGenerationOperation?: {
       operationId: string
       payloadFingerprint: string
-    }
-    workerGenerationTerminalOperation?: {
-      operationId: string
-      payloadFingerprint: string
-      terminalHandle: string
-      tabId: string
-      leafId: string
     }
     startup?: WorktreeStartupLaunch
     startupDraft?: string
@@ -26328,9 +26261,6 @@ export class OrcaRuntimeService {
       ...(args.workerGenerationOperation
         ? { workerGenerationOperation: args.workerGenerationOperation }
         : {}),
-      ...(args.workerGenerationTerminalOperation
-        ? { workerGenerationTerminalOperation: args.workerGenerationTerminalOperation }
-        : {}),
       ...(args.comment !== undefined ? { comment: args.comment } : {}),
       ...(args.manualOrder !== undefined ? { manualOrder: args.manualOrder } : {}),
       ...(args.workspaceStatus !== undefined ? { workspaceStatus: args.workspaceStatus } : {})
@@ -26517,14 +26447,6 @@ export class OrcaRuntimeService {
           startupCommandDelivery: sequencedStartup.startupCommandDelivery,
           ...(args.requireStartupHostCrashContainment ? { requireHostCrashContainment: true } : {}),
           telemetry: sequencedStartup.telemetry,
-          ...(args.workerGenerationTerminalOperation
-            ? {
-                preAllocatedHandle: args.workerGenerationTerminalOperation.terminalHandle,
-                tabId: args.workerGenerationTerminalOperation.tabId,
-                leafId: args.workerGenerationTerminalOperation.leafId,
-                agentSessionCreateOperationId: args.workerGenerationTerminalOperation.operationId
-              }
-            : {}),
           ...ownerSurfacing(shouldActivate)
         })
         if (effectiveDraftPaste) {
@@ -26630,7 +26552,7 @@ export class OrcaRuntimeService {
           didSpawnSetup = true
         }
       }
-    } else if (this.ptyController?.spawn) {
+    } else if (this.ptyController?.spawn && !args.suppressInitialTerminal) {
       try {
         await this.createTerminal(`id:${worktree.id}`, { surfaceOwner: false })
       } catch (err) {
@@ -26666,14 +26588,13 @@ export class OrcaRuntimeService {
             : ('spawn_failed' as const),
       ...(setupTerminalHandle ? { terminalHandle: setupTerminalHandle } : {})
     }
-    if (workerGenerationOperation && startupTerminalHandle) {
+    if (workerGenerationOperation) {
       this.store.setWorktreeMeta(worktree.id, {
         workerGenerationOperation: {
           ...workerGenerationOperation,
           completedReceipt: {
             worktreeId: worktree.id,
             ...(worktree.instanceId ? { instanceId: worktree.instanceId } : {}),
-            terminalHandle: startupTerminalHandle,
             setup: setupReceipt
           }
         }
@@ -29169,6 +29090,35 @@ export class OrcaRuntimeService {
     }
   }
 
+  resolveWorkerAgentProcessAdmission(args: {
+    prompt: string
+    launchPreferences?: AgentLaunchPreferences
+  }): { targetFingerprint: string } {
+    if (!this.store) {
+      throw new Error('runtime_unavailable')
+    }
+    const settings = this.store.getSettings()
+    if (!isTuiAgentEnabled('codex', settings.disabledTuiAgents)) {
+      throw new Error('worker_execution_start_unsupported')
+    }
+    const target = resolveLocalCodexAgentProcessTarget({
+      prompt: args.prompt,
+      platform: process.platform,
+      commandOverride: settings.agentCmdOverrides?.codex,
+      agentArgs: resolveTuiAgentLaunchArgs('codex', settings.agentDefaultArgs),
+      agentEnv: resolveTuiAgentLaunchEnv('codex', settings.agentDefaultEnv),
+      launchPreferences: args.launchPreferences
+    })
+    return { targetFingerprint: fingerprintAgentProcessTarget(target) }
+  }
+
+  deriveWorkerAgentLaunchToken(capability: string): string {
+    return createHash('sha256')
+      .update('orca.worker-agent-launch.v1\0')
+      .update(capability)
+      .digest('base64url')
+  }
+
   async createAgentSession(
     request: RuntimeCreateAgentSessionRequest,
     caller: RuntimeAgentSessionRpcCaller = {}
@@ -29202,7 +29152,8 @@ export class OrcaRuntimeService {
           request.presentation ?? null,
           request.placement?.tabId ?? null,
           request.placement?.leafId ?? null,
-          request.viewMode ?? null
+          request.viewMode ?? null,
+          request.executionStart ?? null
         ])
       )
       .digest('base64url')
@@ -29239,6 +29190,19 @@ export class OrcaRuntimeService {
       // Why: reserve the client operation before any async preflight so concurrent retries cannot
       // both observe an empty ledger and reach the execution owner independently.
       const workspace = await this.resolveTerminalWorkspaceLaunchScope(request.worktree)
+      const executionStartRemote = workspace.repo
+        ? repoIsRemote(workspace.repo)
+        : Boolean(workspace.connectionId)
+      if (
+        request.executionStart &&
+        (request.agent !== 'codex' ||
+          executionStartRemote ||
+          workspace.connectionId !== null ||
+          request.promptDelivery !== 'auto-submit' ||
+          !request.prompt?.trim())
+      ) {
+        throw new Error('worker_execution_start_unsupported')
+      }
       if (
         !(await this.executionOwnerSupportsAgentSessionOperation(
           workspace,
@@ -29268,7 +29232,8 @@ export class OrcaRuntimeService {
             request.presentation ?? null,
             request.placement?.tabId ?? null,
             request.placement?.leafId ?? null,
-            request.viewMode ?? null
+            request.viewMode ?? null,
+            request.executionStart ?? null
           ])
         )
         .digest('base64url')
@@ -29298,41 +29263,75 @@ export class OrcaRuntimeService {
         shell,
         isRemote
       }
-      const startup =
-        request.promptDelivery === 'draft'
+      const agentProcessTarget = request.executionStart
+        ? resolveLocalCodexAgentProcessTarget({
+            prompt: request.prompt ?? '',
+            platform,
+            commandOverride: settings.agentCmdOverrides?.codex,
+            agentArgs: resolveTuiAgentLaunchArgs('codex', settings.agentDefaultArgs),
+            agentEnv: resolveTuiAgentLaunchEnv('codex', settings.agentDefaultEnv),
+            launchPreferences: request.launchPreferences
+          })
+        : undefined
+      if (
+        request.executionStart &&
+        (!agentProcessTarget ||
+          fingerprintAgentProcessTarget(agentProcessTarget) !==
+            request.executionStart.targetFingerprint ||
+          !request.executionStart.launchToken)
+      ) {
+        throw new Error('worker_execution_start_conflict')
+      }
+      const startup = agentProcessTarget
+        ? null
+        : request.promptDelivery === 'draft'
           ? buildAgentDraftLaunchPlan({ ...startupArgs, draft: request.prompt ?? '' })
           : buildAgentStartupPlan({
               ...startupArgs,
               prompt: request.prompt ?? '',
               allowEmptyPromptLaunch: true
             })
-      if (!startup) {
+      if (!startup && !agentProcessTarget) {
         throw new Error('agent_session_identity_required')
+      }
+      if (request.executionStart && !agentProcessTarget) {
+        throw new Error('worker_execution_start_unsupported')
       }
       await this.markWorkspaceTrustedForAgent(request.agent, workspace.connectionId, workspace.path)
       if (caller.signal?.aborted) {
         throw new Error('client_disconnected')
       }
       let terminal: RuntimeTerminalCreate
-      const executionOperationId = createHash('sha256')
-        .update(this.runtimeId)
-        .update('\0')
-        .update(operationKey)
-        .update('\0')
-        .update(resolvedFingerprint)
-        .digest('base64url')
+      const executionOperationId =
+        request.executionStart?.operationId ??
+        createHash('sha256')
+          .update(this.runtimeId)
+          .update('\0')
+          .update(operationKey)
+          .update('\0')
+          .update(resolvedFingerprint)
+          .digest('base64url')
       const operationTabId =
         request.placement?.tabId ?? deterministicAgentSessionUuid(`${executionOperationId}:tab`)
       const operationLeafId =
         request.placement?.leafId ?? deterministicAgentSessionUuid(`${executionOperationId}:leaf`)
-      const operationHandle = `term_${deterministicAgentSessionUuid(`${executionOperationId}:handle`)}`
+      const operationHandle =
+        request.executionStart?.terminalHandle ??
+        `term_${deterministicAgentSessionUuid(`${executionOperationId}:handle`)}`
       try {
         terminal = await this.createTerminal(`id:${workspace.id}`, {
-          command: startup.launchCommand,
-          env: startup.env,
-          launchConfig: startup.launchConfig,
+          ...(agentProcessTarget
+            ? {
+                spawnTarget: agentProcessTarget,
+                launchToken: request.executionStart!.launchToken
+              }
+            : {
+                command: startup!.launchCommand,
+                env: startup!.env,
+                launchConfig: startup!.launchConfig,
+                startupCommandDelivery: startup!.startupCommandDelivery
+              }),
           launchAgent: request.agent,
-          startupCommandDelivery: startup.startupCommandDelivery,
           cwd: startupCwd,
           presentation: request.presentation ?? 'background',
           tabId: operationTabId,
@@ -29340,6 +29339,15 @@ export class OrcaRuntimeService {
           preAllocatedHandle: operationHandle,
           viewMode: request.viewMode,
           agentSessionCreateOperationId: executionOperationId,
+          ...(request.executionStart
+            ? {
+                agentSessionCreateOperation: {
+                  operationId: request.executionStart.operationId,
+                  payloadFingerprint: request.executionStart.payloadFingerprint
+                }
+              }
+            : {}),
+          ...(request.executionStart ? { requireHostCrashContainment: true as const } : {}),
           signal: caller.signal,
           onPtySpawnCommitted: () => {
             retainReplayFence = true
@@ -29351,7 +29359,72 @@ export class OrcaRuntimeService {
         }
         throw error
       }
-      return { terminal, disposition: 'created' }
+      if (!request.executionStart) {
+        return { terminal, disposition: 'created' }
+      }
+      if (terminal.handle !== request.executionStart.terminalHandle) {
+        throw new Error('worker_execution_start_conflict')
+      }
+      if (
+        terminal.agentSessionCreateOperation?.operationId !== request.executionStart.operationId ||
+        terminal.agentSessionCreateOperation.payloadFingerprint !==
+          request.executionStart.payloadFingerprint
+      ) {
+        throw new Error('worker_execution_start_conflict')
+      }
+      const deadline = Date.now() + request.executionStart.timeoutMs
+      let providerSession = this.getExactWorkerProviderSession(
+        terminal.handle,
+        request.executionStart.semanticBaselineAt,
+        request.executionStart.launchToken
+      )
+      while (!providerSession && Date.now() < deadline) {
+        if (caller.signal?.aborted) {
+          throw new Error('client_disconnected')
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        providerSession = this.getExactWorkerProviderSession(
+          terminal.handle,
+          request.executionStart.semanticBaselineAt,
+          request.executionStart.launchToken
+        )
+      }
+      if (!providerSession || providerSession.agent !== 'codex') {
+        throw Object.assign(new Error('worker_execution_start_unconfirmed'), {
+          agentSessionOperationOutcome: 'unknown' as const
+        })
+      }
+      const authority = this.getOrchestrationDispatchAuthority(terminal.handle)
+      if (
+        !authority ||
+        authority.paneKey !== providerSession.paneKey ||
+        authority.processIncarnation !== providerSession.processIncarnation
+      ) {
+        throw Object.assign(new Error('worker_execution_start_unverifiable'), {
+          agentSessionOperationOutcome: 'unknown' as const
+        })
+      }
+      const launchTokenHash = createHash('sha256')
+        .update(request.executionStart.launchToken)
+        .digest('hex')
+      if (authority.launchTokenHash && authority.launchTokenHash !== launchTokenHash) {
+        throw new Error('worker_execution_start_conflict')
+      }
+      const { launchToken: _launchToken, ...receiptRequest } = request.executionStart
+      return {
+        terminal,
+        disposition: 'created',
+        executionStartReceipt: {
+          ...receiptRequest,
+          launchTokenHash,
+          paneKey: authority.paneKey,
+          processIncarnation: authority.processIncarnation,
+          hostScope: authority.hostScope,
+          providerSession: providerSession.providerSession,
+          turnStartedAt: providerSession.observedAt,
+          semanticObservedAt: Date.now()
+        }
+      }
     })()
     this.agentSessionCreateOperations.set(operationKey, {
       fingerprint: requestFingerprint,
@@ -29382,6 +29455,82 @@ export class OrcaRuntimeService {
         this.agentSessionCreateOperations.delete(operationKey)
       }
       throw error
+    }
+  }
+
+  async inspectAgentSessionExecutionStart(
+    worktree: string,
+    request: AgentSessionExecutionStartRequest
+  ): Promise<AgentSessionExecutionStartInspection> {
+    const workspace = await this.resolveTerminalWorkspaceLaunchScope(worktree)
+    if (workspace.connectionId || (workspace.repo && repoIsRemote(workspace.repo))) {
+      return { verdict: 'unverifiable' }
+    }
+    try {
+      const terminal = await this.showTerminal(request.terminalHandle)
+      if (terminal.worktreeId !== workspace.id) {
+        return { verdict: 'conflict' }
+      }
+      const authority = this.getOrchestrationDispatchAuthority(request.terminalHandle)
+      if (!authority?.processIncarnation) {
+        return { verdict: 'unverifiable' }
+      }
+      const launchTokenHash = createHash('sha256').update(request.launchToken).digest('hex')
+      if (authority.launchTokenHash && authority.launchTokenHash !== launchTokenHash) {
+        return { verdict: 'conflict' }
+      }
+      const operation = this.ptysById.get(authority.ptyId)?.agentSessionCreateOperation
+      if (!operation) {
+        return { verdict: 'unverifiable' }
+      }
+      if (
+        operation.operationId !== request.operationId ||
+        operation.payloadFingerprint !== request.payloadFingerprint
+      ) {
+        return { verdict: 'conflict' }
+      }
+      const session = this.getExactWorkerProviderSession(
+        request.terminalHandle,
+        request.semanticBaselineAt,
+        request.launchToken
+      )
+      if (!session) {
+        return {
+          verdict: 'started',
+          terminalHandle: request.terminalHandle,
+          processIncarnation: authority.processIncarnation
+        }
+      }
+      if (
+        session.agent !== 'codex' ||
+        session.paneKey !== authority.paneKey ||
+        session.processIncarnation !== authority.processIncarnation
+      ) {
+        return { verdict: 'conflict' }
+      }
+      return {
+        verdict: 'accepted',
+        receipt: {
+          operationId: request.operationId,
+          payloadFingerprint: request.payloadFingerprint,
+          targetFingerprint: request.targetFingerprint,
+          terminalHandle: request.terminalHandle,
+          writeFence: request.writeFence,
+          semanticBaselineAt: request.semanticBaselineAt,
+          timeoutMs: request.timeoutMs,
+          launchTokenHash,
+          paneKey: authority.paneKey,
+          processIncarnation: authority.processIncarnation,
+          hostScope: authority.hostScope,
+          providerSession: session.providerSession,
+          turnStartedAt: session.observedAt,
+          semanticObservedAt: session.observedAt
+        }
+      }
+    } catch {
+      const ptyId = ptySessionIdForAgentCreateOperation(workspace.id, request.operationId)
+      const live = await this.ptyController?.probePtyLiveness?.(ptyId)
+      return live === false ? { verdict: 'not_started' } : { verdict: 'unverifiable' }
     }
   }
 
@@ -29475,9 +29624,11 @@ export class OrcaRuntimeService {
           tabId,
           leafId
         })
-        const launchToken = launchOpts.launchConfig
-          ? (launchOpts.launchToken ?? randomUUID())
-          : undefined
+        const launchToken = launchOpts.spawnTarget
+          ? launchOpts.launchToken
+          : launchOpts.launchConfig
+            ? (launchOpts.launchToken ?? randomUUID())
+            : undefined
         const baseEnv = {
           ...launchOpts.env,
           ...(launchToken ? { ORCA_AGENT_LAUNCH_TOKEN: launchToken } : {})
@@ -29569,6 +29720,7 @@ export class OrcaRuntimeService {
             command: sequencedStartupCommand
               ? launchOpts.command
               : (agentTeamsPlan?.command ?? launchOpts.command),
+            ...(launchOpts.spawnTarget ? { spawnTarget: launchOpts.spawnTarget } : {}),
             launchAgent: launchOpts.launchAgent,
             commandDelivery: 'provider',
             startupCommandDelivery: launchOpts.startupCommandDelivery,
@@ -29600,6 +29752,9 @@ export class OrcaRuntimeService {
               : {}),
             ...(launchOpts.agentSessionCreateOperationId
               ? { agentSessionCreateOperationId: launchOpts.agentSessionCreateOperationId }
+              : {}),
+            ...(launchOpts.agentSessionCreateOperation
+              ? { agentSessionCreateOperation: launchOpts.agentSessionCreateOperation }
               : {}),
             ...(launchOpts.signal ? { signal: launchOpts.signal } : {}),
             ...(launchOpts.requireHostCrashContainment &&
@@ -29652,7 +29807,10 @@ export class OrcaRuntimeService {
         this.registerPty(result.id, workspace.id, workspace.connectionId, {
           tabId,
           leafId,
-          ...(result.incarnationId ? { incarnationId: result.incarnationId } : {})
+          ...(result.incarnationId ? { incarnationId: result.incarnationId } : {}),
+          ...(result.agentSessionCreateOperation
+            ? { agentSessionCreateOperation: result.agentSessionCreateOperation }
+            : {})
         })
         this.recordPtyRestartCustody(result.id, result.restartCustody ?? null)
         const pty = this.getOrCreatePtyWorktreeRecord(result.id)
@@ -29735,6 +29893,9 @@ export class OrcaRuntimeService {
           surface,
           ...(result.agentSessionEnsure
             ? { agentSessionDisposition: result.agentSessionEnsure.disposition }
+            : {}),
+          ...(result.agentSessionCreateOperation
+            ? { agentSessionCreateOperation: result.agentSessionCreateOperation }
             : {}),
           ...(adoptedStablePane ? { isReattach: true as const } : {}),
           ...(warning ? { warning } : {})
@@ -33882,6 +34043,7 @@ export class OrcaRuntimeService {
         | 'wslDistro'
         | 'incarnationId'
         | 'restartCustody'
+        | 'agentSessionCreateOperation'
       >
     > = {}
   ): RuntimePtyWorktreeRecord {
@@ -33902,6 +34064,7 @@ export class OrcaRuntimeService {
         ptyId,
         incarnationId: state.incarnationId ?? null,
         restartCustody: state.restartCustody ? parsePtyRestartCustody(state.restartCustody) : null,
+        agentSessionCreateOperation: state.agentSessionCreateOperation ?? null,
         worktreeId,
         connectionId,
         runtimeSessionOwned: state.runtimeSessionOwned ?? false,
@@ -33968,6 +34131,9 @@ export class OrcaRuntimeService {
       pty.restartCustody = state.restartCustody
         ? parsePtyRestartCustody(state.restartCustody)
         : null
+    }
+    if (state.agentSessionCreateOperation !== undefined) {
+      pty.agentSessionCreateOperation = state.agentSessionCreateOperation
     }
     if (state.connectionId !== undefined) {
       pty.connectionId = state.connectionId
@@ -34258,6 +34424,9 @@ export class OrcaRuntimeService {
           restartCustody: session.restartCustody ?? null,
           ...(session.wslDistro !== undefined
             ? { isWsl: Boolean(session.wslDistro), wslDistro: session.wslDistro }
+            : {}),
+          ...(session.agentSessionCreateOperation
+            ? { agentSessionCreateOperation: session.agentSessionCreateOperation }
             : {}),
           ...(restoresExactSurface
             ? { tabId: persistedSurface.tabId, paneKey: persistedSurface.paneKey }
@@ -36496,7 +36665,7 @@ export class OrcaRuntimeService {
       if (this.ptyController?.writeWithSettlement) {
         return this.ptyController.writeWithSettlement(ptyId, data).catch(() => false)
       }
-      return this.ptyController?.write(ptyId, data) ?? false
+      return false
     } catch {
       return false
     }
@@ -36565,6 +36734,10 @@ export class OrcaRuntimeService {
       this.mailPointerRepointScheduler.schedule(handle)
     }
     this.orchestrationMailboxNotifications.notifyMessageArrived(handle, messageType)
+  }
+
+  notifyWorkerTerminalReleased(paneKey: string): void {
+    this.notifier?.resolveLegacyWorkerTerminalRecovery?.(paneKey, 'exited')
   }
 
   waitForMessage(

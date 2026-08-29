@@ -1,4 +1,7 @@
-import type { AgentSessionClaimedSpawnResult } from '../../../../shared/agent-session-host-authority'
+import type {
+  AgentSessionClaimedSpawnResult,
+  AgentSessionCreateOperationIdentity
+} from '../../../../shared/agent-session-host-authority'
 import type { PtyRestartCustody } from '../../../../shared/pty-restart-custody'
 import { isTerminalLeafId, makePaneKey } from '../../../../shared/stable-pane-id'
 import { isValidTerminalTabId } from '../../../../shared/terminal-tab-id'
@@ -25,6 +28,7 @@ function toRuntimeSpawnReply(result: {
   wslDistro?: string | null
   stablePaneOwner?: { handle: string; tabId: string; leafId: string }
   agentSessionEnsure?: AgentSessionClaimedSpawnResult
+  agentSessionCreateOperation?: AgentSessionCreateOperationIdentity
 }) {
   return {
     id: result.id,
@@ -32,7 +36,10 @@ function toRuntimeSpawnReply(result: {
     ...(result.restartCustody ? { restartCustody: result.restartCustody } : {}),
     ...(typeof result.wslDistro === 'string' ? { wslDistro: result.wslDistro } : {}),
     ...(result.stablePaneOwner ? { stablePaneOwner: result.stablePaneOwner } : {}),
-    ...(result.agentSessionEnsure ? { agentSessionEnsure: result.agentSessionEnsure } : {})
+    ...(result.agentSessionEnsure ? { agentSessionEnsure: result.agentSessionEnsure } : {}),
+    ...(result.agentSessionCreateOperation
+      ? { agentSessionCreateOperation: result.agentSessionCreateOperation }
+      : {})
   }
 }
 

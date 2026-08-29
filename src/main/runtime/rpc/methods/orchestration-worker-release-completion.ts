@@ -9,6 +9,7 @@ import { inspectWorkerTerminal } from './orchestration-worker-observation'
 import { orchestrationTimestampToMs } from './orchestration-worker-output'
 import { workerTerminalLeaseIsCurrent } from './orchestration-worker-release-identity'
 import { captureWorkerTerminalArchiveOnce } from './orchestration-worker-archive-capture'
+import { completeExitedWorkerTerminalRelease } from './orchestration-worker-exited-release'
 
 export type WorkerReleaseReceipt = {
   dispatchId: string
@@ -26,7 +27,7 @@ export type WorkerReleaseReceipt = {
   lastError?: string
 }
 
-type WorkerTerminalReleaseArgs = {
+export type WorkerTerminalReleaseArgs = {
   runtime: OrcaRuntimeService
   db: OrchestrationDb
   dispatchId: string
@@ -131,6 +132,9 @@ async function completeWorkerTerminalReleaseOnce(
   const observation = await inspectWorkerTerminal(runtime, db, dispatchId)
   if (observation.status === 'identity_changed') {
     return identityFailureReceipt(args)
+  }
+  if (observation.status === 'exited') {
+    return completeExitedWorkerTerminalRelease(args, () => identityFailureReceipt(args))
   }
   if (args.mode === 'reconciliation' && ['missing', 'unattached'].includes(observation.status)) {
     return identityFailureReceipt(args)
@@ -238,8 +242,7 @@ async function completeWorkerTerminalReleaseOnce(
   return {
     dispatchId,
     state: 'released',
-    processAction:
-      observation.status === 'exited' ? 'closed_exited_terminal' : 'closed_agent_terminal',
+    processAction: 'closed_agent_terminal',
     archive: archiveSummary(released)
   }
 }

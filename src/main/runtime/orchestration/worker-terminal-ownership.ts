@@ -1,6 +1,6 @@
 import type { WorkerDispatchState } from './types'
 
-export type WorkerTerminalLifecycleState =
+export type WorkerExecutionLifecycleState =
   | 'owned'
   | 'retained'
   | 'release_requested'
@@ -25,17 +25,14 @@ export type WorkerTerminalRetainedReason =
 
 export type WorkerTerminalArchiveStatus = 'captured' | 'empty' | 'unavailable'
 
-export type WorkerTerminalResourceRow = {
+type WorkerExecutionResourceBase = {
   id: string
   origin_dispatch_id: string
   owner_dispatch_id: string
   prior_owner_dispatch_ids: string
   worktree_id: string | null
-  terminal_handle: string
-  pane_key: string | null
-  process_incarnation: string | null
   host_scope: string | null
-  lifecycle_state: WorkerTerminalLifecycleState
+  lifecycle_state: WorkerExecutionLifecycleState
   retained_reason: string | null
   release_requested_at: string | null
   release_completed_at: string | null
@@ -45,6 +42,17 @@ export type WorkerTerminalResourceRow = {
   created_at: string
   updated_at: string
 }
+
+export type WorkerTerminalResourceRow = WorkerExecutionResourceBase & {
+  resource_kind: 'terminal'
+  terminal_handle: string
+  pane_key: string | null
+  process_incarnation: string | null
+}
+
+export type WorkerExecutionResourceRow = WorkerTerminalResourceRow
+
+export type WorkerTerminalLifecycleState = WorkerExecutionLifecycleState
 
 // Terminal state exposed by worker-list; process accounting, never Task/Dispatch outcome.
 export type WorkerTerminalListState =

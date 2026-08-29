@@ -15,6 +15,9 @@ describe('worker generation operation claims', () => {
     if (root) {
       rmSync(root, { recursive: true, force: true })
     }
+    second = undefined
+    first = undefined
+    root = undefined
   })
 
   it('allows one claimant and exposes one exact completed receipt across connections', () => {
@@ -82,5 +85,75 @@ describe('worker generation operation claims', () => {
     expect(
       second.readWorkerGenerationOperation({ ...operation, payloadFingerprint: 'changed' })
     ).toEqual({ verdict: 'conflict' })
+  })
+
+  it('keeps the provisional capability unusable until exact execution acceptance commits', () => {
+    first = new OrchestrationDb(':memory:')
+    const run = first.createRun({
+      objective: 'atomic execution start',
+      coordinatorHandle: 'term_coord',
+      coordinatorPaneKey: 'tab:coord'
+    })
+    const task = first.createTask({ runId: run.id, spec: 'execute once' })
+    const started = first.createStartingWorkerDispatch({
+      creator: { kind: 'system' },
+      maxDepth: Number.MAX_SAFE_INTEGER,
+      taskId: task.id,
+      startOptions: {}
+    })
+    const capability = first.reserveStartingWorkerCapability(started.dispatch.id)
+    expect(first.reserveStartingWorkerCapability(started.dispatch.id)).toBe(capability)
+    expect(
+      first.verifyDispatchCapability({
+        dispatchId: started.dispatch.id,
+        capability,
+        paneKey: 'tab:leaf',
+        processIncarnation: 'daemon:pty:incarnation'
+      })
+    ).toMatchObject({ valid: false })
+
+    const operation = {
+      dispatchId: started.dispatch.id,
+      effectKind: 'execution_start' as const,
+      operationId: 'a'.repeat(43),
+      payloadFingerprint: 'b'.repeat(64),
+      claimantId: 'runtime:claimant'
+    }
+    const receipt = {
+      operationId: operation.operationId,
+      payloadFingerprint: operation.payloadFingerprint,
+      semanticObservedAt: 123
+    }
+    expect(first.claimWorkerGenerationOperation(operation)).toEqual({ claimed: true })
+    first.prepareStartingWorkerAuthority({
+      dispatchId: started.dispatch.id,
+      handle: 'term_worker',
+      paneKey: 'tab:leaf',
+      processIncarnation: 'daemon:pty:incarnation',
+      worktreeId: 'repo::worktree',
+      effects: [],
+      setupState: 'not_applicable',
+      terminalOwnership: 'created',
+      capability,
+      generationOperation: { ...operation, receipt }
+    })
+
+    expect(first.getWorkerDispatch(started.dispatch.id)?.provisional_capability).toBeNull()
+    expect(first.readWorkerGenerationOperation(operation)).toEqual({
+      verdict: 'completed',
+      receipt
+    })
+    expect(first.getWorkerTerminalResourceByOwner(started.dispatch.id)).toMatchObject({
+      terminal_handle: 'term_worker',
+      lifecycle_state: 'owned'
+    })
+    expect(
+      first.verifyDispatchCapability({
+        dispatchId: started.dispatch.id,
+        capability,
+        paneKey: 'tab:leaf',
+        processIncarnation: 'daemon:pty:incarnation'
+      })
+    ).toEqual({ valid: true })
   })
 })

@@ -18,7 +18,7 @@ export function findTransferableWorkerTerminalResource(
   }
   const candidates = this.db
     .prepare(
-      `SELECT r.* FROM worker_terminal_resources r
+      `SELECT r.* FROM worker_execution_resources r
          JOIN worker_dispatches w ON w.dispatch_id = r.owner_dispatch_id
         WHERE r.process_incarnation = ? AND r.host_scope IS ?
           AND r.lifecycle_state != 'released'`
@@ -63,7 +63,7 @@ export function workerTerminalResourceHasIdentityConflict(
   }
   const candidates = this.db
     .prepare(
-      `SELECT * FROM worker_terminal_resources
+      `SELECT * FROM worker_execution_resources
         WHERE process_incarnation = ? AND host_scope IS ?
           AND id != ? AND lifecycle_state != 'released'`
     )

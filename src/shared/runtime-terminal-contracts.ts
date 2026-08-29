@@ -260,6 +260,7 @@ export type RuntimeTerminalCreate = {
   surface?: 'background' | 'visible'
   warning?: string
   agentSessionDisposition?: 'created' | 'adopted'
+  agentSessionCreateOperation?: { operationId: string; payloadFingerprint: string }
   isReattach?: true
 }
 

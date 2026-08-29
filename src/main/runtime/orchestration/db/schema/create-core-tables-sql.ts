@@ -1,6 +1,6 @@
 import { LEGACY_RUN_ID } from '../contract-constants'
 import { workerContainmentRecoveryTablesV32Sql } from './worker-containment-recovery-v31'
-import { workerTerminalLifecycleTableSql } from './worker-terminal-lifecycle-v31'
+import { workerExecutionLifecycleTableSql } from './worker-execution-lifecycle-v31'
 
 export function createCoreTablesSql(): string {
   return `
@@ -122,6 +122,7 @@ CREATE TABLE IF NOT EXISTS worker_dispatches (
   stage                  TEXT NOT NULL DEFAULT 'accepted',
   worktree_id            TEXT,
   agent_terminal_handle  TEXT,
+  provisional_capability TEXT,
   setup_state            TEXT NOT NULL DEFAULT 'not_applicable',
   effects                TEXT NOT NULL DEFAULT '[]',
   residual_resources     TEXT NOT NULL DEFAULT '[]',
@@ -131,7 +132,7 @@ CREATE TABLE IF NOT EXISTS worker_dispatches (
   updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-${workerTerminalLifecycleTableSql()}
+${workerExecutionLifecycleTableSql()}
 
 CREATE TABLE IF NOT EXISTS worker_terminal_archives (
   dispatch_id   TEXT PRIMARY KEY,

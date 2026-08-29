@@ -100,6 +100,9 @@ describe('lost-custody worker containment recovery', () => {
       successorPlacement: 'new-child' as const,
       successorName: 'recovered-generation-2',
       authorization: 'acknowledge_possible_duplicate_external_effects' as const,
+      successorDispatchId: `ctx_successor_${requestId}`,
+      provisionalCapability: `dcap_successor_${requestId}`,
+      launchTokenHash: 'a'.repeat(64),
       startOptions: {
         worktree: 'new-child',
         name: 'recovered-generation-2',
@@ -127,6 +130,9 @@ describe('lost-custody worker containment recovery', () => {
       successorPlacement: _successorPlacement,
       successorName: _successorName,
       startOptions: _startOptions,
+      successorDispatchId: _successorDispatchId,
+      provisionalCapability: _provisionalCapability,
+      launchTokenHash: _launchTokenHash,
       authorization: _authorization,
       ...base
     } = recoveryParams(fixture, 'accept-archive')
@@ -213,7 +219,7 @@ describe('lost-custody worker containment recovery', () => {
       source_resource_id: fixture.resource.id
     })
     expect(
-      sqlite.prepare('SELECT resource_id, state FROM worker_terminal_capacity_debts').get()
+      sqlite.prepare('SELECT resource_id, state FROM worker_execution_capacity_debts').get()
     ).toEqual({ resource_id: fixture.resource.id, state: 'withheld' })
     expect(() =>
       db!.acknowledgeRunDelivery({
@@ -316,7 +322,7 @@ describe('lost-custody worker containment recovery', () => {
   it('fails closed without local execution-host restart custody', () => {
     const fixture = createFixture()
     db!.db
-      .prepare('UPDATE worker_terminal_resources SET host_scope = ? WHERE id = ?')
+      .prepare('UPDATE worker_execution_resources SET host_scope = ? WHERE id = ?')
       .run(JSON.stringify({ kind: 'ssh', targetId: 'ssh-worker-host' }), fixture.resource.id)
 
     expect(() => db!.acceptLostCustodyWorkerRecovery(recoveryParams(fixture))).toThrowError(
@@ -397,7 +403,7 @@ describe('lost-custody worker containment recovery', () => {
     expect(
       sqlite
         .prepare(
-          'SELECT state, released_at IS NOT NULL AS released FROM worker_terminal_capacity_debts'
+          'SELECT state, released_at IS NOT NULL AS released FROM worker_execution_capacity_debts'
         )
         .get()
     ).toEqual({ state: 'released', released: 1 })

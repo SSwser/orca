@@ -1,5 +1,68 @@
 import type Database from '../../../../sqlite/sync-database'
 
+function hasTable(db: Database.Database, table: string): boolean {
+  return Boolean(
+    db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)
+  )
+}
+
+function hasColumn(db: Database.Database, table: string, column: string): boolean {
+  return (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some(
+    (candidate) => candidate.name === column
+  )
+}
+
+export function workerGenerationOperationsTableV32Sql(): string {
+  return `
+CREATE TABLE IF NOT EXISTS worker_generation_operations (
+  dispatch_id         TEXT NOT NULL,
+  effect_kind         TEXT NOT NULL
+    CHECK(effect_kind IN ('worktree', 'execution_start')),
+  operation_id        TEXT NOT NULL UNIQUE,
+  payload_fingerprint TEXT NOT NULL,
+  state               TEXT NOT NULL DEFAULT 'claimed'
+    CHECK(state IN ('claimed', 'completed', 'unverifiable')),
+  claimant_id         TEXT NOT NULL,
+  receipt             TEXT,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY(dispatch_id, effect_kind)
+);
+CREATE INDEX IF NOT EXISTS idx_worker_generation_operations_state
+  ON worker_generation_operations(state, updated_at);`
+}
+
+function generationOperationsAreCanonical(db: Database.Database): boolean {
+  if (!hasTable(db, 'worker_generation_operations')) {
+    return true
+  }
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get('worker_generation_operations') as { sql?: string } | undefined
+  return Boolean(
+    row?.sql?.includes("'execution_start'") &&
+    !row.sql.includes("'terminal'") &&
+    !row.sql.includes("'prompt'")
+  )
+}
+
+function rebuildGenerationOperations(db: Database.Database): void {
+  db.exec(`
+    DROP INDEX IF EXISTS idx_worker_generation_operations_state;
+    ALTER TABLE worker_generation_operations RENAME TO worker_generation_operations_legacy;
+    ${workerGenerationOperationsTableV32Sql()}
+    INSERT INTO worker_generation_operations (
+      dispatch_id, effect_kind, operation_id, payload_fingerprint, state,
+      claimant_id, receipt, created_at, updated_at
+    )
+    SELECT dispatch_id, effect_kind, operation_id, payload_fingerprint, state,
+           claimant_id, receipt, created_at, updated_at
+      FROM worker_generation_operations_legacy
+     WHERE effect_kind = 'worktree';
+    DROP TABLE worker_generation_operations_legacy;
+  `)
+}
+
 function recoveryDispositionIsCanonical(db: Database.Database): boolean {
   const columns = db.prepare('PRAGMA table_info(worker_lost_custody_recoveries)').all() as {
     name: string
@@ -79,26 +142,35 @@ function rebuildRecoveriesWithDisposition(db: Database.Database): void {
   `)
 }
 
+function migrateWorkerExecutionCapacityDebtsV32(db: Database.Database): void {
+  const currentTable = 'worker_execution_capacity_debts'
+  const legacyTable = 'worker_terminal_capacity_debts'
+  if (!hasTable(db, legacyTable)) {
+    return
+  }
+  if (hasTable(db, currentTable)) {
+    const current = db.prepare(`SELECT COUNT(*) AS count FROM ${currentTable}`).get() as {
+      count: number
+    }
+    if (current.count !== 0) {
+      throw new Error('Conflicting worker execution and legacy terminal capacity debts')
+    }
+    db.exec(`DROP TABLE ${currentTable}`)
+  }
+  db.exec(`ALTER TABLE ${legacyTable} RENAME TO ${currentTable}`)
+}
+
 export function migrateWorkerRecoveryOperationsV32(db: Database.Database): void {
+  migrateWorkerExecutionCapacityDebtsV32(db)
+  if (!hasColumn(db, 'worker_dispatches', 'provisional_capability')) {
+    db.exec('ALTER TABLE worker_dispatches ADD COLUMN provisional_capability TEXT')
+  }
   if (!recoveryDispositionIsCanonical(db)) {
     rebuildRecoveriesWithDisposition(db)
   }
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS worker_generation_operations (
-      dispatch_id         TEXT NOT NULL,
-      effect_kind         TEXT NOT NULL
-        CHECK(effect_kind IN ('worktree', 'terminal', 'authority', 'prompt')),
-      operation_id        TEXT NOT NULL UNIQUE,
-      payload_fingerprint TEXT NOT NULL,
-      state               TEXT NOT NULL DEFAULT 'claimed'
-        CHECK(state IN ('claimed', 'completed', 'unverifiable')),
-      claimant_id         TEXT NOT NULL,
-      receipt             TEXT,
-      created_at          TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY(dispatch_id, effect_kind)
-    );
-    CREATE INDEX IF NOT EXISTS idx_worker_generation_operations_state
-      ON worker_generation_operations(state, updated_at);
-  `)
+  if (generationOperationsAreCanonical(db)) {
+    db.exec(workerGenerationOperationsTableV32Sql())
+  } else {
+    rebuildGenerationOperations(db)
+  }
 }

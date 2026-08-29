@@ -15,12 +15,7 @@ import type { SessionOptions } from './session-options'
 import type { TuiAgent } from '../../shared/tui-agent'
 import { randomUUID } from 'node:crypto'
 import { PtyStartupIngress } from '../../shared/pty-startup-ingress'
-import type {
-  WorkerPromptOperationIdentity,
-  WorkerPromptOperationInspection,
-  WorkerPromptOperationRequest
-} from '../../shared/worker-prompt-operation'
-import { SessionWorkerPromptOperationLedger } from './session-worker-prompt-operation'
+import type { AgentSessionCreateOperationIdentity } from '../../shared/agent-session-host-authority'
 
 import type {
   SessionState,
@@ -36,6 +31,7 @@ export class Session {
   readonly launchAgent: TuiAgent | null
   readonly wslDistro: string | null
   readonly hostCrashContained: boolean
+  readonly agentSessionCreateOperation: AgentSessionCreateOperationIdentity | null
   private _state: SessionState = 'running'
   private _exitCode: number | null = null
   private _disposed = false
@@ -46,7 +42,6 @@ export class Session {
   private readonly shellReady: SessionShellReadyBarrier
   private readonly termination: SessionTerminationController
   private readonly startupIngress: PtyStartupIngress
-  private readonly workerPromptOperations = new SessionWorkerPromptOperationLedger()
   private readonly recoveryBarrier: TerminalShellRecoveryBarrier
 
   constructor(opts: SessionOptions) {
@@ -56,6 +51,7 @@ export class Session {
     this.wslDistro = opts.wslDistro ?? null
     this.subprocess = opts.subprocess
     this.hostCrashContained = this.subprocess.hostCrashContained === true
+    this.agentSessionCreateOperation = opts.agentSessionCreateOperation ?? null
     this.onSessionExit = opts.onExit
     const pipeline = createSessionOutputPipeline({
       cols: opts.cols,
@@ -162,25 +158,6 @@ export class Session {
     }
 
     this.subprocess.write(data)
-  }
-
-  writeWorkerPromptOperation(request: WorkerPromptOperationRequest): { accepted: boolean } {
-    return this.workerPromptOperations.write(
-      request,
-      this._state !== 'exited' &&
-        !this._disposed &&
-        request.sessionIncarnationId === this.incarnationId &&
-        request.terminalHandle === this.terminalHandle &&
-        !this.shellReady.isGatingWrites &&
-        this.subprocess.writeAcknowledged !== undefined,
-      (data) => this.subprocess.writeAcknowledged?.(data) === true
-    )
-  }
-
-  inspectWorkerPromptOperation(
-    identity: WorkerPromptOperationIdentity
-  ): WorkerPromptOperationInspection {
-    return this.workerPromptOperations.inspect(identity)
   }
 
   resize(cols: number, rows: number): void {

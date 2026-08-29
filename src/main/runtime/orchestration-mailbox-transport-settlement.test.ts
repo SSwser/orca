@@ -63,4 +63,24 @@ describe('orchestration mailbox transport settlement', () => {
     expect(db.getMessageById(message.id)?.delivered_at).toEqual(expect.any(String))
     db.close()
   })
+
+  it('does not treat a plain provider write as transport settlement', async () => {
+    vi.useFakeTimers()
+    const db = createDatabase('orca-mailbox-no-transport-settlement-')
+    const harness = createRuntime(db)
+    const plainWrite = vi.fn(() => true)
+    harness.runtime.setPtyController({
+      write: plainWrite,
+      kill: vi.fn(),
+      getForegroundProcess: async () => null
+    })
+    const run = createBoundRun(db, 'No settlement Run')
+    const message = insertDirectRunMessage(db, run.id, 'Unsettled pointer')
+
+    await driveToLiveIdle(harness.runtime)
+
+    expect(plainWrite).not.toHaveBeenCalled()
+    expect(db.getMessageById(message.id)?.delivered_at).toBeNull()
+    db.close()
+  })
 })

@@ -1,8 +1,6 @@
 import { isValidTerminalTabId } from '../../../../shared/terminal-tab-id'
-import { isTerminalLeafId } from '../../../../shared/stable-pane-id'
 import { ptyOwnership, ptyIncarnationById, deletePtyOwnership } from '../provider/ownership-state'
 import { ptySizes } from '../delivery/visibility-state'
-import { getRelayPtyId } from '../provider/registry'
 import {
   shouldSkipCodexHomeEnvForWindowsShell,
   recordCodexPaneAccountForSpawn,
@@ -35,6 +33,7 @@ import { clearProviderPtyState } from '../provider/state-cleanup'
 import { resolvePaneSpawnReservation } from '../pane/spawn-reservation'
 import { admitProviderReattachLaunchIdentity } from '../pane/launch-authority'
 import type { RuntimePtySpawnState } from './spawn-state'
+import { persistRuntimePtySshLease } from './spawn-ssh-lease'
 
 export async function commitRuntimePtySpawn(ctx: RuntimePtySpawnState) {
   const args = ctx.args
@@ -72,6 +71,7 @@ export async function commitRuntimePtySpawn(ctx: RuntimePtySpawnState) {
         tabId: owner.surface.tabId,
         leafId: owner.surface.leafId,
         ...(ctx.result.incarnationId ? { incarnationId: ctx.result.incarnationId } : {}),
+        agentSessionCreateOperation: ctx.result.agentSessionCreateOperation,
         ...(providerReattachLaunchIdentity ? { providerReattachLaunchIdentity } : {})
       }
     )
@@ -97,6 +97,7 @@ export async function commitRuntimePtySpawn(ctx: RuntimePtySpawnState) {
       id: ctx.result.id,
       ...(ctx.result.incarnationId ? { incarnationId: ctx.result.incarnationId } : {}),
       ...(ctx.result.restartCustody ? { restartCustody: ctx.result.restartCustody } : {}),
+      agentSessionCreateOperation: ctx.result.agentSessionCreateOperation,
       agentSessionEnsure: ctx.result.agentSessionEnsure
     }
   }
@@ -114,25 +115,8 @@ export async function commitRuntimePtySpawn(ctx: RuntimePtySpawnState) {
   ) {
     markNativeWindowsConptyPty(ctx.result.id)
   }
-  const persistSshLease = (): void => {
-    if (!ctx.deps.store || !args.connectionId) {
-      return
-    }
-    // Why: SSH leases keep relay ids for remote reconciliation, while session bindings keep app-facing ids for hydration.
-    ctx.deps.store.upsertSshRemotePtyLease({
-      targetId: args.connectionId,
-      ptyId: getRelayPtyId(args.connectionId, ctx.result.id),
-      ...(typeof args.worktreeId === 'string' ? { worktreeId: args.worktreeId } : {}),
-      ...(typeof args.tabId === 'string' ? { tabId: args.tabId } : {}),
-      ...(typeof args.leafId === 'string' && isTerminalLeafId(args.leafId)
-        ? { leafId: args.leafId }
-        : {}),
-      state: 'attached',
-      lastAttachedAt: Date.now()
-    })
-  }
   if (!ctx.hostSessionBinding) {
-    persistSshLease()
+    persistRuntimePtySshLease(ctx)
   }
   ptySizes.set(ctx.result.id, { cols: args.cols, rows: args.rows })
   if (ctx.effectiveSessionAppId !== undefined && ctx.effectiveSessionAppId !== ctx.result.id) {
@@ -189,7 +173,7 @@ export async function commitRuntimePtySpawn(ctx: RuntimePtySpawnState) {
         agentSessionOperationOutcome: 'unknown' as const
       })
     }
-    persistSshLease()
+    persistRuntimePtySshLease(ctx)
   }
   if (args.preAllocatedHandle && !ctx.stablePaneOwner?.handle) {
     ctx.deps.runtime?.registerPreAllocatedHandleForPty(ctx.result.id, args.preAllocatedHandle)
@@ -208,6 +192,7 @@ export async function commitRuntimePtySpawn(ctx: RuntimePtySpawnState) {
             tabId: args.tabId,
             leafId: ctx.metadataLeafId,
             ...(ctx.result.incarnationId ? { incarnationId: ctx.result.incarnationId } : {}),
+            agentSessionCreateOperation: ctx.result.agentSessionCreateOperation,
             ...(providerReattachLaunchIdentity ? { providerReattachLaunchIdentity } : {})
           }
         : undefined,
@@ -297,7 +282,8 @@ export async function commitRuntimePtySpawn(ctx: RuntimePtySpawnState) {
           }
         }
       : {}),
-    ...(ctx.result.agentSessionEnsure ? { agentSessionEnsure: ctx.result.agentSessionEnsure } : {})
+    ...(ctx.result.agentSessionEnsure ? { agentSessionEnsure: ctx.result.agentSessionEnsure } : {}),
+    agentSessionCreateOperation: ctx.result.agentSessionCreateOperation
   }
   resolvePaneSpawnReservation(ctx.paneSpawnReservationKey, ctx.paneSpawnReservation, {
     ...ctx.result,

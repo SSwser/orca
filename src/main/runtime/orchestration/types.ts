@@ -151,6 +151,7 @@ export type WorkerDispatchRow = {
   stage: string
   worktree_id: string | null
   agent_terminal_handle: string | null
+  provisional_capability: string | null
   setup_state: string
   effects: string
   residual_resources: string

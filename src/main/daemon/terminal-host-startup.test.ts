@@ -47,7 +47,7 @@ describe('TerminalHost startup command terminator', () => {
       sessionId: `s-${platform}-${cmd.length}`,
       cols: 80,
       rows: 24,
-      command: cmd,
+      target: { kind: 'shell-command', command: cmd },
       shellReadySupported: false,
       streamClient: { onData: vi.fn(), onExit: vi.fn() }
     })

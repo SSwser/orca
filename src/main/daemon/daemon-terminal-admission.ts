@@ -1,4 +1,5 @@
 import { performance } from 'node:perf_hooks'
+import { isAbsolute } from 'node:path'
 import type { BackgroundTransientFactRelay } from './daemon-background-transient-facts'
 import type { DaemonClientConnections } from './daemon-client-connections'
 import type { DaemonEndpointLifecycle } from './daemon-endpoint-lifecycle'
@@ -16,9 +17,11 @@ import type { CreateOrAttachOptions, CreateOrAttachResult, TerminalHost } from '
 import { isTuiAgent } from '../../shared/tui-agent-config'
 import { parsePtyStartupIngressIntent } from '../../shared/pty-startup-ingress'
 import {
+  isAgentSessionCreateOperationIdentity,
   isAgentSessionExecutionClaim,
   isAgentSessionSurfaceBinding
 } from '../../shared/agent-session-host-authority'
+import { isPtySpawnTarget } from '../../shared/pty-spawn-target'
 import { type DaemonRequest, TerminalAttachCanceledError } from './types'
 
 type CreateOrAttachRequest = Extract<DaemonRequest, { type: 'createOrAttach' }>
@@ -75,6 +78,18 @@ export class DaemonTerminalAdmission {
       ) {
         throw new Error('agent_session_identity_required')
       }
+      if (
+        payload.agentSessionCreateOperation !== undefined &&
+        !isAgentSessionCreateOperationIdentity(payload.agentSessionCreateOperation)
+      ) {
+        throw new Error('agent_session_operation_invalid')
+      }
+      if (payload.target !== undefined && !isPtySpawnTarget(payload.target)) {
+        throw new Error('terminal_spawn_target_invalid')
+      }
+      if (payload.target?.kind === 'agent-process' && !isAbsolute(payload.target.executable)) {
+        throw new Error('terminal_spawn_target_invalid')
+      }
       spawnPreparation = this.options.preparations.register(
         payload.sessionId,
         clientId,
@@ -100,7 +115,7 @@ export class DaemonTerminalAdmission {
         cwd: payload.cwd,
         env: payload.env,
         envToDelete: payload.envToDelete,
-        command: payload.command,
+        target: payload.target,
         startupCommandDelivery: payload.startupCommandDelivery,
         ...(attachOnly ? { attachOnly: true } : {}),
         ...(isTuiAgent(payload.launchAgent) ? { launchAgent: payload.launchAgent } : {}),
@@ -115,6 +130,9 @@ export class DaemonTerminalAdmission {
           ? { shellReadyTimeoutMs: payload.shellReadyTimeoutMs }
           : {}),
         ...(payload.agentSessionEnsure ? { agentSessionEnsure: payload.agentSessionEnsure } : {}),
+        ...(payload.agentSessionCreateOperation
+          ? { agentSessionCreateOperation: payload.agentSessionCreateOperation }
+          : {}),
         isCanceled: () => spawnPreparation?.canceled === true,
         cancelSignal: spawnPreparation.controller.signal,
         onSessionResolved: (sessionId) => {
@@ -163,7 +181,10 @@ export class DaemonTerminalAdmission {
       wslDistro: result.wslDistro,
       ...(result.historySeeded !== undefined ? { historySeeded: result.historySeeded } : {}),
       ...(result.hostCrashContained ? { hostCrashContained: true } : {}),
-      ...(result.agentSessionEnsure ? { agentSessionEnsure: result.agentSessionEnsure } : {})
+      ...(result.agentSessionEnsure ? { agentSessionEnsure: result.agentSessionEnsure } : {}),
+      ...(result.agentSessionCreateOperation
+        ? { agentSessionCreateOperation: result.agentSessionCreateOperation }
+        : {})
     }
   }
 

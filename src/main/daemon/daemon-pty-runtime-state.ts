@@ -17,7 +17,6 @@ import {
   AGENT_SESSION_CREATE_OPERATION_DAEMON_PROTOCOL_VERSION,
   GIT_CREDENTIAL_GUARD_HOST_PROTOCOL_VERSION,
   PROTOCOL_VERSION,
-  WORKER_PROMPT_OPERATION_DAEMON_PROTOCOL_VERSION,
   supportsMode2031UnsubscribeFact,
   supportsPtyStartupIngress,
   type TakePendingOutputResult
@@ -257,10 +256,6 @@ export abstract class DaemonPtyRuntimeState {
 
   supportsAgentSessionCreateOperations(): boolean {
     return this.protocolVersion >= AGENT_SESSION_CREATE_OPERATION_DAEMON_PROTOCOL_VERSION
-  }
-
-  supportsWorkerPromptOperations(): boolean {
-    return this.protocolVersion >= WORKER_PROMPT_OPERATION_DAEMON_PROTOCOL_VERSION
   }
 
   protected restartCustodyResult(

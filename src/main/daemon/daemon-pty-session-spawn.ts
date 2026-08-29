@@ -5,6 +5,7 @@ import type {
   PendingDaemonSpawnOperation
 } from './daemon-pty-runtime-state'
 import {
+  AGENT_SESSION_CREATE_OPERATION_DAEMON_PROTOCOL_VERSION,
   STABLE_PANE_ATTACH_ONLY_DAEMON_PROTOCOL_VERSION,
   WINDOWS_HOST_CRASH_CONTAINMENT_DAEMON_PROTOCOL_VERSION
 } from './daemon-protocol-version'
@@ -119,6 +120,12 @@ export abstract class DaemonPtySessionSpawn extends DaemonPtySpawnResult {
     ) {
       throw new Error('daemon_crash_containment_unavailable')
     }
+    if (
+      opts.agentSessionCreateOperation &&
+      this.protocolVersion < AGENT_SESSION_CREATE_OPERATION_DAEMON_PROTOCOL_VERSION
+    ) {
+      throw new Error('agent_session_operation_unavailable')
+    }
     const requestedSessionId = opts.sessionId!
     // Why: v30 daemons survive upgrades; reject their accidental create result before publication.
     const attachOnly = opts.attachOnly === true
@@ -221,13 +228,13 @@ export abstract class DaemonPtySessionSpawn extends DaemonPtySpawnResult {
     let effectiveCols = restoreInfo?.cols ?? opts.cols
     let effectiveRows = restoreInfo?.rows ?? opts.rows
 
-    const shellReadySupported = opts.command ? supportsPtyStartupBarrier(opts.env ?? {}) : false
-    const isCodexStartupCommand =
-      recognizeAgentProcessFromCommandLine(opts.command)?.agent === 'codex'
+    const command = opts.target?.kind === 'shell-command' ? opts.target.command : undefined
+    const shellReadySupported = command ? supportsPtyStartupBarrier(opts.env ?? {}) : false
+    const isCodexStartupCommand = recognizeAgentProcessFromCommandLine(command)?.agent === 'codex'
     const shouldWaitForShellReady =
       isCodexStartupCommand &&
       shouldUseShellReadyStartupDelivery({
-        command: opts.command,
+        command,
         startupCommandDelivery: opts.startupCommandDelivery
       })
     const shellReadyTimeoutMs =

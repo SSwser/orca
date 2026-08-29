@@ -1,4 +1,7 @@
-import type { AgentSessionOwnerBinding } from '../../shared/agent-session-host-authority'
+import type {
+  AgentSessionCreateOperationIdentity,
+  AgentSessionOwnerBinding
+} from '../../shared/agent-session-host-authority'
 import type { PtyIncarnationId } from '../../shared/pty-incarnation'
 import type { PtyRestartCustody } from '../../shared/pty-restart-custody'
 
@@ -15,4 +18,5 @@ export type PtyProcessInfo = {
   /** Exact WSL owner reported by the PTY provider; null means native Windows. */
   wslDistro?: string | null
   agentSessionOwners?: AgentSessionOwnerBinding[]
+  agentSessionCreateOperation?: AgentSessionCreateOperationIdentity
 }

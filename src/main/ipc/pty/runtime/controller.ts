@@ -22,17 +22,14 @@ import {
   hasRendererSerializerFromRuntimeController,
   inspectProcessFromRuntimeController,
   inspectRestartCustodyFromRuntimeController,
-  inspectWorkerPromptOperationFromRuntimeController,
   listProcessesFromRuntimeController,
   listProcessesWithHostScopeFromRuntimeController,
   probePtyLivenessFromRuntimeController,
   resizePtyFromRuntimeController,
   serializeProviderBufferFromRuntimeController,
-  supportsWorkerPromptOperationsFromRuntimeController,
   waitForRendererSerializerFromRuntimeController,
   writePtyFromRuntimeController,
-  writePtyWithSettlementFromRuntimeController,
-  writeWorkerPromptOperationFromRuntimeController
+  writePtyWithSettlementFromRuntimeController
 } from './operations'
 
 export function installPtyRuntimeController(deps: PtyRuntimeControllerDeps): void {
@@ -48,12 +45,6 @@ export function installPtyRuntimeController(deps: PtyRuntimeControllerDeps): voi
     spawn: async (args) => spawnPtyFromRuntimeController(deps, args),
     write: (ptyId, data) => writePtyFromRuntimeController(ptyId, data),
     writeWithSettlement: (ptyId, data) => writePtyWithSettlementFromRuntimeController(ptyId, data),
-    supportsWorkerPromptOperations: (ptyId) =>
-      supportsWorkerPromptOperationsFromRuntimeController(ptyId),
-    writeWorkerPromptOperation: (ptyId, operation) =>
-      writeWorkerPromptOperationFromRuntimeController(ptyId, operation),
-    inspectWorkerPromptOperation: (ptyId, identity) =>
-      inspectWorkerPromptOperationFromRuntimeController(ptyId, identity),
     probePtyLiveness: (ptyId) => probePtyLivenessFromRuntimeController(deps, ptyId),
     inspectRestartCustody: (custody) => inspectRestartCustodyFromRuntimeController(custody),
     // Why: subscriber-driven ingestion for daemon sessions no renderer pane

@@ -5,9 +5,9 @@ import {
 import { OrchestrationError } from '../../orchestration/orchestration-error'
 import { defineMethod, type RpcMethod } from '../core'
 import { resolveDispatchCreator } from './orchestration-dispatch-creator'
-import { startFederatedWorker } from './orchestration-federated-worker-start'
 import { resolveOrchestrationCaller } from './orchestration-run-scope'
 import { executeAcceptedLocalWorkerStart } from './orchestration-worker-start-executor'
+import { prepareWorkerExecutionAdmission } from './orchestration-worker-execution-admission'
 import { prepareLocalWorkerExecution } from './orchestration-worker-start-preparation'
 import { WorkerStartParams } from './orchestration-worker-start-schema'
 
@@ -17,7 +17,13 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
     params: WorkerStartParams,
     handler: async (
       params,
-      { runtime, orchestrationMutation, orchestrationCompatibilityEvidence }
+      {
+        runtime,
+        orchestrationMutation,
+        orchestrationCompatibilityEvidence,
+        resumedWorkerStartDispatchId,
+        deferMutationCompletion
+      }
     ) => {
       if (!isWorkerStartTimeoutWithinTimerLimit(params.timeoutMs)) {
         throw new OrchestrationError(
@@ -48,14 +54,10 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
         )
       }
       if (params.on) {
-        return startFederatedWorker({
-          params,
-          runtime,
-          db,
-          runId: run.id,
-          task,
-          orchestrationMutation
-        })
+        throw new OrchestrationError(
+          'execution_host_unavailable',
+          'Federated Worker execution start is unavailable until the remote host advertises the complete atomic Session start and release authority contract.'
+        )
       }
       const prepared = await prepareLocalWorkerExecution({
         runtime,
@@ -68,23 +70,103 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
           'The selected physical workspace generation is fenced by a contained worker.'
         )
       }
+      if (resumedWorkerStartDispatchId) {
+        const dispatch = db.getDispatchContextById(resumedWorkerStartDispatchId)
+        const worker = db.getWorkerDispatch(resumedWorkerStartDispatchId)
+        if (
+          !dispatch ||
+          dispatch.task_id !== task.id ||
+          !worker ||
+          !['starting', 'start_unknown'].includes(worker.state) ||
+          !worker.provisional_capability ||
+          !dispatch.launch_token_hash
+        ) {
+          throw new OrchestrationError(
+            'operation_unknown',
+            `Accepted Worker Dispatch ${resumedWorkerStartDispatchId} cannot be resumed safely.`
+          )
+        }
+        const storedStartOptions = JSON.parse(worker.start_options) as Record<string, unknown>
+        const { executionTargetFingerprint, ...topologyStartOptions } = storedStartOptions
+        const resumedAdmission = prepareWorkerExecutionAdmission({
+          runtime,
+          task,
+          coordinatorHandle: params.from,
+          startOptions: topologyStartOptions,
+          launchPreferences: prepared.launch.preferences,
+          devMode: params.devMode,
+          identity: {
+            dispatchId: dispatch.id,
+            provisionalCapability: worker.provisional_capability
+          }
+        })
+        if (
+          executionTargetFingerprint !== resumedAdmission.startOptions.executionTargetFingerprint ||
+          dispatch.launch_token_hash !== resumedAdmission.launchTokenHash
+        ) {
+          throw new OrchestrationError(
+            'operation_unknown',
+            `Accepted Worker Dispatch ${dispatch.id} no longer matches its execution admission.`
+          )
+        }
+        prepared.startOptions = storedStartOptions
+        return settleWorkerStartMutation(
+          executeAcceptedLocalWorkerStart({
+            runtime,
+            db,
+            runId: run.id,
+            task,
+            started: { dispatch, worker },
+            prepared
+          }),
+          deferMutationCompletion
+        )
+      }
+      const admission = prepareWorkerExecutionAdmission({
+        runtime,
+        task,
+        coordinatorHandle: params.from,
+        startOptions: prepared.startOptions,
+        launchPreferences: prepared.launch.preferences,
+        devMode: params.devMode
+      })
+      prepared.startOptions = admission.startOptions
       const started = db.createStartingWorkerDispatch({
         creator: resolveDispatchCreator(runtime, params.from),
         maxDepth: runtime.getNestedWorkerMaxDepth(),
         taskId: task.id,
+        dispatchId: admission.dispatchId,
+        provisionalCapability: admission.provisionalCapability,
+        launchTokenHash: admission.launchTokenHash,
         retryOf: params.retryOf,
         startOptions: prepared.startOptions,
         runtimeEpoch: runtime.getRuntimeId(),
         mutationReceipt: orchestrationMutation
       })
-      return executeAcceptedLocalWorkerStart({
-        runtime,
-        db,
-        runId: run.id,
-        task,
-        started,
-        prepared
-      })
+      return settleWorkerStartMutation(
+        executeAcceptedLocalWorkerStart({
+          runtime,
+          db,
+          runId: run.id,
+          task,
+          started,
+          prepared
+        }),
+        deferMutationCompletion
+      )
     }
   })
 ]
+
+async function settleWorkerStartMutation(
+  pending: Promise<unknown>,
+  deferMutationCompletion?: () => void
+): Promise<unknown> {
+  const result = await pending
+  const state =
+    result && typeof result === 'object' ? (result as { state?: unknown }).state : undefined
+  if (state === 'starting' || state === 'outcome_unknown') {
+    deferMutationCompletion?.()
+  }
+  return result
+}

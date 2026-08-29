@@ -1,4 +1,5 @@
 import type Database from '../../../../sqlite/sync-database'
+import { workerGenerationOperationsTableV32Sql } from './worker-recovery-operations-v32'
 
 export function workerContainmentRecoveryTablesSql(): string {
   return `
@@ -46,7 +47,7 @@ CREATE TABLE IF NOT EXISTS worker_workspace_generation_fences (
   created_at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS worker_terminal_capacity_debts (
+CREATE TABLE IF NOT EXISTS worker_execution_capacity_debts (
   resource_id  TEXT PRIMARY KEY,
   recovery_id  TEXT NOT NULL UNIQUE,
   state        TEXT NOT NULL DEFAULT 'withheld' CHECK(state IN ('withheld', 'released')),
@@ -119,29 +120,14 @@ CREATE TABLE IF NOT EXISTS worker_workspace_generation_fences (
   reason             TEXT NOT NULL CHECK(reason = 'lost_custody'),
   created_at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE TABLE IF NOT EXISTS worker_terminal_capacity_debts (
+CREATE TABLE IF NOT EXISTS worker_execution_capacity_debts (
   resource_id  TEXT PRIMARY KEY,
   recovery_id  TEXT NOT NULL UNIQUE,
   state        TEXT NOT NULL DEFAULT 'withheld' CHECK(state IN ('withheld', 'released')),
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   released_at  TEXT
 );
-CREATE TABLE IF NOT EXISTS worker_generation_operations (
-  dispatch_id         TEXT NOT NULL,
-  effect_kind         TEXT NOT NULL
-    CHECK(effect_kind IN ('worktree', 'terminal', 'authority', 'prompt')),
-  operation_id        TEXT NOT NULL UNIQUE,
-  payload_fingerprint TEXT NOT NULL,
-  state               TEXT NOT NULL DEFAULT 'claimed'
-    CHECK(state IN ('claimed', 'completed', 'unverifiable')),
-  claimant_id         TEXT NOT NULL,
-  receipt             TEXT,
-  created_at          TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY(dispatch_id, effect_kind)
-);
-CREATE INDEX IF NOT EXISTS idx_worker_generation_operations_state
-  ON worker_generation_operations(state, updated_at);`
+${workerGenerationOperationsTableV32Sql()}`
 }
 
 function deliveriesSupportContainment(db: Database.Database): boolean {

@@ -1,9 +1,16 @@
+import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
+import type * as LocalCodexTargetModule from './local-codex-agent-process-target'
 import type {
   RuntimeCreateAgentSessionRequest,
   RuntimeCreateAgentSessionResult
 } from '../../shared/agent-session-host-authority'
 import { OrcaRuntimeService } from './orca-runtime'
+
+vi.mock('./local-codex-agent-process-target', async (importOriginal) => ({
+  ...(await importOriginal<typeof LocalCodexTargetModule>()),
+  fingerprintAgentProcessTarget: () => 'c'.repeat(64)
+}))
 
 function operationId(now = Date.now()): string {
   return `${now}-0123456789abcdef0123456789abcdef`
@@ -31,14 +38,87 @@ function terminal() {
     ptyId: 'pty-operation',
     worktreeId: 'worktree-1',
     title: null,
-    surface: 'background' as const
+    surface: 'background' as const,
+    agentSessionCreateOperation: {
+      operationId: 'a'.repeat(43),
+      payloadFingerprint: 'b'.repeat(64)
+    }
   }
 }
 
-function createRuntime(provider?: {
-  supportsAgentSessionClaims?: () => boolean
-  supportsAgentSessionCreateOperations?: () => boolean
-}) {
+function executionStart() {
+  return {
+    operationId: 'a'.repeat(43),
+    payloadFingerprint: 'b'.repeat(64),
+    targetFingerprint: 'c'.repeat(64),
+    terminalHandle: 'term_operation',
+    launchToken: 'launch-token',
+    writeFence: { ownerId: 'ctx_worker', generation: 'generation-1' },
+    semanticBaselineAt: Date.now() - 1_000,
+    timeoutMs: 1_000
+  }
+}
+
+function mockAcceptedExecutionStart(runtime: OrcaRuntimeService): void {
+  vi.spyOn(runtime, 'getExactWorkerProviderSession').mockReturnValue({
+    paneKey: terminal().paneKey,
+    processIncarnation: 'daemon:pty:incarnation',
+    agent: 'codex',
+    providerSession: { key: 'session_id', id: 'codex-session' },
+    observedAt: Date.now()
+  })
+  vi.spyOn(runtime, 'getOrchestrationDispatchAuthority').mockReturnValue({
+    runtimeId: 'runtime-test',
+    terminalHandle: terminal().handle,
+    ptyId: terminal().ptyId,
+    worktreeId: terminal().worktreeId,
+    paneKey: terminal().paneKey,
+    processIncarnation: 'daemon:pty:incarnation',
+    launchTokenHash: createHash('sha256').update('launch-token').digest('hex'),
+    hostScope: {
+      kind: 'local',
+      hostId: 'local',
+      restartCustody: {
+        kind: 'windows_daemon_job',
+        daemonPid: 100,
+        daemonStartedAtMs: 1,
+        daemonLaunchNonce: 'nonce'
+      }
+    }
+  })
+}
+
+function bindExecutionStartTerminal(
+  runtime: OrcaRuntimeService,
+  fingerprint = 'b'.repeat(64)
+): void {
+  runtime.setPtyController({
+    write: () => true,
+    kill: () => true,
+    getForegroundProcess: async () => null,
+    probePtyLiveness: async () => true
+  })
+  runtime.registerPreAllocatedHandleForPty(terminal().ptyId, terminal().handle)
+  runtime.registerPty(terminal().ptyId, terminal().worktreeId, null, {
+    tabId: terminal().tabId,
+    leafId: terminal().paneKey.split(':')[1]!,
+    incarnationId: 'daemon:pty:incarnation' as never,
+    agentSessionCreateOperation: {
+      operationId: executionStart().operationId,
+      payloadFingerprint: fingerprint
+    }
+  })
+  vi.spyOn(runtime, 'showTerminal').mockResolvedValue(terminal() as never)
+  mockAcceptedExecutionStart(runtime)
+}
+
+function createRuntime(
+  provider?: {
+    supportsAgentSessionClaims?: () => boolean
+    supportsAgentSessionCreateOperations?: () => boolean
+  },
+  extraDeps?: ConstructorParameters<typeof OrcaRuntimeService>[2]
+) {
   const runtime = new OrcaRuntimeService(
     {
       getSettings: () => ({
@@ -49,7 +129,10 @@ function createRuntime(provider?: {
       })
     } as never,
     undefined,
-    provider ? { getLocalProvider: () => provider as never } : undefined
+    {
+      ...extraDeps,
+      ...(provider ? { getLocalProvider: () => provider as never } : {})
+    }
   )
   const internal = runtime as unknown as {
     resolveTerminalWorkspaceLaunchScope: ReturnType<typeof vi.fn>
@@ -67,6 +150,217 @@ function createRuntime(provider?: {
 }
 
 describe('agent-session create operation ledger', () => {
+  it('carries one complete Codex first turn in the deterministic execution start', async () => {
+    const runtime = createRuntime({
+      supportsAgentSessionCreateOperations: () => true
+    })
+    const createTerminal = vi.spyOn(runtime, 'createTerminal').mockResolvedValue(terminal())
+    mockAcceptedExecutionStart(runtime)
+    const id = operationId()
+    const start = executionStart()
+    const { launchToken: _launchToken, ...receiptStart } = start
+
+    const prompt = 'complete worker preamble\n"quoted" CJK 任务 `literal`'
+    await expect(
+      runtime.createAgentSession(
+        request(id, {
+          prompt,
+          promptDelivery: 'auto-submit',
+          executionStart: start
+        })
+      )
+    ).resolves.toMatchObject({
+      disposition: 'created',
+      executionStartReceipt: {
+        ...receiptStart,
+        launchTokenHash: expect.any(String),
+        semanticObservedAt: expect.any(Number),
+        providerSession: { key: 'session_id', id: 'codex-session' }
+      }
+    })
+    expect(createTerminal).toHaveBeenCalledWith(
+      'id:worktree-1',
+      expect.objectContaining({
+        spawnTarget: {
+          kind: 'agent-process',
+          executable: expect.any(String),
+          argv: expect.arrayContaining([prompt]),
+          envPatch: expect.any(Object),
+          expectedProcess: 'codex'
+        },
+        preAllocatedHandle: start.terminalHandle,
+        agentSessionCreateOperationId: start.operationId,
+        requireHostCrashContainment: true
+      })
+    )
+    expect(createTerminal.mock.calls[0]?.[1]).not.toHaveProperty('command')
+  })
+
+  it('rejects a changed structured target before creating a terminal', async () => {
+    const runtime = createRuntime({ supportsAgentSessionCreateOperations: () => true })
+    const createTerminal = vi.spyOn(runtime, 'createTerminal')
+
+    await expect(
+      runtime.createAgentSession(
+        request(operationId(), {
+          promptDelivery: 'auto-submit',
+          executionStart: {
+            ...executionStart(),
+            targetFingerprint: 'd'.repeat(64)
+          }
+        })
+      )
+    ).rejects.toThrow('worker_execution_start_conflict')
+    expect(createTerminal).not.toHaveBeenCalled()
+  })
+
+  it('keeps the lower execution identity stable across a full main-runtime restart', async () => {
+    const start = executionStart()
+    const id = operationId()
+    const operationIds: string[] = []
+    for (const runtime of [
+      createRuntime({ supportsAgentSessionCreateOperations: () => true }),
+      createRuntime({ supportsAgentSessionCreateOperations: () => true })
+    ]) {
+      vi.spyOn(runtime, 'createTerminal').mockImplementation(async (_worktree, options) => {
+        operationIds.push(options?.agentSessionCreateOperationId ?? '')
+        return terminal()
+      })
+      mockAcceptedExecutionStart(runtime)
+      await runtime.createAgentSession(
+        request(id, {
+          prompt: 'same complete worker turn',
+          promptDelivery: 'auto-submit',
+          executionStart: start
+        })
+      )
+    }
+
+    expect(operationIds).toEqual([start.operationId, start.operationId])
+  })
+
+  it.each(['claude', 'cursor'] as const)(
+    'rejects unsupported %s execution start before spawning',
+    async (agent) => {
+      const runtime = createRuntime({ supportsAgentSessionCreateOperations: () => true })
+      const createTerminal = vi.spyOn(runtime, 'createTerminal').mockResolvedValue(terminal())
+
+      await expect(
+        runtime.createAgentSession(
+          request(operationId(), {
+            agent,
+            promptDelivery: 'auto-submit',
+            executionStart: executionStart()
+          })
+        )
+      ).rejects.toThrow('worker_execution_start_unsupported')
+      expect(createTerminal).not.toHaveBeenCalled()
+    }
+  )
+
+  it('inspects exact started, accepted, and conflicting execution identity', async () => {
+    const runtime = createRuntime()
+    bindExecutionStartTerminal(runtime)
+    vi.mocked(runtime.getExactWorkerProviderSession).mockReturnValueOnce(null)
+
+    await expect(
+      runtime.inspectAgentSessionExecutionStart('id:worktree-1', executionStart())
+    ).resolves.toMatchObject({ verdict: 'started', terminalHandle: terminal().handle })
+    await expect(
+      runtime.inspectAgentSessionExecutionStart('id:worktree-1', executionStart())
+    ).resolves.toMatchObject({
+      verdict: 'accepted',
+      receipt: { semanticObservedAt: expect.any(Number) }
+    })
+    await expect(
+      runtime.inspectAgentSessionExecutionStart('id:worktree-1', {
+        ...executionStart(),
+        payloadFingerprint: 'c'.repeat(64)
+      })
+    ).resolves.toEqual({ verdict: 'conflict' })
+  })
+
+  it('accepts a restarted provider turn through its persisted launch-token commitment', () => {
+    const start = executionStart()
+    const startedAt = start.semanticBaselineAt + 1
+    const attest = vi.fn(() => ({
+      paneKey: terminal().paneKey,
+      source: 'hydrated_commitment' as const,
+      providerTurn: {
+        agent: 'codex' as const,
+        providerSession: { key: 'session_id' as const, id: 'restarted-codex-session' },
+        acceptedAt: startedAt
+      }
+    }))
+    const runtime = createRuntime(undefined, {
+      getAgentStatusSnapshot: () => [
+        {
+          paneKey: terminal().paneKey,
+          connectionId: null,
+          receivedAt: startedAt + 1,
+          stateStartedAt: startedAt,
+          state: 'done',
+          prompt: '',
+          agentType: 'codex',
+          providerSession: { key: 'session_id', id: 'restarted-codex-session' },
+          restoredUnconfirmed: true
+        }
+      ],
+      attestAgentHookCompatibilityAuthority: attest
+    })
+    runtime.registerPreAllocatedHandleForPty(terminal().ptyId, terminal().handle)
+    runtime.registerPty(terminal().ptyId, terminal().worktreeId, null, {
+      tabId: terminal().tabId,
+      leafId: terminal().paneKey.split(':')[1]!,
+      incarnationId: 'daemon:pty:incarnation' as never,
+      providerReattachLaunchIdentity: {
+        incarnationId: 'daemon:pty:incarnation' as never,
+        launchAgent: 'codex'
+      },
+      agentSessionCreateOperation: {
+        operationId: start.operationId,
+        payloadFingerprint: start.payloadFingerprint
+      }
+    })
+
+    expect(
+      runtime.getExactWorkerProviderSession(
+        terminal().handle,
+        start.semanticBaselineAt,
+        start.launchToken
+      )
+    ).toMatchObject({
+      processIncarnation: 'pty-operation:daemon:pty:incarnation',
+      providerSession: { key: 'session_id', id: 'restarted-codex-session' },
+      observedAt: startedAt
+    })
+    expect(attest).toHaveBeenCalledWith({
+      paneKey: terminal().paneKey,
+      launchTokenHash: createHash('sha256').update(start.launchToken).digest('hex'),
+      connectionId: null,
+      terminalProvenance: 'restored'
+    })
+  })
+
+  it.each([
+    [false, 'not_started'],
+    [null, 'unverifiable'],
+    [true, 'unverifiable']
+  ] as const)('classifies absent terminal probe %s as %s', async (probe, verdict) => {
+    const runtime = createRuntime()
+    vi.spyOn(runtime, 'showTerminal').mockRejectedValue(new Error('terminal_not_found'))
+    runtime.setPtyController({
+      write: () => true,
+      kill: () => true,
+      getForegroundProcess: async () => null,
+      probePtyLiveness: async () => probe
+    })
+
+    await expect(
+      runtime.inspectAgentSessionExecutionStart('id:worktree-1', executionStart())
+    ).resolves.toEqual({ verdict })
+  })
+
   it('selects legacy before trust, spawn, or ledger state for an old daemon', async () => {
     const provider = {
       supportsAgentSessionClaims: vi.fn(() => false),

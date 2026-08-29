@@ -88,10 +88,11 @@ export function createRuntime(db: OrchestrationDb): MailboxNotificationHarness {
         ? { paneKey, source: 'current_hook' }
         : null
   })
-  const write = vi.fn(() => true)
+  const write = vi.fn((_ptyId: string, _data: string) => true)
   runtime.setOrchestrationDb(db)
   runtime.setPtyController({
     write,
+    writeWithSettlement: async (ptyId, data) => write(ptyId, data),
     kill: vi.fn(),
     getForegroundProcess: async () => null
   })

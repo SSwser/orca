@@ -90,6 +90,8 @@ export type RpcContext = {
     method: string
     payloadHash: string
   }
+  // Why: restart recovery must resume the atomically accepted Dispatch instead of creating another one.
+  resumedWorkerStartDispatchId?: string
   // Why: Run-scoped handlers must compare declared handles with request attestation.
   orchestrationCompatibilityEvidence?: OrchestrationCompatibilityEvidence
   // Why: only the compatibility authority router can set this trusted scope; user params cannot bypass Run consumer binding.
