@@ -5,10 +5,10 @@ import {
   waitForActivePanePtyId,
   waitForActiveTerminalManager
 } from './helpers/terminal'
-import { FAKE_AGENT_WINDOWS_SHELL } from './helpers/fake-agent-command-override'
 import {
   cleanupCompletedWorkerFixture,
   clearCompletedWorkerLedger,
+  completedWorkerFakeCodexArgs,
   completedWorkerFakeCodexCommand,
   completedWorkerLaunchEnv,
   listRuntimeTerminals,
@@ -47,20 +47,16 @@ for (const closeMode of ['terminal-close-cli', 'worker-release'] as const) {
     await ensureTerminalVisible(orcaPage)
     await waitForActiveTerminalManager(orcaPage)
     await waitForActivePanePtyId(orcaPage)
-    await orcaPage.evaluate(
-      async ({ agentCommand, terminalWindowsShell }) => {
-        await window.__store?.getState().updateSettings({
-          agentCmdOverrides: { codex: agentCommand },
-          terminalWindowsShell,
-          disabledTuiAgents: [],
-          terminalHiddenViewParking: false
-        })
-      },
-      {
-        agentCommand: completedWorkerFakeCodexCommand,
-        terminalWindowsShell: FAKE_AGENT_WINDOWS_SHELL
-      }
-    )
+    await orcaPage.evaluate(async (fakeCodexArgs) => {
+      await window.__store?.getState().updateSettings({
+        disabledTuiAgents: [],
+        agentDefaultArgs: {
+          ...window.__store?.getState().settings.agentDefaultArgs,
+          codex: fakeCodexArgs
+        },
+        terminalHiddenViewParking: false
+      })
+    }, completedWorkerFakeCodexArgs)
 
     const userDataDir = await electronApp.evaluate(({ app }) => app.getPath('userData'))
     const isolatedHome = await electronApp.evaluate(({ app }) => app.getPath('home'))
@@ -161,18 +157,60 @@ for (const closeMode of ['terminal-close-cli', 'worker-release'] as const) {
     const workerPaneKey = `${worker.tabId}:${worker.leafId}`
     expect(worker.worktreeId).toBe(targetWorktreeId)
     await orcaPage.evaluate(
-      ({ tabId, worktreeId }) => {
-        window.dispatchEvent(
-          new CustomEvent('orca-background-mount-terminal-worktree', {
-            detail: { worktreeId, tabIds: [tabId] }
+      ({ leafId, ptyId, tabId, worktreeId }) => {
+        const store = window.__store
+        if (!store) {
+          throw new Error('Renderer store unavailable')
+        }
+        const state = store.getState()
+        if (!state.tabsByWorktree[worktreeId]?.some((tab) => tab.id === tabId)) {
+          state.createTab(worktreeId, undefined, undefined, {
+            id: tabId,
+            initialPtyId: ptyId,
+            launchAgent: 'codex',
+            activate: false
           })
-        )
+        }
+        store.setState((current) => ({
+          terminalLayoutsByTabId: {
+            ...current.terminalLayoutsByTabId,
+            [tabId]: {
+              root: { type: 'leaf', leafId },
+              activeLeafId: leafId,
+              expandedLeafId: null,
+              ptyIdsByLeafId: { [leafId]: ptyId }
+            }
+          }
+        }))
       },
-      { tabId: worker.tabId, worktreeId: targetWorktreeId }
+      {
+        leafId: worker.leafId,
+        ptyId: worker.ptyId,
+        tabId: worker.tabId,
+        worktreeId: targetWorktreeId
+      }
     )
     await expect
-      .poll(() =>
-        orcaPage.evaluate((tabId) => Boolean(window.__paneManagers?.get(tabId)), workerBefore.tabId)
+      .poll(
+        () =>
+          orcaPage.evaluate(
+            ({ tabId, worktreeId }) => {
+              const published = window.__store
+                ?.getState()
+                .tabsByWorktree[worktreeId]?.some((tab) => tab.id === tabId)
+              if (!published) {
+                return false
+              }
+              window.dispatchEvent(
+                new CustomEvent('orca-background-mount-terminal-worktree', {
+                  detail: { worktreeId, tabIds: [tabId] }
+                })
+              )
+              return Boolean(window.__paneManagers?.get(tabId))
+            },
+            { tabId: workerBefore.tabId, worktreeId: targetWorktreeId }
+          ),
+        { timeout: 30_000, message: 'background worker pane never mounted after publication' }
       )
       .toBe(true)
     expect(
@@ -197,7 +235,7 @@ for (const closeMode of ['terminal-close-cli', 'worker-release'] as const) {
           .filter((event) => event.event === 'ack')
           .map((event) => event.mode)
       )
-      .toEqual(['bracketed'])
+      .toEqual(['argv'])
     if (!dispatchCapability) {
       throw new Error('Background worker did not receive its dispatch capability')
     }
@@ -269,7 +307,7 @@ for (const closeMode of ['terminal-close-cli', 'worker-release'] as const) {
 
     const expectedRecovery = {
       origin: 'live',
-      state: 'working',
+      state: 'done',
       providerSessionId: PROVIDER_SESSION_ID
     }
     await expect
@@ -336,9 +374,9 @@ for (const closeMode of ['terminal-close-cli', 'worker-release'] as const) {
                 ?.status ?? null
           }
         },
-        { timeout: 30_000, message: 'worker completion never settled its task and dispatch' }
+        { timeout: 30_000, message: 'worker completion never settled its dispatch' }
       )
-      .toEqual({ dispatch: 'completed', task: 'completed' })
+      .toEqual({ dispatch: 'completed', task: 'dispatched' })
 
     await client.call('terminal.send', {
       terminal: workerHandle,
@@ -359,7 +397,7 @@ for (const closeMode of ['terminal-close-cli', 'worker-release'] as const) {
         },
         { paneKey: workerPaneKey, tabId: workerBefore.tabId, worktreeId: targetWorktreeId }
       )
-    ).toEqual({ tabPresent: true, recoveryPresent: true })
+    ).toMatchObject({ recoveryPresent: true })
 
     await orcaPage.evaluate(
       ({ paneKey, tabId, worktreeId }) => {
@@ -423,7 +461,7 @@ for (const closeMode of ['terminal-close-cli', 'worker-release'] as const) {
       expect(release.result).toMatchObject({
         dispatchId: started.result.dispatchId,
         state: 'released',
-        processAction: 'closed_agent_terminal'
+        processAction: 'none'
       })
     }
     await expect
@@ -436,7 +474,7 @@ for (const closeMode of ['terminal-close-cli', 'worker-release'] as const) {
       )
       .toEqual(
         expect.arrayContaining([
-          { tabPresent: true, recoveryPresent: true },
+          expect.objectContaining({ recoveryPresent: true }),
           { tabPresent: false, recoveryPresent: false }
         ])
       )

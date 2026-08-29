@@ -89,17 +89,17 @@ const ORCA_E2E_SLOWMO_MS = ((): number => {
 })()
 
 async function removeUserDataDirAfterShutdown(userDataDir: string): Promise<void> {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
     try {
       rmSync(userDataDir, { recursive: true, force: true })
       return
     } catch (error) {
-      if (attempt === 4) {
+      if (attempt === 11) {
         throw error
       }
       // Why: Windows can briefly keep Electron profile files locked after the
       // process exits; retrying avoids turning a passed flow into teardown noise.
-      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)))
+      await new Promise((resolve) => setTimeout(resolve, Math.min(250 * (attempt + 1), 1_000)))
     }
   }
 }

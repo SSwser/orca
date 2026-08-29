@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -16,18 +17,45 @@ import type {
   RuntimeTerminalListResult,
   RuntimeTerminalSummary
 } from '../../../src/shared/runtime-types'
-import { buildFakeAgentCommandOverride } from './fake-agent-command-override'
-import { FAKE_AGENT_PASTE_END_SCANNER_SOURCE } from './fake-agent-paste-end-scanner'
 
 const fakeCliDir = mkdtempSync(path.join(os.tmpdir(), 'orca-e2e-retired-worker-'))
 const lifecycleLedgerPath = path.join(fakeCliDir, 'codex-lifecycle.jsonl')
-export const completedWorkerFakeCodexCommand = buildFakeAgentCommandOverride(
-  path.join(fakeCliDir, process.platform === 'win32' ? 'codex.cmd' : 'codex')
+export const completedWorkerFakeCodexCommand = path.join(
+  fakeCliDir,
+  process.platform === 'win32' ? 'codex.cmd' : 'codex'
 )
+export const completedWorkerFakeCodexArgs =
+  process.platform === 'win32' ? path.join(fakeCliDir, 'fake-codex.js') : ''
 const fakeCodexSource = `
 const { appendFileSync } = require('node:fs')
 const ledger = process.env.ORCA_E2E_CODEX_LIFECYCLE_LEDGER
 const append = (event) => appendFileSync(ledger, JSON.stringify({ pid: process.pid, ...event }) + '\\n')
+async function emitAuthorityHook(hookEventName, prompt) {
+  const port = process.env.ORCA_AGENT_HOOK_PORT
+  const token = process.env.ORCA_AGENT_HOOK_TOKEN
+  const launchToken = process.env.ORCA_AGENT_LAUNCH_TOKEN
+  if (!port || !token || !launchToken || !process.env.ORCA_PANE_KEY) return
+  await fetch('http://127.0.0.1:' + port + '/hook/codex', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Orca-Agent-Hook-Token': token
+    },
+    body: JSON.stringify({
+      paneKey: process.env.ORCA_PANE_KEY,
+      tabId: process.env.ORCA_TAB_ID,
+      worktreeId: process.env.ORCA_WORKTREE_ID,
+      env: process.env.ORCA_AGENT_HOOK_ENV,
+      version: process.env.ORCA_AGENT_HOOK_VERSION,
+      launchToken,
+      payload: {
+        hook_event_name: hookEventName,
+        session_id: '019fed4d-fd6b-7b9f-9d46-4faf12cd9845',
+        prompt
+      }
+    })
+  })
+}
 const args = process.argv.slice(2)
 if (args.includes('app-server')) {
   process.stderr.write("error: unrecognized subcommand 'app-server'\\n")
@@ -35,25 +63,20 @@ if (args.includes('app-server')) {
 }
 append({ event: 'spawn', args })
 process.stdout.write('\\u001b]0;Codex Ready\\u0007OpenAI Codex\\nmodel: e2e\\ndirectory: e2e\\n')
-${FAKE_AGENT_PASTE_END_SCANNER_SOURCE}
+const startupPrompt = args.at(-1) || ''
+void emitAuthorityHook('SessionStart', startupPrompt)
+  .then(() => emitAuthorityHook('UserPromptSubmit', startupPrompt))
+  .then(() => {
+    append({ event: 'ack', mode: 'argv' })
+    process.stdout.write('\\u001b]0;Codex Working\\u0007ACK\\n')
+  })
 process.stdin.on('data', (chunk) => {
   const input = chunk.toString()
-  const pasteEndScan = scanFakeAgentPasteEnd(fakeAgentPasteEndTail, input)
-  fakeAgentPasteEndTail = pasteEndScan.tail
-  if (pasteEndScan.pasteEndOffset !== null) {
-    process.stdout.write('\\x1b[?25h')
-  }
   append({ event: 'input', input })
   if (input.includes('ORCA_E2E_EXIT_AFTER_DONE')) {
     append({ event: 'normal-exit' })
     process.exit(0)
   }
-  fakeAgentMaybeAck(pasteEndScan, input, (mode) => {
-    append({ event: 'ack', mode })
-    const message = mode === 'bracketed' ? 'ACK' : 'PASTE_PROTOCOL_ERROR'
-    process.stdout.write('\\u001b]0;Codex Working\\u0007' + message + '\\n')
-    setTimeout(() => process.stdout.write('\\u001b]0;Codex Ready\\u0007'), 10)
-  })
 })
 process.stdin.setRawMode?.(true)
 process.stdin.resume()
@@ -66,6 +89,24 @@ if (process.platform === 'win32') {
     path.join(fakeCliDir, 'codex.cmd'),
     '@echo off\r\nnode "%~dp0\\fake-codex.js" %*\r\n'
   )
+  writeFileSync(
+    path.join(fakeCliDir, 'codex.ps1'),
+    '& node (Join-Path $PSScriptRoot "fake-codex.js") @args\r\nexit $LASTEXITCODE\r\n'
+  )
+  const nativeDir = path.join(
+    fakeCliDir,
+    'node_modules',
+    '@openai',
+    'codex',
+    'node_modules',
+    '@openai',
+    'codex-win32-x64',
+    'vendor',
+    'x86_64-pc-windows-msvc',
+    'bin'
+  )
+  mkdirSync(nativeDir, { recursive: true })
+  copyFileSync(process.execPath, path.join(nativeDir, 'codex.exe'))
 } else {
   const executable = path.join(fakeCliDir, 'codex')
   writeFileSync(executable, `#!/usr/bin/env node\n${fakeCodexSource}`)
@@ -73,7 +114,8 @@ if (process.platform === 'win32') {
 }
 
 export const completedWorkerLaunchEnv = {
-  PATH: `${fakeCliDir}${path.delimiter}${process.env.PATH ?? ''}`,
+  [process.platform === 'win32' ? 'Path' : 'PATH']:
+    `${fakeCliDir}${path.delimiter}${process.env.PATH ?? ''}`,
   ORCA_E2E_CODEX_LIFECYCLE_LEDGER: lifecycleLedgerPath
 }
 
@@ -82,7 +124,7 @@ export type LifecycleEvent = {
   event: 'spawn' | 'input' | 'ack' | 'normal-exit'
   args?: string[]
   input?: string
-  mode?: 'bracketed' | 'unbracketed'
+  mode?: 'argv'
 }
 
 export type TerminalIdentity = Pick<
@@ -116,8 +158,8 @@ export function readCompletedWorkerLedger(): LifecycleEvent[] {
 
 export function readCompletedWorkerDispatchCapability(): string | null {
   const input = readCompletedWorkerLedger()
-    .filter((event) => event.event === 'input')
-    .map((event) => event.input ?? '')
+    .filter((event) => event.event === 'spawn')
+    .flatMap((event) => event.args ?? [])
     .join('')
   return input.match(/--dispatch-capability\s+(\S+)/)?.[1] ?? null
 }

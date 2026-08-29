@@ -1,5 +1,14 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { test as base, expect } from './helpers/orca-app'
@@ -8,45 +17,65 @@ import { ensureTerminalVisible, waitForActiveWorktree, waitForSessionReady } fro
 import { RuntimeClient } from '../../src/cli/runtime-client'
 import Database from '../../src/main/sqlite/sync-database'
 import type { RuntimeTerminalListResult, RuntimeTerminalRead } from '../../src/shared/runtime-types'
-import {
-  buildFakeAgentCommandOverride,
-  FAKE_AGENT_WINDOWS_SHELL
-} from './helpers/fake-agent-command-override'
-import { FAKE_AGENT_PASTE_END_SCANNER_SOURCE } from './helpers/fake-agent-paste-end-scanner'
 
 const fakeCliDir = mkdtempSync(path.join(os.tmpdir(), 'orca-e2e-settlement-release-'))
 const cliLedgerPath = path.join(fakeCliDir, 'cli.jsonl')
+const authorityLedgerPath = path.join(fakeCliDir, 'authority.jsonl')
 const cliEntry = path.join(process.cwd(), 'out', 'cli', 'index.js')
-const fakeCodexCommand = buildFakeAgentCommandOverride(
-  path.join(fakeCliDir, process.platform === 'win32' ? 'codex.cmd' : 'codex')
-)
 const fakeCodexSource = `
 const { appendFileSync } = require('node:fs')
 const { spawnSync } = require('node:child_process')
+const appendAuthority = (event) => appendFileSync(
+  process.env.ORCA_E2E_AUTHORITY_LEDGER,
+  JSON.stringify(event) + '\\n'
+)
+appendAuthority({ event: 'spawn', argv: process.argv.slice(2) })
+async function emitAuthorityHook(hookEventName, prompt) {
+  const port = process.env.ORCA_AGENT_HOOK_PORT
+  const token = process.env.ORCA_AGENT_HOOK_TOKEN
+  const launchToken = process.env.ORCA_AGENT_LAUNCH_TOKEN
+  if (!port || !token || !launchToken || !process.env.ORCA_PANE_KEY) {
+    appendAuthority({ hookEventName, event: 'missing-env', port: Boolean(port), token: Boolean(token), launchToken: Boolean(launchToken), paneKey: Boolean(process.env.ORCA_PANE_KEY) })
+    return
+  }
+  try {
+    const response = await fetch('http://127.0.0.1:' + port + '/hook/codex', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Orca-Agent-Hook-Token': token
+      },
+      body: JSON.stringify({
+        paneKey: process.env.ORCA_PANE_KEY,
+        tabId: process.env.ORCA_TAB_ID,
+        worktreeId: process.env.ORCA_WORKTREE_ID,
+        env: process.env.ORCA_AGENT_HOOK_ENV,
+        version: process.env.ORCA_AGENT_HOOK_VERSION,
+        launchToken,
+        payload: {
+          hook_event_name: hookEventName,
+          session_id: '019fed4d-fd6b-7b9f-9d46-4faf12cd9844',
+          prompt
+        }
+      })
+    })
+    appendAuthority({ hookEventName, event: 'response', status: response.status })
+  } catch (error) {
+    appendAuthority({ hookEventName, event: 'error', message: error instanceof Error ? error.message : String(error) })
+  }
+}
 if (process.argv.slice(2).includes('app-server')) {
   process.stderr.write("error: unrecognized subcommand 'app-server'\\n")
   process.exit(2)
 }
-let capability = null
-let acknowledged = false
-${FAKE_AGENT_PASTE_END_SCANNER_SOURCE}
+const startupPrompt = process.argv.at(-1) || ''
+let capability = startupPrompt.match(/--dispatch-capability (dcap_[A-Za-z0-9_-]+)/)?.[1] || null
 process.stdout.write('\\u001b]0;Codex Ready\\u0007OpenAI Codex\\nmodel: e2e\\ndirectory: e2e\\n')
+void emitAuthorityHook('SessionStart', startupPrompt)
+  .then(() => emitAuthorityHook('UserPromptSubmit', startupPrompt))
+  .then(() => process.stdout.write('\\u001b]0;Codex Working\\u0007ACK\\n'))
 process.stdin.on('data', (chunk) => {
   const input = chunk.toString()
-  const pasteEndScan = scanFakeAgentPasteEnd(fakeAgentPasteEndTail, input)
-  fakeAgentPasteEndTail = pasteEndScan.tail
-  if (pasteEndScan.pasteEndOffset !== null) {
-    process.stdout.write('\\x1b[?25h')
-  }
-  capability ||= input.match(/--dispatch-capability (dcap_[A-Za-z0-9_-]+)/)?.[1] || null
-  if (!acknowledged) {
-    fakeAgentMaybeAck(pasteEndScan, input, (mode) => {
-      acknowledged = true
-      const message = mode === 'bracketed' ? 'ACK' : 'PASTE_PROTOCOL_ERROR'
-      process.stdout.write('\\u001b]0;Codex Working\\u0007' + message + '\\n')
-      setTimeout(() => process.stdout.write('\\u001b]0;Codex Ready\\u0007'), 10)
-    })
-  }
   const encoded = input.match(/ORCA_E2E_WORKER_DONE:([A-Za-z0-9+/=]+)/)?.[1]
   if (!encoded || !capability) return
   const request = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'))
@@ -78,11 +107,30 @@ setInterval(() => {}, 60_000)
 `
 
 if (process.platform === 'win32') {
-  writeFileSync(path.join(fakeCliDir, 'fake-codex.js'), fakeCodexSource)
+  const fakeCodexScript = path.join(fakeCliDir, 'fake-codex.js')
+  writeFileSync(fakeCodexScript, fakeCodexSource)
   writeFileSync(
     path.join(fakeCliDir, 'codex.cmd'),
     '@echo off\r\nnode "%~dp0\\fake-codex.js" %*\r\n'
   )
+  writeFileSync(
+    path.join(fakeCliDir, 'codex.ps1'),
+    '& node (Join-Path $PSScriptRoot "fake-codex.js") @args\r\nexit $LASTEXITCODE\r\n'
+  )
+  const nativeDir = path.join(
+    fakeCliDir,
+    'node_modules',
+    '@openai',
+    'codex',
+    'node_modules',
+    '@openai',
+    'codex-win32-x64',
+    'vendor',
+    'x86_64-pc-windows-msvc',
+    'bin'
+  )
+  mkdirSync(nativeDir, { recursive: true })
+  copyFileSync(process.execPath, path.join(nativeDir, 'codex.exe'))
 } else {
   const executable = path.join(fakeCliDir, 'codex')
   writeFileSync(executable, `#!/usr/bin/env node\n${fakeCodexSource}`)
@@ -92,9 +140,11 @@ if (process.platform === 'win32') {
 const test = base.extend({
   launchEnv: [
     {
-      PATH: `${fakeCliDir}${path.delimiter}${process.env.PATH ?? ''}`,
+      [process.platform === 'win32' ? 'Path' : 'PATH']:
+        `${fakeCliDir}${path.delimiter}${process.env.PATH ?? ''}`,
       ORCA_E2E_CLI_ENTRY: cliEntry,
-      ORCA_E2E_CLI_LEDGER: cliLedgerPath
+      ORCA_E2E_CLI_LEDGER: cliLedgerPath,
+      ORCA_E2E_AUTHORITY_LEDGER: authorityLedgerPath
     },
     { option: true }
   ]
@@ -117,6 +167,16 @@ function readCliLedger(): CliLedgerEntry[] {
     .map((line) => JSON.parse(line) as CliLedgerEntry)
 }
 
+function readAuthorityLedger(): unknown[] {
+  if (!existsSync(authorityLedgerPath)) {
+    return []
+  }
+  return readFileSync(authorityLedgerPath, 'utf8')
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as unknown)
+}
+
 function invokeCompiledCli(userDataDir: string, args: string[]) {
   return spawnSync(process.execPath, [cliEntry, ...args], {
     env: { ...process.env, ORCA_USER_DATA_PATH: userDataDir, ORCA_DEV_CLI_INVOCATION: '1' },
@@ -137,21 +197,22 @@ test.afterAll(() => {
   rmSync(fakeCliDir, { recursive: true, force: true })
 })
 
-test('compiled CLI rejects false completion then reconciles the dead retained worker', async ({
+test('compiled CLI rejects false completion and retains an unverifiable worker', async ({
   orcaPage,
   electronApp
 }) => {
   test.setTimeout(180_000)
   rmSync(cliLedgerPath, { force: true })
+  rmSync(authorityLedgerPath, { force: true })
   await waitForSessionReady(orcaPage)
   await orcaPage.evaluate(
-    async ({ agentCommand, terminalWindowsShell }) => {
-      await window.__store?.getState().updateSettings({
-        agentCmdOverrides: { codex: agentCommand },
-        terminalWindowsShell
+    async (fakeCodexScript) => {
+      const state = window.__store?.getState()
+      await state?.updateSettings({
+        agentDefaultArgs: { ...state.settings.agentDefaultArgs, codex: fakeCodexScript }
       })
     },
-    { agentCommand: fakeCodexCommand, terminalWindowsShell: FAKE_AGENT_WINDOWS_SHELL }
+    process.platform === 'win32' ? path.join(fakeCliDir, 'fake-codex.js') : ''
   )
   const worktreeId = await waitForActiveWorktree(orcaPage)
   await ensureTerminalVisible(orcaPage)
@@ -194,7 +255,10 @@ test('compiled CLI rejects false completion then reconciles the dead retained wo
     agent: 'codex',
     timeoutMs: 15_000
   })
-  expect(started.result.state, JSON.stringify(started.result)).toBe('ready')
+  expect(
+    started.result.state,
+    JSON.stringify({ started: started.result, authority: readAuthorityLedger() })
+  ).toBe('ready')
   expect(started.result.stage).toBe('input_accepted')
   const workerHandle = started.result.effects.find(
     (effect) => effect.kind === 'terminal' && effect.role === 'agent'
@@ -279,7 +343,7 @@ test('compiled CLI rejects false completion then reconciles the dead retained wo
   const db = new Database(path.join(userDataDir, 'orchestration.db'))
   try {
     db.prepare(
-      `UPDATE worker_terminal_resources
+      `UPDATE worker_execution_resources
        SET lifecycle_state = 'release_unknown',
            release_error = 'terminal inventory was lost after exact exit'
        WHERE owner_dispatch_id = ?`
@@ -295,10 +359,10 @@ test('compiled CLI rejects false completion then reconciles the dead retained wo
     dispatch.result.dispatch!.id,
     '--json'
   ])
-  expect(released.status).toBe(0)
+  expect(released.status, `${released.stderr}\n${released.stdout}`).toBe(1)
   expect.soft(JSON.parse(released.stdout)).toMatchObject({
     ok: true,
-    result: { state: 'released', processAction: 'none' }
+    result: { state: 'release_unknown', processAction: 'none' }
   })
   const verified = new Database(path.join(userDataDir, 'orchestration.db'))
   try {
@@ -307,11 +371,11 @@ test('compiled CLI rejects false completion then reconciles the dead retained wo
         verified
           .prepare(
             `SELECT lifecycle_state
-           FROM worker_terminal_resources WHERE owner_dispatch_id = ?`
+           FROM worker_execution_resources WHERE owner_dispatch_id = ?`
           )
           .get(dispatch.result.dispatch!.id)
       )
-      .toEqual({ lifecycle_state: 'released' })
+      .toEqual({ lifecycle_state: 'release_unknown' })
   } finally {
     verified.close()
   }

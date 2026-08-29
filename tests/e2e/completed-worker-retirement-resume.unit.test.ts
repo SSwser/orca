@@ -240,6 +240,16 @@ async function releaseCompletedWorker(terminalState: 'running' | 'exited'): Prom
   let workerHandle = TERMINAL_HANDLE
   runtime.setOrchestrationDb(db)
   const coordinatorPaneKey = 'coordinator-tab:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  const hostScope = {
+    kind: 'local' as const,
+    hostId: 'local' as const,
+    restartCustody: {
+      kind: 'windows_daemon_job' as const,
+      daemonPid: 4000,
+      daemonStartedAtMs: 1_786_000_000_000,
+      daemonLaunchNonce: 'completed-worker-test-daemon'
+    }
+  }
   const run = db.createRun({
     objective: 'Completed worker retirement reproduction',
     coordinatorHandle: 'terminal-coordinator',
@@ -256,35 +266,55 @@ async function releaseCompletedWorker(terminalState: 'running' | 'exited'): Prom
     handle === 'terminal-coordinator' ? coordinatorPaneKey : ORIGINAL_PANE_KEY
   )
   vi.spyOn(runtime, 'getTerminalProcessIncarnation').mockImplementation((handle) =>
-    handle === workerHandle ? 'runtime:test:worker:1' : null
+    handle === 'terminal-coordinator'
+      ? 'runtime:test:coordinator:1'
+      : handle === workerHandle
+        ? 'runtime:test:worker:1'
+        : null
   )
   vi.spyOn(runtime, 'getOrchestrationDispatchAuthority').mockImplementation((handle) =>
-    handle === workerHandle
+    handle === 'terminal-coordinator'
       ? ({
-          terminalHandle: workerHandle,
-          paneKey: ORIGINAL_PANE_KEY,
-          processIncarnation: 'runtime:test:worker:1',
-          hostScope: {
-            kind: 'local',
-            hostId: 'local',
-            restartCustody: {
-              kind: 'windows_daemon_job',
-              daemonPid: 4000,
-              daemonStartedAtMs: 1_786_000_000_000,
-              daemonLaunchNonce: 'completed-worker-test-daemon'
-            }
-          }
+          terminalHandle: handle,
+          paneKey: coordinatorPaneKey,
+          processIncarnation: 'runtime:test:coordinator:1',
+          hostScope: { kind: 'local', hostId: 'local' }
         } as never)
-      : null
+      : handle === workerHandle
+        ? ({
+            terminalHandle: workerHandle,
+            paneKey: ORIGINAL_PANE_KEY,
+            processIncarnation: 'runtime:test:worker:1',
+            hostScope
+          } as never)
+        : null
   )
   vi.spyOn(runtime, 'validateOrchestrationAgentLauncher').mockImplementation(() => {})
   vi.spyOn(runtime, 'showManagedTerminalWorkspace').mockResolvedValue({ id: WORKTREE_ID } as never)
-  vi.spyOn(runtime, 'createTerminal').mockImplementation(async (_selector, options) => {
-    workerHandle = options.preAllocatedHandle ?? TERMINAL_HANDLE
+  vi.spyOn(runtime, 'resolveWorkerAgentProcessAdmission').mockReturnValue({
+    targetFingerprint: 'c'.repeat(64)
+  })
+  vi.spyOn(runtime, 'createAgentSession').mockImplementation(async (request) => {
+    const start = request.executionStart!
+    workerHandle = start.terminalHandle
     return {
-      handle: workerHandle,
-      worktreeId: WORKTREE_ID,
-      title: 'PR 4626 unified correction r3'
+      terminal: {
+        handle: workerHandle,
+        worktreeId: WORKTREE_ID,
+        title: 'PR 4626 unified correction r3',
+        surface: 'background'
+      },
+      disposition: 'created',
+      executionStartReceipt: {
+        ...start,
+        launchTokenHash: 'completed-worker-launch-token',
+        paneKey: ORIGINAL_PANE_KEY,
+        processIncarnation: 'runtime:test:worker:1',
+        hostScope,
+        providerSession: { key: 'session_id', id: PROVIDER_SESSION_ID },
+        turnStartedAt: Date.now(),
+        semanticObservedAt: Date.now()
+      }
     }
   })
   vi.spyOn(runtime, 'waitForTerminal').mockImplementation(async (handle) => ({
@@ -295,19 +325,16 @@ async function releaseCompletedWorker(terminalState: 'running' | 'exited'): Prom
     exitCode: null
   }))
   vi.spyOn(runtime, 'getTerminalOrchestrationCliCommand').mockReturnValue('orca')
-  vi.spyOn(runtime, 'sendTerminalAgentPrompt').mockImplementation(async (handle) => ({
-    handle,
-    accepted: true,
-    bytesWritten: 1,
-    semanticObservedAt: Date.now()
-  }))
   vi.spyOn(runtime, 'isTerminalRunningAgent').mockResolvedValue(true)
   vi.spyOn(runtime, 'getExactWorkerProviderSession').mockReturnValue(null)
-  vi.spyOn(runtime, 'showTerminal').mockImplementation(async (handle) => ({
-    handle,
-    worktreeId: WORKTREE_ID,
-    ...(terminalState === 'exited' ? { connected: false } : { status: 'running' })
-  }))
+  vi.spyOn(runtime, 'showTerminal').mockImplementation(
+    async (handle) =>
+      ({
+        handle,
+        worktreeId: WORKTREE_ID,
+        ...(terminalState === 'exited' ? { connected: false } : { status: 'running' })
+      }) as never
+  )
   vi.spyOn(runtime, 'readTerminal').mockImplementation(async (handle) => ({
     handle,
     status: terminalState,
@@ -323,6 +350,10 @@ async function releaseCompletedWorker(terminalState: 'running' | 'exited'): Prom
     })
     return { handle, tabId: ORIGINAL_TAB_ID, ptyKilled: true }
   })
+  runtime.setNotifier({
+    resolveLegacyWorkerTerminalRecovery: (paneKey: string) =>
+      useAppStore.getState().clearSleepingAgentSession(paneKey)
+  } as never)
   vi.spyOn(runtime, 'notifyMessageArrived').mockImplementation(() => {})
 
   try {
@@ -349,7 +380,7 @@ async function releaseCompletedWorker(terminalState: 'running' | 'exited'): Prom
     ).resolves.toMatchObject({
       dispatchId: started.dispatchId,
       state: 'released',
-      processAction: terminalState === 'exited' ? 'closed_exited_terminal' : 'closed_agent_terminal'
+      processAction: terminalState === 'exited' ? 'none' : 'closed_agent_terminal'
     })
     expect(db.getWorkerDispatch(started.dispatchId)?.state).toBe('succeeded')
     expect(db.getWorkerTerminalResourceByOwner(started.dispatchId)).toMatchObject({
@@ -357,7 +388,11 @@ async function releaseCompletedWorker(terminalState: 'running' | 'exited'): Prom
       pane_key: ORIGINAL_PANE_KEY,
       terminal_handle: workerHandle
     })
-    expect(closeTerminal).toHaveBeenCalledOnce()
+    if (terminalState === 'exited') {
+      expect(closeTerminal).not.toHaveBeenCalled()
+    } else {
+      expect(closeTerminal).toHaveBeenCalledOnce()
+    }
   } finally {
     db.close()
   }
