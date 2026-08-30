@@ -292,6 +292,65 @@ describe('OrchestrationDb worker Dispatch state', () => {
     ).toBe('starting')
   })
 
+  it('retries a ready Task after its latest unexpected-exit resource is exactly released', () => {
+    const d = createDb()
+    const task = d.createTask({ spec: 'retry ready task after unexpected exit' })
+    const first = d.createStartingWorkerDispatch({
+      creator: { kind: 'system' },
+      maxDepth: Number.MAX_SAFE_INTEGER,
+      taskId: task.id,
+      startOptions: {}
+    })
+    d.prepareStartingWorkerAuthority({
+      dispatchId: first.dispatch.id,
+      handle: 'term_unexpected_exit',
+      paneKey: 'tab_unexpected_exit:leaf_unexpected_exit',
+      processIncarnation: 'daemon:pty:unexpected-exit',
+      hostScope: JSON.stringify({ kind: 'local', hostId: 'local' }),
+      worktreeId: 'repo::unexpected-exit-generation',
+      setupState: 'not_applicable',
+      effects: [],
+      terminalOwnership: 'created'
+    })
+    d.markWorkerDispatchReady(first.dispatch.id)
+    d.failDispatch(first.dispatch.id, 'provider exited unexpectedly', {
+      workerProcessExited: true,
+      terminationReason: 'unknown'
+    })
+    expect(d.getTask(task.id)?.status).toBe('ready')
+
+    expect(() =>
+      d.createStartingWorkerDispatch({
+        creator: { kind: 'system' },
+        maxDepth: Number.MAX_SAFE_INTEGER,
+        taskId: task.id,
+        retryOf: first.dispatch.id,
+        startOptions: {}
+      })
+    ).toThrowError(expect.objectContaining({ code: 'terminal_resource_unsettled' }))
+
+    const requested = d.requestWorkerTerminalRelease(first.dispatch.id)
+    if (!requested.resource) {
+      throw new Error('expected worker terminal resource')
+    }
+    d.markWorkerTerminalReleaseUnknown(requested.resource.id, 'exit awaiting proof')
+    d.settleDeadWorkerTerminalRelease({
+      requestingDispatchId: first.dispatch.id,
+      resourceId: requested.resource.id,
+      processIncarnation: 'daemon:pty:unexpected-exit'
+    })
+
+    expect(
+      d.createStartingWorkerDispatch({
+        creator: { kind: 'system' },
+        maxDepth: Number.MAX_SAFE_INTEGER,
+        taskId: task.id,
+        retryOf: first.dispatch.id,
+        startOptions: {}
+      }).worker.state
+    ).toBe('starting')
+  })
+
   it('preserves a user-owned failed attempt while accepting its retry', () => {
     const d = createDb()
     const task = d.createTask({ spec: 'retry after user takeover' })

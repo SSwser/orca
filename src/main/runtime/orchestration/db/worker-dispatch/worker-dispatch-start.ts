@@ -156,14 +156,17 @@ export function createStartingWorkerDispatch(
     if (params.retryOf) {
       const prior = this.getDispatchContextById(params.retryOf)
       const priorWorker = this.getWorkerDispatch(params.retryOf)
+      const priorResource = this.getWorkerExecutionResourceByOwner(params.retryOf)
       const latest = this.getDispatchContext(task.id)
       if (
         !prior ||
         prior.task_id !== task.id ||
+        !['failed', 'circuit_broken'].includes(prior.status) ||
         latest?.id !== prior.id ||
         !priorWorker ||
         !['failed', 'stopped', 'abandoned'].includes(priorWorker.state) ||
-        !['failed', 'blocked'].includes(task.status)
+        !['ready', 'failed', 'blocked'].includes(task.status) ||
+        (priorResource && !['released', 'user_owned'].includes(priorResource.lifecycle_state))
       ) {
         throw new OrchestrationError(
           'task_not_startable',

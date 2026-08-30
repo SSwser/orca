@@ -115,6 +115,8 @@ Late settlement is resource-state driven, not worker-outcome driven. A contained
 
 A Run and Task are logical identities. A worktree, terminal, process tree, and Dispatch attempt belong to one physical execution generation. This section applies only to `retry_with_successor`. Archive acceptance creates no worktree, terminal, process, prompt, or successor effect. Retry preserves the Run and Task but starts the single preaccepted successor in a distinct isolated Git worktree at the authorized immutable revision.
 
+Ordinary retry of a failed latest Dispatch does not require changing a logically runnable Task from `ready` to `failed`. `retryOf` admission verifies the exact latest Dispatch outcome, its settled execution resource, and the unchanged workspace/generation fences. An owned, retained, release-in-progress, contained, or unverifiable prior resource blocks retry; an exact release, or an explicitly admitted user-owned transfer, permits it. Task status alone never overrides those facts.
+
 Orca must not read, clean, reset, copy, or reuse the old physical workspace after custody is lost. The normal worker-start owner creates the successor workspace and performs one atomic execution start. Recovery does not create a second worker-start route.
 
 Accepting one successor Dispatch does not by itself make its external effects unique. Before execution start, the Worker owner durably claims the successor generation and persists one stable operation identity plus payload fingerprint. A concurrent caller that does not hold the claim reads the same operation without performing an effect. Process-local promise or TTL deduplication may supplement this rule, but cannot replace it.
