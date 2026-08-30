@@ -5,6 +5,7 @@ import { activateTabAndFocusPane } from '@/lib/activate-tab-and-focus-pane'
 import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
 import { callRuntimeRpc } from '@/runtime/runtime-rpc-client'
 import { parseRemoteRuntimePtyId } from '@/runtime/runtime-terminal-stream'
+import { resolveWorktreeOperationRouteResult } from '@/lib/worktree-operation-route'
 import { buildWrappedLogicalLine, rangeForParsedFileLink } from './wrapped-terminal-link-ranges'
 import {
   extractOrchestrationTaskLinks,
@@ -153,6 +154,21 @@ export function focusRendererTerminalHandle(
     focusTerminalTabSurface(target.tabId)
   }
   return true
+}
+
+export async function focusTerminalHandleForWorktree(args: {
+  handle: string
+  worktreeId: string
+}): Promise<'renderer' | 'runtime'> {
+  const route = resolveWorktreeOperationRouteResult(useAppStore.getState(), args.worktreeId)
+  if (route.kind !== 'resolved') {
+    throw new Error('terminal_focus_owner_unverifiable')
+  }
+  if (focusRendererTerminalHandle(args.handle, route.route.runtimeEnvironmentId)) {
+    return 'renderer'
+  }
+  await focusRuntimeTerminalHandle(args.handle, route.route.runtimeEnvironmentId)
+  return 'runtime'
 }
 
 export function createTerminalHandleLinkProvider(

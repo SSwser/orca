@@ -26,6 +26,7 @@ import { DEFAULT_AGENT_ACTIVITY_DISPLAY_MODE } from '../../../../shared/constant
 import { revealElementInScrollContainer } from './worktree-sidebar-reveal'
 import { useWorktreeAgentExpansionState } from './worktree-card-agents-expansion-state'
 import { translate } from '@/i18n/i18n'
+import { focusTerminalHandleForWorktree } from '../terminal-pane/terminal-handle-links'
 
 export const SUPPRESS_WORKTREE_LIST_SCROLL_ADJUSTMENT_EVENT =
   'orca-suppress-worktree-list-scroll-adjustment'
@@ -148,7 +149,16 @@ const WorktreeCardAgentsBody = React.memo(function WorktreeCardAgentsBody({
   )
 
   const handleActivateAgentTab = useCallback(
-    (tabId: string, paneKey: string) => {
+    (agent: DashboardAgentRowData, tabId: string, paneKey: string) => {
+      const terminalHandle = agent.entry.terminalHandle?.trim()
+      if (agent.rowSource === 'live' && terminalHandle && agent.entry.orchestration?.dispatchId) {
+        void focusTerminalHandleForWorktree({ handle: terminalHandle, worktreeId }).catch(
+          (error: unknown) => {
+            console.warn('[WorktreeCardAgents] exact Worker focus failed:', error)
+          }
+        )
+        return
+      }
       const parsed = parsePaneKey(paneKey)
       if (!parsed) {
         // Why: malformed/legacy numeric keys can't be resolved after pane replay/remount, so drop the stale row instead of guessing.
@@ -262,7 +272,9 @@ const WorktreeCardAgentsBody = React.memo(function WorktreeCardAgentsBody({
           agent={agent}
           onDismiss={handleDismissAgent}
           onActivate={
-            agent.rowSource === 'retained' ? handleActivateRetainedAgent : handleActivateAgentTab
+            agent.rowSource === 'retained'
+              ? handleActivateRetainedAgent
+              : (tabId, paneKey) => handleActivateAgentTab(agent, tabId, paneKey)
           }
           now={now}
           // Why: bold the row until the user visits its tab (useAutoAckViewedAgent auto-acks on focus, muting it).
@@ -323,7 +335,9 @@ const WorktreeCardAgentsBody = React.memo(function WorktreeCardAgentsBody({
           agent={agent}
           now={now}
           onActivate={
-            agent.rowSource === 'retained' ? handleActivateRetainedAgent : handleActivateAgentTab
+            agent.rowSource === 'retained'
+              ? handleActivateRetainedAgent
+              : (tabId, paneKey) => handleActivateAgentTab(agent, tabId, paneKey)
           }
           sendTargetStatus={sendTarget?.status}
           sendTargetDisabledReason={sendTarget?.disabledReason}

@@ -30,6 +30,18 @@ A terminal handle resolves one stable execution binding: runtime identity, execu
 
 Durable execution operations resolve the binding directly. A `pty:` presentation marker, current tab mount, leaf writability, or graph membership is not capability evidence. Renderer state may reject a stale UI surface, but it cannot redirect a durable operation through ordinary terminal input. Headless and visible projections of the same exact PTY therefore reach the same execution-host owner.
 
+Worker surface activation is an exact reveal operation, not permission to continue or resume an
+Agent Session. A live Worker row with a terminal handle resolves that handle through the existing
+renderer or execution-host focus route. An already hydrated surface focuses its exact tab and pane; a
+background PTY asks its owning runtime to reveal the recorded surface through `terminal.focus`.
+
+Exact focus never falls back to worktree activation, tab creation, session resume, fork, or generic
+continuation. If the handle, execution host, negotiated RPC, or surface cannot be verified, the row
+remains visible and activation fails non-destructively. Lost SSH or paired-runtime contact is
+`unverifiable`, not evidence that the Worker exited. A truly sleeping non-Worker session without a
+terminal handle may still use the generic worktree activation gate. Structured Agent Session rows
+continue through their structured activation owner, while retained passive rows remain inert.
+
 ### Windows containment capability
 
 The lifecycle and fail-closed evidence rules are cross-platform. Native Windows adds two Job Object guarantees for supervised workers:
