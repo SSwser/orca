@@ -136,6 +136,20 @@ async function completeWorkerTerminalReleaseOnce(
   if (observation.status === 'exited') {
     return completeExitedWorkerTerminalRelease(args, () => identityFailureReceipt(args))
   }
+  if (observation.status === 'unverifiable') {
+    const reason =
+      observation.reason ?? 'The execution host could not verify the recorded worker process.'
+    const unknown = db.markWorkerTerminalReleaseUnknown(resource.id, reason)
+    return {
+      dispatchId,
+      state: 'release_unknown',
+      processAction: 'none',
+      archive: archiveSummary(unknown),
+      lastError: unknown.release_error ?? reason,
+      recovery:
+        'Restore exact execution-host evidence before retrying; no process action was taken.'
+    }
+  }
   if (args.mode === 'reconciliation' && ['missing', 'unattached'].includes(observation.status)) {
     return identityFailureReceipt(args)
   }

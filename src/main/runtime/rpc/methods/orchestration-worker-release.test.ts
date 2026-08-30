@@ -2,10 +2,14 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ORCHESTRATION_METHODS } from './orchestration'
-import type { RpcContext } from '../core'
-import { OrchestrationDb } from '../../orchestration/db'
-import { OrcaRuntimeService } from '../../orca-runtime'
+import type { OrchestrationDb } from '../../orchestration/db'
+import type { OrcaRuntimeService } from '../../orca-runtime'
+import {
+  WorkerReleaseTestFixture,
+  workerReleaseCoordinatorPaneKey as coordinatorPaneKey,
+  workerReleaseLocalHostScope as localHostScope,
+  workerReleasePaneKey as workerPaneKey
+} from './orchestration-worker-release-test-fixture'
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void
@@ -15,190 +19,45 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   return { promise, resolve }
 }
 
-const localHostScope = {
-  kind: 'local' as const,
-  hostId: 'local' as const,
-  restartCustody: {
-    kind: 'windows_daemon_job' as const,
-    daemonPid: 4000,
-    daemonStartedAtMs: 1_786_000_000_000,
-    daemonLaunchNonce: 'release-test-daemon'
-  }
-}
 describe('orchestration worker release', () => {
+  let fixture: WorkerReleaseTestFixture
   let db: OrchestrationDb
-  let dbOpen = false
   let runtime: OrcaRuntimeService
-  let ctx: RpcContext
   let activeRunId: string
   let inspectProcessLiveness: ReturnType<typeof vi.fn>
-  let workerHandle: string
-
-  const coordinatorPaneKey = 'tab_coord:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
-  const workerPaneKey = 'tab_worker:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 
   function setup(): void {
-    db = new OrchestrationDb(':memory:')
-    dbOpen = true
-    runtime = new OrcaRuntimeService()
-    runtime.setOrchestrationDb(db)
-    workerHandle = 'term_worker'
-    inspectProcessLiveness = vi.fn().mockResolvedValue('live')
-    ;(
-      runtime as unknown as {
-        inspectTerminalProcessIncarnationLiveness: typeof inspectProcessLiveness
-      }
-    ).inspectTerminalProcessIncarnationLiveness = inspectProcessLiveness
-    vi.spyOn(runtime, 'getTerminalPaneKey').mockImplementation((handle) =>
-      handle === 'term_coord'
-        ? coordinatorPaneKey
-        : handle === workerHandle || handle === 'term_worker' || handle === 'term_reminted'
-          ? workerPaneKey
-          : null
-    )
-    vi.spyOn(runtime, 'getTerminalProcessIncarnation').mockImplementation((handle) =>
-      handle === workerHandle || handle === 'term_worker' || handle === 'term_reminted'
-        ? 'runtime_test:term_worker:1'
-        : null
-    )
-    vi.spyOn(runtime, 'getOrchestrationDispatchAuthority').mockImplementation((handle) =>
-      handle === 'term_coord'
-        ? ({
-            terminalHandle: handle,
-            paneKey: coordinatorPaneKey,
-            processIncarnation: 'runtime_test:term_coord:1',
-            hostScope: { kind: 'local', hostId: 'local' }
-          } as never)
-        : handle === workerHandle || handle === 'term_worker' || handle === 'term_reminted'
-          ? ({
-              terminalHandle: handle,
-              paneKey: workerPaneKey,
-              processIncarnation: 'runtime_test:term_worker:1',
-              hostScope: localHostScope
-            } as never)
-          : null
-    )
-    vi.spyOn(runtime, 'validateOrchestrationAgentLauncher').mockImplementation(() => {})
-    vi.spyOn(runtime, 'showTerminal').mockImplementation(
-      async (handle) => ({ handle, worktreeId: 'repo::worktree', status: 'running' }) as never
-    )
-    vi.spyOn(runtime, 'showManagedTerminalWorkspace').mockResolvedValue({
-      id: 'repo::worktree'
-    } as never)
-    vi.spyOn(runtime, 'createTerminal').mockImplementation(async (_selector, options) => {
-      workerHandle = options?.preAllocatedHandle ?? 'term_worker'
-      return { handle: workerHandle, worktreeId: 'repo::worktree', title: 'worker' }
-    })
-    vi.spyOn(runtime, 'waitForTerminal').mockImplementation(async (handle) => ({
-      handle,
-      condition: 'tui-idle',
-      satisfied: true,
-      status: 'running',
-      exitCode: null
-    }))
-    vi.spyOn(runtime, 'getTerminalOrchestrationCliCommand').mockReturnValue('orca')
-    vi.spyOn(runtime, 'resolveWorkerAgentProcessAdmission').mockReturnValue({
-      targetFingerprint: 'c'.repeat(64)
-    })
-    vi.spyOn(runtime, 'createAgentSession').mockImplementation(async (request) => {
-      const start = request.executionStart!
-      workerHandle = start.terminalHandle
-      return {
-        terminal: {
-          handle: workerHandle,
-          worktreeId: 'repo::worktree',
-          title: 'Codex',
-          surface: 'background'
-        },
-        disposition: 'created',
-        executionStartReceipt: {
-          ...start,
-          launchTokenHash: 'test-launch-token-hash',
-          paneKey: workerPaneKey,
-          processIncarnation: 'runtime_test:term_worker:1',
-          hostScope: localHostScope,
-          providerSession: { key: 'session_id', id: 'codex-release-worker' },
-          turnStartedAt: Date.now(),
-          semanticObservedAt: Date.now()
-        }
-      }
-    })
-    vi.spyOn(runtime, 'isTerminalRunningAgent').mockResolvedValue(true)
-    vi.spyOn(runtime, 'getExactWorkerProviderSession').mockReturnValue(null)
-    vi.spyOn(runtime, 'readTerminal').mockImplementation(async (handle) => ({
-      handle,
-      status: 'running',
-      tail: ['worker output line 1', 'worker output line 2'],
-      truncated: false,
-      nextCursor: '2'
-    }))
-    vi.spyOn(runtime, 'closeTerminal').mockImplementation(async (handle) => ({
-      handle,
-      tabId: 'tab-worker',
-      ptyKilled: true
-    }))
-    vi.spyOn(runtime, 'notifyWorkerTerminalReleased').mockImplementation(() => {})
-    vi.spyOn(runtime, 'notifyMessageArrived').mockImplementation(() => {})
-    activeRunId = db.createRun({
-      objective: 'Release test Run',
-      coordinatorHandle: 'term_coord',
-      coordinatorPaneKey
-    }).id
-    ctx = { runtime }
+    fixture = new WorkerReleaseTestFixture()
+    db = fixture.db
+    runtime = fixture.runtime
+    activeRunId = fixture.activeRunId
+    inspectProcessLiveness = fixture.inspectProcessLiveness
   }
 
   afterEach(() => {
-    if (dbOpen) {
-      dbOpen = false
-      db.close()
-    }
+    fixture?.close()
     vi.restoreAllMocks()
   })
 
-  function findMethod(name: string) {
-    const method = ORCHESTRATION_METHODS.find((m) => m.name === name)
-    if (!method) {
-      throw new Error(`Method not found: ${name}`)
-    }
-    return method
-  }
-
   async function call(name: string, params: Record<string, unknown>) {
-    const method = findMethod(name)
-    const parsed = method.params ? method.params.parse(params) : undefined
-    return method.handler(parsed, ctx)
+    return fixture.call(name, params)
   }
 
   async function startWorker(): Promise<{
     taskId: string
     dispatchId: string
   }> {
-    const task = db.createTask({ spec: 'release fixture task', runId: activeRunId })
-    const result = (await call('orchestration.workerStart', {
-      task: task.id,
-      from: 'term_coord',
-      agent: 'codex'
-    })) as { dispatchId: string; state: string }
-    expect(result.state).toBe('ready')
-    return { taskId: task.id, dispatchId: result.dispatchId }
+    return fixture.startWorker()
   }
 
   function settle(taskId: string, dispatchId: string, outcome: 'succeeded' | 'failed'): void {
-    const settlement = db.settleWorkerReport({
-      taskId,
-      dispatchId,
-      outcome,
-      result: `worker ${outcome}`
-    })
-    expect(settlement.action).toBe('settled')
+    fixture.settle(taskId, dispatchId, outcome)
   }
 
   async function startSettledWorker(
     outcome: 'succeeded' | 'failed' = 'succeeded'
   ): Promise<{ taskId: string; dispatchId: string }> {
-    const worker = await startWorker()
-    settle(worker.taskId, worker.dispatchId, outcome)
-    return worker
+    return fixture.startSettledWorker(outcome)
   }
 
   it('creates an owned resource for a fresh worker terminal', async () => {
@@ -207,7 +66,7 @@ describe('orchestration worker release', () => {
     const resource = db.getWorkerTerminalResourceByOwner(dispatchId)
     expect(resource).toMatchObject({
       lifecycle_state: 'owned',
-      terminal_handle: workerHandle,
+      terminal_handle: fixture.workerHandle,
       pane_key: workerPaneKey,
       process_incarnation: 'runtime_test:term_worker:1'
     })
@@ -229,7 +88,7 @@ describe('orchestration worker release', () => {
       archive: { source: 'terminal', status: 'captured' }
     })
     expect(runtime.closeTerminal).toHaveBeenCalledTimes(1)
-    expect(runtime.closeTerminal).toHaveBeenCalledWith(workerHandle)
+    expect(runtime.closeTerminal).toHaveBeenCalledWith(fixture.workerHandle)
     const resource = db.getWorkerTerminalResourceByOwner(dispatchId)
     expect(resource?.lifecycle_state).toBe('released')
     // Outcome is untouched by release.
@@ -573,6 +432,21 @@ describe('orchestration worker release', () => {
     expect(runtime.closeTerminal).not.toHaveBeenCalled()
   })
 
+  it('does not release a disconnected worker when the execution host is unverifiable', async () => {
+    setup()
+    const { dispatchId } = await startSettledWorker()
+    inspectProcessLiveness.mockResolvedValue('unverifiable')
+    vi.mocked(runtime.showTerminal).mockImplementation(
+      async (handle) => ({ handle, worktreeId: 'repo::worktree', connected: false }) as never
+    )
+
+    await expect(
+      call('orchestration.workerRelease', { dispatch: dispatchId })
+    ).resolves.toMatchObject({ state: 'release_unknown', processAction: 'none' })
+    expect(db.getWorkerTerminalResourceByOwner(dispatchId)?.lifecycle_state).toBe('release_unknown')
+    expect(runtime.closeTerminal).not.toHaveBeenCalled()
+  })
+
   it('keeps a bounded tail when one terminal line exceeds the archive budget', async () => {
     setup()
     const { dispatchId } = await startSettledWorker()
@@ -680,6 +554,97 @@ describe('orchestration worker release', () => {
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
+  })
+
+  it('materializes a frozen transcript pin before closing the worker terminal', async () => {
+    setup()
+    const directory = await mkdtemp(join(tmpdir(), 'orca-worker-release-pin-'))
+    const transcriptPath = join(directory, 'rollout.jsonl')
+    try {
+      await writeFile(
+        transcriptPath,
+        `${JSON.stringify({
+          timestamp: '2026-08-03T12:00:00.000Z',
+          type: 'event_msg',
+          payload: { id: 'pinned-message', type: 'agent_message', message: 'provider output' }
+        })}\n`
+      )
+      const { dispatchId } = await startSettledWorker()
+      const resource = db.getWorkerTerminalResourceByOwner(dispatchId)!
+      db.storeWorkerTerminalArchive({
+        dispatchId,
+        resourceId: resource.id,
+        kind: 'transcript_pin',
+        content: JSON.stringify({
+          agent: 'codex',
+          providerSessionKey: 'codex:pinned-session',
+          providerSessionId: 'pinned-session',
+          transcriptPath,
+          processIncarnation: resource.process_incarnation,
+          observedAfter: Date.now(),
+          terminalFallback: {
+            lines: ['terminal fallback must not win'],
+            truncated: false,
+            terminalStatus: 'running',
+            warnings: []
+          }
+        })
+      })
+
+      await expect(
+        call('orchestration.workerRelease', { dispatch: dispatchId })
+      ).resolves.toMatchObject({ archive: { source: 'transcript', status: 'captured' } })
+      await rm(transcriptPath)
+      await expect(
+        call('orchestration.workerRead', { dispatch: dispatchId })
+      ).resolves.toMatchObject({
+        archived: true,
+        source: 'transcript',
+        transcript: {
+          messages: [{ id: 'pinned-message', blocks: [{ type: 'text', text: 'provider output' }] }]
+        }
+      })
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('uses the frozen terminal fallback when a pinned transcript is unavailable', async () => {
+    setup()
+    const { dispatchId } = await startSettledWorker()
+    const resource = db.getWorkerTerminalResourceByOwner(dispatchId)!
+    db.storeWorkerTerminalArchive({
+      dispatchId,
+      resourceId: resource.id,
+      kind: 'transcript_pin',
+      content: JSON.stringify({
+        agent: 'codex',
+        providerSessionKey: 'codex:missing-session',
+        providerSessionId: 'missing-session',
+        transcriptPath: join(tmpdir(), 'orca-missing-worker-transcript.jsonl'),
+        processIncarnation: resource.process_incarnation,
+        observedAfter: Date.now(),
+        terminalFallback: {
+          lines: ['frozen terminal output'],
+          truncated: false,
+          terminalStatus: 'exited',
+          warnings: []
+        }
+      })
+    })
+    vi.mocked(runtime.readTerminal).mockClear()
+
+    await expect(
+      call('orchestration.workerRelease', { dispatch: dispatchId })
+    ).resolves.toMatchObject({ archive: { source: 'terminal', status: 'captured' } })
+    await expect(call('orchestration.workerRead', { dispatch: dispatchId })).resolves.toMatchObject(
+      {
+        archived: true,
+        source: 'terminal',
+        terminal: { tail: ['frozen terminal output'], status: 'exited' }
+      }
+    )
+    expect(runtime.readTerminal).not.toHaveBeenCalled()
   })
 
   it('rejects a legacy live-terminal cursor after output moves to the archive', async () => {

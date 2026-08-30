@@ -1,4 +1,6 @@
 import type { AgentType, NativeChatMessage } from '../../../shared/native-chat-types'
+import type { ExactWorkerProviderSession } from '../../../shared/orchestration-worker-output'
+import type { RuntimeTerminalRead } from '../../../shared/runtime-types'
 import type { OrcaRuntimeService } from '../orca-runtime'
 import { OrchestrationError } from './orchestration-error'
 import {
@@ -18,6 +20,7 @@ export type WorkerTranscriptPinArchive = {
   processIncarnation: string
   observedAfter: number
   endOffset?: number
+  terminalFallback?: WorkerTerminalTailArchive
 }
 
 export type WorkerTranscriptSnapshotArchive = {
@@ -37,13 +40,27 @@ export type WorkerTerminalTailArchive = {
   warnings: string[]
 }
 
-export type WorkerOutputArchiveCapture =
-  | {
-      kind: 'transcript_pin'
-      content: WorkerTranscriptSnapshotArchive
-      status: 'captured'
-    }
-  | { kind: 'terminal_tail'; content: WorkerTerminalTailArchive; status: 'captured' | 'empty' }
+type WorkerTranscriptPinCapture = {
+  kind: 'transcript_pin'
+  content: WorkerTranscriptPinArchive
+  status: 'captured'
+}
+
+type WorkerTranscriptSnapshotCapture = {
+  kind: 'transcript_pin'
+  content: WorkerTranscriptSnapshotArchive
+  status: 'captured'
+}
+
+type WorkerTerminalTailCapture = {
+  kind: 'terminal_tail'
+  content: WorkerTerminalTailArchive
+  status: 'captured' | 'empty'
+}
+
+export type WorkerOutputArchiveCapture = WorkerTranscriptSnapshotCapture | WorkerTerminalTailCapture
+
+export type WorkerOutputArchiveInput = WorkerTranscriptPinCapture | WorkerTerminalTailCapture
 
 // Freezes an inspectable output source before the live PTY is closed. Prefers the exact
 // hook-reported provider transcript; falls back to bounded redacted terminal output. Throws
@@ -54,6 +71,9 @@ export async function captureWorkerOutputArchive(args: {
   terminalHandle: string
   attachedAtMs: number
 }): Promise<WorkerOutputArchiveCapture> {
+  const terminalRead = args.runtime
+    .readTerminal(args.terminalHandle, {})
+    .catch((error) => (error instanceof Error ? error : new Error(String(error))))
   const session = args.runtime.getExactWorkerProviderSession(args.terminalHandle, args.attachedAtMs)
   if (session) {
     const snapshot = await readWorkerTranscript({
@@ -77,15 +97,40 @@ export async function captureWorkerOutputArchive(args: {
       }
     }
   }
-  let terminal
-  try {
-    terminal = await args.runtime.readTerminal(args.terminalHandle, {})
-  } catch (error) {
+  const terminal = await terminalRead
+  if (terminal instanceof Error) {
     throw new OrchestrationError(
       'archive_failed',
-      `Output could not be preserved for Dispatch ${args.dispatchId}; the terminal was retained. ${error instanceof Error ? error.message : String(error)}`
+      `Output could not be preserved for Dispatch ${args.dispatchId}; the terminal was retained. ${terminal.message}`
     )
   }
+  return captureWorkerTerminalTail(terminal)
+}
+
+export function freezeWorkerOutputArchiveInput(args: {
+  session: ExactWorkerProviderSession | null
+  terminal: RuntimeTerminalRead
+}): WorkerOutputArchiveInput {
+  const terminalFallback = captureWorkerTerminalTail(args.terminal)
+  if (!args.session) {
+    return terminalFallback
+  }
+  return {
+    kind: 'transcript_pin',
+    status: 'captured',
+    content: {
+      agent: args.session.agent,
+      providerSessionKey: args.session.providerSession.key,
+      providerSessionId: args.session.providerSession.id,
+      transcriptPath: args.session.providerSession.transcriptPath ?? null,
+      processIncarnation: args.session.processIncarnation,
+      observedAfter: args.session.observedAt,
+      terminalFallback: terminalFallback.content
+    }
+  }
+}
+
+function captureWorkerTerminalTail(terminal: RuntimeTerminalRead): WorkerTerminalTailCapture {
   const redacted = redactWorkerTerminalLines([
     ...terminal.tail,
     ...(terminal.draft ? [terminal.draft] : [])

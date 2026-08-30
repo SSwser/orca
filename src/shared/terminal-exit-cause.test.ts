@@ -26,10 +26,10 @@ describe('resolveProcessExitCause', () => {
     ).toEqual({ kind: 'unknown', reason: 'host_status_unavailable' })
   })
 
-  it('treats the stop paths’ negative sentinel as absence of evidence', () => {
+  it('treats a provider-observed negative status as an exit with unknown cause', () => {
     expect(resolveProcessExitCause({ exitCode: -1 })).toEqual({
       kind: 'unknown',
-      reason: 'stop_unverified'
+      reason: 'cause_unreported'
     })
   })
 

@@ -267,6 +267,7 @@ import {
   type OrchestrationMessageWaiter
 } from './orchestration/mailbox-pointer-delivery'
 import { selectExactWorkerProviderSession } from './orchestration/worker-provider-session'
+import { freezeWorkerOutputArchiveInput } from './orchestration/worker-output-archive'
 import type {
   Automation,
   AutomationCreateInput,
@@ -16033,7 +16034,8 @@ export class OrcaRuntimeService {
     // completed close. The process may still be running against a revoked
     // dispatch — an incident a coordinator must hear about, not a routine
     // teardown to be filed away and left unescalated.
-    const observedCause = options?.cause ?? resolveUnreportedExitCause(exitCode)
+    const observedCause =
+      options?.cause ?? resolveUnreportedExitCause(exitCode, options?.providerExitObserved === true)
     const stopNeverConfirmed =
       observedCause.kind === 'unknown' && observedCause.reason === 'stop_unverified'
     const attributedCause: TerminalExitCause =
@@ -16050,6 +16052,21 @@ export class OrcaRuntimeService {
     // Why: collect before retirePtyAgentLaunchAuthority, which deletes the restored-authority
     // receipt a receipt-only pane's key comes from.
     const exitPaneKeys = this.collectPaneKeysForPty(ptyId)
+    // Why: a synthetic -1 from a failed or unverified stop is not a death certificate (the PTY can
+    // have survived it), while a real exit can also report -1.
+    const processDeathCertified =
+      exitCode >= 0 || options?.hostExitConfirmed === true || options?.providerExitObserved === true
+    const exitProcessIncarnation = pty?.incarnationId
+      ? `${ptyId}:${pty.incarnationId}`
+      : ((this.handleByPtyId.get(ptyId)
+          ? this.getTerminalProcessIncarnation(this.handleByPtyId.get(ptyId)!)
+          : null) ?? `${this.runtimeId}:${ptyId}:${this.getPtyLifecycleGeneration(ptyId)}`)
+    if (processDeathCertified && pty) {
+      this.freezeActiveWorkerExitArchive(ptyId, pty, exitProcessIncarnation)
+    }
+    if (processDeathCertified && exitPaneKeys.size > 0) {
+      this.reconcileAgentStatusForEndedProcessFn?.(exitPaneKeys)
+    }
     if (preservesAbnormalSshSurface) {
       if (this.getPtyLivenessVerdict(ptyId)?.status !== 'unverifiable') {
         this.markPtyLivenessUnverifiable(ptyId, SSH_EXIT_UNCONFIRMED_REASON)
@@ -16058,24 +16075,10 @@ export class OrcaRuntimeService {
     } else {
       this.retirePtyAgentLaunchAuthority(ptyId)
     }
-    // Why: a synthetic -1 from a failed or unverified stop is not a death certificate (the PTY can
-    // have survived it), while a real exit can also report -1 — so neither the numeric code nor the
-    // SSH surface predicate is sufficient on its own. Decided separately from
-    // preservesAbnormalSshSurface, which a host-confirmed negative SSH exit would otherwise skip.
-    const processDeathCertified =
-      exitCode >= 0 || options?.hostExitConfirmed === true || options?.providerExitObserved === true
-    if (processDeathCertified && exitPaneKeys.size > 0) {
-      this.reconcileAgentStatusForEndedProcessFn?.(exitPaneKeys)
-    }
     const incarnationId =
       exitIncarnationId ??
       pty?.incarnationId ??
       `runtime:${this.runtimeId}:${this.getPtyLifecycleGeneration(ptyId)}`
-    const exitProcessIncarnation = pty?.incarnationId
-      ? `${ptyId}:${pty.incarnationId}`
-      : ((this.handleByPtyId.get(ptyId)
-          ? this.getTerminalProcessIncarnation(this.handleByPtyId.get(ptyId)!)
-          : null) ?? `${this.runtimeId}:${ptyId}:${this.getPtyLifecycleGeneration(ptyId)}`)
     this.advancePtyLifecycleGeneration(ptyId)
     this.notifyPtyExitListeners(ptyId)
     const exactSurfaceByKey = new Map<
@@ -16237,7 +16240,7 @@ export class OrcaRuntimeService {
     if (ptyHandle && !exitedSurfaces.some((surface) => surface.handle === ptyHandle)) {
       exitedSurfaces.push({ handle: ptyHandle, paneKey: pty?.paneKey ?? null })
     }
-    if (!preservesAbnormalSshSurface) {
+    if (!preservesAbnormalSshSurface && processDeathCertified) {
       for (const surface of exitedSurfaces) {
         this.failActiveDispatchOnExit(
           surface.handle,
@@ -17963,6 +17966,64 @@ export class OrcaRuntimeService {
         runId: dispatch.run_id,
         error
       })
+    }
+  }
+
+  private freezeActiveWorkerExitArchive(
+    ptyId: string,
+    pty: RuntimePtyWorktreeRecord,
+    processIncarnation: string
+  ): void {
+    const db = this._orchestrationDb
+    if (
+      !db ||
+      typeof db.getWorkerDispatch !== 'function' ||
+      typeof db.getWorkerTerminalResourceByOwner !== 'function' ||
+      typeof db.getWorkerTerminalArchive !== 'function' ||
+      typeof db.storeWorkerTerminalArchive !== 'function'
+    ) {
+      return
+    }
+    const handles = new Set<string>()
+    const ptyHandle = this.handleByPtyId.get(ptyId)
+    if (ptyHandle) {
+      handles.add(ptyHandle)
+    }
+    for (const leaf of this.getLeavesForPty(ptyId)) {
+      const handle = this.handleByLeafKey.get(this.getLeafKey(leaf.tabId, leaf.leafId))
+      if (handle) {
+        handles.add(handle)
+      }
+    }
+    for (const handle of handles) {
+      const dispatch = db.getActiveDispatchForTerminal(handle, pty.paneKey ?? undefined)
+      const worker = dispatch ? db.getWorkerDispatch(dispatch.id) : null
+      const resource = dispatch ? db.getWorkerTerminalResourceByOwner(dispatch.id) : null
+      if (
+        !dispatch ||
+        !worker ||
+        !resource ||
+        resource.terminal_handle !== handle ||
+        resource.process_incarnation !== processIncarnation ||
+        db.getWorkerTerminalArchive(dispatch.id)
+      ) {
+        continue
+      }
+      const attachedAt = Date.parse(`${worker.created_at.replace(' ', 'T')}Z`)
+      const frozen = freezeWorkerOutputArchiveInput({
+        session: this.getExactWorkerProviderSession(
+          handle,
+          Number.isFinite(attachedAt) ? attachedAt : 0
+        ),
+        terminal: this.readPtyTerminal(handle, pty)
+      })
+      db.storeWorkerTerminalArchive({
+        dispatchId: dispatch.id,
+        resourceId: resource.id,
+        kind: frozen.kind,
+        content: JSON.stringify(frozen.content)
+      })
+      return
     }
   }
 

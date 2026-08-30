@@ -51,10 +51,10 @@ export function resolveProcessExitCause(observation: {
   if (typeof observation.signal === 'number' && observation.signal > 0) {
     return { kind: 'signaled', signal: observation.signal }
   }
-  // Why: the stop paths pass a negative code to mean "we asked it to stop and
-  // never saw it die". That is an absence of evidence, not an exit status.
+  // This resolver is called by the provider's physical exit callback. A negative
+  // status says nothing about the initiator, but the exit itself was observed.
   if (observation.exitCode < 0) {
-    return { kind: 'unknown', reason: 'stop_unverified' }
+    return { kind: 'unknown', reason: 'cause_unreported' }
   }
   return { kind: 'exited', exitCode: observation.exitCode }
 }
@@ -67,9 +67,14 @@ export function resolveProcessExitCause(observation: {
  * with every signalled death, and a wrapper spawn returns it for any outcome at
  * all. A nonzero status is never fabricated that way, so it is still reported.
  */
-export function resolveUnreportedExitCause(exitCode: number): TerminalExitCause {
+export function resolveUnreportedExitCause(
+  exitCode: number,
+  providerExitObserved = false
+): TerminalExitCause {
   if (exitCode < 0) {
-    return { kind: 'unknown', reason: 'stop_unverified' }
+    return providerExitObserved
+      ? { kind: 'unknown', reason: 'cause_unreported' }
+      : { kind: 'unknown', reason: 'stop_unverified' }
   }
   return exitCode === 0
     ? { kind: 'unknown', reason: 'cause_unreported' }

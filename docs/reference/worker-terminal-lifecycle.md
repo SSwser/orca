@@ -18,6 +18,8 @@ The execution host owns liveness evidence and execution actions. For Terminal, a
 
 Resource liveness has exactly three verdicts: `live`, `unverifiable`, and `exited`. Only positive evidence from the execution host establishes `exited`. Missing inventory, lost transport, permission failure, daemon restart, and identity ambiguity are `unverifiable`.
 
+A provider-observed PTY exit is positive evidence that the exact PTY root exited, but its code does not invent an initiator. A negative or unknown exit code with no correlated stop operation is an unexpected exit with unknown reason. `stop_unverified` is reserved for an explicit stop operation whose exact process-tree exit could not be confirmed; it must carry that operation identity. A disconnected renderer or transport is never an exit receipt.
+
 An empty process list is not positive exit evidence for SSH or a paired runtime. The execution host must return an identity-bearing verdict for the recorded process incarnation under a negotiated capability. A client-side classifier may confirm `live` from an exact match, but it must not convert remote absence into `exited`. For a local supervised worker, an exact probe proving that the recorded old daemon process incarnation is gone can establish `exited`; access denial, transport loss, or ambiguous identity cannot.
 
 Never reconstruct custody from PID, ancestry, command line, terminal ID, or proximity. Never use broad termination to reconcile a worker resource.
@@ -77,6 +79,8 @@ The archived worker output survives every release and reconciliation transition.
 An adapter receipt is an execution-host assertion bound to the exact resource identity, owner generation, stable operation, and host scope. Worker v32 may retain its reference and settlement projection, but it must not copy the adapter's internal lifecycle into a second ledger. Replay reads the same receipt; it never synthesizes a replacement identity or repeats an ambiguous action.
 
 The Worker archive is a business-result projection. It is not provider history, a continuation snapshot, or proof that execution exited. A future Agent Session adapter may reference provider-owned history or a handoff snapshot, but those remain distinct artifacts with distinct owners. Only the canonical resource lifecycle can return capacity or finalize custody.
+
+Unexpected-exit handling freezes archive input before clearing volatile provider status or Terminal tail state. Provider-owned transcript evidence has priority; when it is unavailable, the same execution host supplies the retained Terminal history for the exact incarnation. Only a proven empty source may settle as `empty`. Release consumes this frozen input idempotently and does not create a second archive owner.
 
 ### Terminal receipt meaning for uncertain close outcomes
 

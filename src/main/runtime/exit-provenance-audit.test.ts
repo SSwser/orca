@@ -223,11 +223,25 @@ describe('STA-4603/STA-4536 exit provenance', () => {
     // The process may still be running against a revoked dispatch.
     runtime.onPtyExit(PTY_ID, -1)
     expect(observe(db, ctx.id)).toEqual({
+      status: 'dispatched',
+      last_failure: null,
+      termination_reason: null
+    })
+    expect(escalations(db, ctx.runId)).toHaveLength(0)
+  })
+
+  it('does not invent a stop request for a provider-observed negative exit', () => {
+    const db = createDb()
+    const runtime = createRuntime(db)
+    const ctx = dispatchOnHandle(db, 'provider observed negative exit')
+
+    runtime.onPtyExit(PTY_ID, -1, undefined, { providerExitObserved: true })
+
+    expect(observe(db, ctx.id)).toEqual({
       status: 'failed',
-      last_failure: 'Agent process stop was requested but never confirmed',
+      last_failure: 'Agent process ended; the reporting host did not say why',
       termination_reason: 'unknown'
     })
-    // ...and it must still wake the coordinator, unlike a clean close.
     expect(escalations(db, ctx.runId)).toHaveLength(1)
   })
 

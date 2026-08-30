@@ -47,6 +47,24 @@ export async function inspectWorkerTerminal(
   // Exact-gated by the early return above: a replaced process's prompt would attribute another
   // lane's blocker to this worker.
   const agentWait = terminal.agentWait
+  if (terminal.connected === false) {
+    const resource = db.getWorkerTerminalResourceByOwner(dispatchId)
+    const liveness = resource?.process_incarnation
+      ? await runtime.inspectTerminalProcessIncarnationLiveness(
+          resource.process_incarnation,
+          resource.host_scope
+        )
+      : 'unverifiable'
+    return {
+      terminal,
+      exact,
+      status: liveness,
+      ...(liveness === 'unverifiable'
+        ? { reason: 'The execution host could not verify the recorded process incarnation.' }
+        : {}),
+      agentWait
+    }
+  }
   const verdict = runtime.getTerminalLivenessVerdict?.(terminalHandle) ?? null
   if (verdict?.status === 'unverifiable') {
     return { terminal, exact, status: 'unverifiable', reason: verdict.reason, agentWait }
@@ -54,12 +72,7 @@ export async function inspectWorkerTerminal(
   if (verdict?.status === 'live') {
     return { terminal, exact, status: 'live', agentWait }
   }
-  return {
-    terminal,
-    exact,
-    status: terminal.connected === false ? 'exited' : 'live',
-    agentWait
-  }
+  return { terminal, exact, status: 'live', agentWait }
 }
 
 export function exposeContextOnlyWorker(dispatch: DispatchContextRow) {

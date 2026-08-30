@@ -10,7 +10,6 @@ import type {
 } from '../../orchestration/worker-terminal-ownership'
 import type {
   WorkerTerminalTailArchive,
-  WorkerTranscriptPinArchive,
   WorkerTranscriptSnapshotArchive
 } from '../../orchestration/worker-output-archive'
 import { clampWorkerTranscriptLimit } from '../../orchestration/worker-transcript-payload'
@@ -19,13 +18,11 @@ import {
   decodeWorkerOutputCursor,
   encodeWorkerOutputCursor
 } from '../../orchestration/worker-output-cursor'
-import { readWorkerTranscript } from '../../orchestration/worker-transcript-read'
 
 const ARCHIVED_TERMINAL_PAGE_LINES = 2_000
 
-// Serves the frozen output source after the live PTY is gone. Transcript pins read the exact
-// provider transcript directly; terminal archives page the stored redacted tail. Cursors stay
-// Dispatch-scoped and source-pinned exactly like live reads.
+// Serves only materialized output after the live PTY is gone. Cursors stay Dispatch-scoped and
+// source-pinned exactly like live reads.
 export async function readArchivedWorkerOutput(args: {
   db: OrchestrationDb
   dispatchId: string
@@ -49,12 +46,14 @@ export async function readArchivedWorkerOutput(args: {
         `Dispatch ${args.dispatchId} preserved structured transcript output only; terminal output was released.`
       )
     }
-    const content = JSON.parse(archive.content) as
-      | WorkerTranscriptPinArchive
-      | WorkerTranscriptSnapshotArchive
-    return isTranscriptSnapshot(content)
-      ? readFrozenTranscript(args, archive, content)
-      : readLegacyPinnedTranscript(args, content)
+    const content = JSON.parse(archive.content) as WorkerTranscriptSnapshotArchive
+    if (!isTranscriptSnapshot(content)) {
+      throw new OrchestrationError(
+        'archive_unavailable',
+        `Dispatch ${args.dispatchId} has an unmaterialized transcript pin; release settlement is incomplete.`
+      )
+    }
+    return readFrozenTranscript(args, archive, content)
   }
   if (args.source === 'transcript') {
     throw new OrchestrationError(
@@ -107,68 +106,8 @@ function readFrozenTranscript(
   }
 }
 
-async function readLegacyPinnedTranscript(
-  args: Parameters<typeof readArchivedWorkerOutput>[0],
-  pin: WorkerTranscriptPinArchive
-): Promise<OrchestrationWorkerReadResult> {
-  const cursor = decodeWorkerOutputCursor(args.cursor, args.dispatchId)
-  const sourceIdentity = createWorkerOutputSourceIdentity([
-    'released-transcript',
-    pin.processIncarnation,
-    pin.agent,
-    pin.providerSessionKey,
-    pin.providerSessionId,
-    pin.transcriptPath ?? '',
-    String(pin.endOffset)
-  ])
-  if (cursor && cursor.source !== 'transcript') {
-    throw sourceChanged()
-  }
-  if (cursor && cursor.sourceIdentity !== sourceIdentity) {
-    throw sourceChanged()
-  }
-  const transcript = await readWorkerTranscript({
-    agent: pin.agent,
-    sessionId: pin.providerSessionId,
-    transcriptPath: pin.transcriptPath ?? undefined,
-    offset: cursor?.position,
-    endOffset: pin.endOffset,
-    limit: args.limit
-  })
-  if (!transcript.ok) {
-    throw new OrchestrationError(
-      'transcript_required',
-      `The pinned transcript for released Dispatch ${args.dispatchId} is unavailable: ${transcript.reason}.`,
-      { reason: transcript.reason }
-    )
-  }
-  const nextCursor = encodeWorkerOutputCursor(
-    args.dispatchId,
-    'transcript',
-    sourceIdentity,
-    transcript.nextOffset
-  )
-  return {
-    dispatchId: args.dispatchId,
-    source: 'transcript',
-    sourceIdentity,
-    provider: pin.agent,
-    transcript: {
-      messages: transcript.messages,
-      nextCursor,
-      limited: transcript.limited,
-      returnedMessageCount: transcript.messages.length
-    },
-    cursor: nextCursor,
-    status: { worker: args.workerState, terminal: 'exited' },
-    fallbackReason: null,
-    warnings: transcript.warnings,
-    archived: true
-  }
-}
-
 function isTranscriptSnapshot(
-  content: WorkerTranscriptPinArchive | WorkerTranscriptSnapshotArchive
+  content: WorkerTranscriptSnapshotArchive
 ): content is WorkerTranscriptSnapshotArchive {
   return 'version' in content && content.version === 2
 }

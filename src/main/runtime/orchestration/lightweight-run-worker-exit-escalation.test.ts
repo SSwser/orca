@@ -45,12 +45,14 @@ function makeStore() {
   }
 }
 
-function makeRuntimeWithTwoPanes(): {
+function makeRuntimeWithTwoPanes(
+  deps?: NonNullable<ConstructorParameters<typeof OrcaRuntimeService>[2]>
+): {
   runtime: OrcaRuntimeService
   workerHandle: string
   coordinatorHandle: string
 } {
-  const runtime = new OrcaRuntimeService(makeStore() as never)
+  const runtime = new OrcaRuntimeService(makeStore() as never, undefined, deps)
   // Keep graph setup from lazily opening a Windows-locked on-disk test database.
   runtime.setOrchestrationDb(new OrchestrationDb(':memory:'))
   runtime.setPtyController({
@@ -321,27 +323,161 @@ describe('STA-4604 worker PTY exit escalation reaches the coordinator', () => {
         handle: workerHandle,
         paneKey: WORKER_PANE_KEY,
         processIncarnation: runtime.getTerminalProcessIncarnation(workerHandle)!,
+        hostScope: JSON.stringify({ kind: 'local', hostId: 'local' }),
         worktreeId: WORKTREE_ID,
         effects: [],
-        setupState: 'skipped'
+        setupState: 'skipped',
+        terminalOwnership: 'created'
       })
       db.markWorkerDispatchReady(started.dispatch.id)
       runtime.setOrchestrationDb(db as never)
 
-      runtime.onPtyExit(WORKER_PTY_ID, 137)
+      runtime.onPtyData(WORKER_PTY_ID, 'durable output before unexpected exit\r\n', Date.now())
+      runtime.onPtyExit(WORKER_PTY_ID, 137, undefined, { providerExitObserved: true })
       await settle()
+
+      const archive = db.getWorkerTerminalArchive(started.dispatch.id)
 
       expect({
         dispatch: db.getDispatchContextById(started.dispatch.id)?.status,
         workerState: db.getWorkerDispatch(started.dispatch.id)?.state,
         workerStage: db.getWorkerDispatch(started.dispatch.id)?.stage,
-        escalations: db.getUnreadRunMailbox(run.id, 100, ['escalation']).length
+        escalations: db.getUnreadRunMailbox(run.id, 100, ['escalation']).length,
+        archiveKind: archive?.kind,
+        archiveLines: archive ? JSON.parse(archive.content).lines : null
       }).toEqual({
         dispatch: 'failed',
         workerState: 'failed',
         workerStage: 'process_exited',
-        escalations: 1
+        escalations: 1,
+        archiveKind: 'terminal_tail',
+        archiveLines: ['durable output before unexpected exit']
       })
+    } finally {
+      db.close()
+    }
+  })
+
+  it('does not settle or release a supervised worker when its requested stop is unconfirmed', async () => {
+    const { runtime, workerHandle, coordinatorHandle } = makeRuntimeWithTwoPanes()
+    const db = new OrchestrationDb(':memory:')
+    try {
+      const run = db.createRun({
+        objective: 'unconfirmed supervised worker stop',
+        coordinatorHandle,
+        coordinatorPaneKey: COORDINATOR_PANE_KEY
+      })
+      const task = db.createTask({ spec: 'preserve uncertain worker', runId: run.id })
+      const started = db.createStartingWorkerDispatch({
+        creator: { kind: 'system' },
+        maxDepth: Number.MAX_SAFE_INTEGER,
+        taskId: task.id,
+        startOptions: {}
+      })
+      db.prepareStartingWorkerAuthority({
+        dispatchId: started.dispatch.id,
+        handle: workerHandle,
+        paneKey: WORKER_PANE_KEY,
+        processIncarnation: runtime.getTerminalProcessIncarnation(workerHandle)!,
+        hostScope: JSON.stringify({ kind: 'local', hostId: 'local' }),
+        worktreeId: WORKTREE_ID,
+        effects: [],
+        setupState: 'skipped',
+        terminalOwnership: 'created'
+      })
+      db.markWorkerDispatchReady(started.dispatch.id)
+      runtime.setOrchestrationDb(db as never)
+
+      runtime.markPtyStopRequested(WORKER_PTY_ID)
+      runtime.onPtyExit(WORKER_PTY_ID, -1)
+      await settle()
+
+      expect({
+        task: db.getTask(task.id)?.status,
+        dispatch: db.getDispatchContextById(started.dispatch.id)?.status,
+        workerState: db.getWorkerDispatch(started.dispatch.id)?.state,
+        workerStage: db.getWorkerDispatch(started.dispatch.id)?.stage,
+        resource: db.getWorkerTerminalResourceByOwner(started.dispatch.id)?.lifecycle_state,
+        archive: db.getWorkerTerminalArchive(started.dispatch.id),
+        escalations: db.getUnreadRunMailbox(run.id, 100, ['escalation']).length
+      }).toEqual({
+        task: 'dispatched',
+        dispatch: 'dispatched',
+        workerState: 'ready',
+        workerStage: 'input_accepted',
+        resource: 'owned',
+        archive: undefined,
+        escalations: 0
+      })
+    } finally {
+      db.close()
+    }
+  })
+
+  it('freezes the provider transcript pin before exit reconciliation clears its status', async () => {
+    let providerVisible = true
+    const observedAt = Date.now() + 60_000
+    const { runtime, workerHandle, coordinatorHandle } = makeRuntimeWithTwoPanes({
+      getAgentStatusSnapshot: () =>
+        providerVisible
+          ? ([
+              {
+                paneKey: WORKER_PANE_KEY,
+                connectionId: null,
+                agentType: 'codex',
+                state: 'working',
+                stateStartedAt: observedAt,
+                receivedAt: observedAt,
+                providerSession: {
+                  key: 'codex:exit-session',
+                  id: 'exit-session',
+                  transcriptPath: 'C:\\transcripts\\exit-session.jsonl'
+                }
+              }
+            ] as never)
+          : [],
+      reconcileAgentStatusForEndedProcess: () => {
+        providerVisible = false
+      }
+    })
+    const db = new OrchestrationDb(':memory:')
+    try {
+      const run = db.createRun({
+        objective: 'freeze provider transcript before status cleanup',
+        coordinatorHandle,
+        coordinatorPaneKey: COORDINATOR_PANE_KEY
+      })
+      const task = db.createTask({ spec: 'preserve provider transcript pin', runId: run.id })
+      const started = db.createStartingWorkerDispatch({
+        creator: { kind: 'system' },
+        maxDepth: Number.MAX_SAFE_INTEGER,
+        taskId: task.id,
+        startOptions: {}
+      })
+      db.prepareStartingWorkerAuthority({
+        dispatchId: started.dispatch.id,
+        handle: workerHandle,
+        paneKey: WORKER_PANE_KEY,
+        processIncarnation: runtime.getTerminalProcessIncarnation(workerHandle)!,
+        hostScope: JSON.stringify({ kind: 'local', hostId: 'local' }),
+        worktreeId: WORKTREE_ID,
+        effects: [],
+        setupState: 'skipped',
+        terminalOwnership: 'created'
+      })
+      db.markWorkerDispatchReady(started.dispatch.id)
+      runtime.setOrchestrationDb(db as never)
+
+      runtime.onPtyExit(WORKER_PTY_ID, -1, undefined, { providerExitObserved: true })
+      await settle()
+
+      const archive = db.getWorkerTerminalArchive(started.dispatch.id)
+      expect(archive?.kind).toBe('transcript_pin')
+      expect(JSON.parse(archive?.content ?? '{}')).toMatchObject({
+        providerSessionId: 'exit-session',
+        processIncarnation: runtime.getTerminalProcessIncarnation(workerHandle)
+      })
+      expect(providerVisible).toBe(false)
     } finally {
       db.close()
     }
