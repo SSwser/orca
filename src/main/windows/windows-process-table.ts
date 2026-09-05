@@ -86,7 +86,7 @@ type WindowsProcessTreeAddon = {
  * Mirrors the package's enum; the addon takes the raw bit field. `Memory` (1)
  * is listed for completeness and is deliberately never set — see `flags` below.
  */
-const PROCESS_DATA_FLAG = { None: 0, Memory: 1, CommandLine: 2 } as const
+const PROCESS_DATA_FLAG = { None: 0, Memory: 1, CommandLine: 2, CreationTime: 4 } as const
 
 /** Staged beside the relay bundle by build-relay; see RELAY_ARTIFACTS. */
 const RELAY_ADDON_FILENAME = './windows-process-tree.node'
@@ -244,7 +244,9 @@ function readNativeRows(): Promise<WindowsProcessRow[]> {
             ppid: row.ppid,
             name: row.name,
             command: row.commandLine ?? '',
-            ...(typeof row.creationTimeMs === 'number'
+            ...(typeof row.creationTimeMs === 'number' &&
+            Number.isFinite(row.creationTimeMs) &&
+            row.creationTimeMs > 0
               ? { creationTimeMs: row.creationTimeMs }
               : {})
           }))

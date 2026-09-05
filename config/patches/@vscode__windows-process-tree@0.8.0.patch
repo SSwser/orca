@@ -1,5 +1,5 @@
 diff --git a/binding.gyp b/binding.gyp
-index 855bd4b86f0a3c18c7594212c0e42b6e35bc4001..33774e7ae296f0de39dd94156673c9e773638bf4 100644
+index 11a5e71..196e431 100644
 --- a/binding.gyp
 +++ b/binding.gyp
 @@ -3,7 +3,6 @@
@@ -10,7 +10,8 @@ index 855bd4b86f0a3c18c7594212c0e42b6e35bc4001..33774e7ae296f0de39dd94156673c9e7
        ],
        "conditions": [
          ['OS=="win"', {
-@@ -15,12 +14,11 @@
+@@ -14,13 +13,12 @@
+             "src/process_worker.cc",
              "src/process_commandline.cc"
            ],
 -          "include_dirs": [],
@@ -26,16 +27,159 @@ index 855bd4b86f0a3c18c7594212c0e42b6e35bc4001..33774e7ae296f0de39dd94156673c9e7
                "AdditionalOptions": [
                  "/guard:cf",
                  "/sdl",
+diff --git a/lib/index.js b/lib/index.js
+index e586cd6..04ef74a 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -12,6 +12,7 @@ var ProcessDataFlag;
+     ProcessDataFlag[ProcessDataFlag["None"] = 0] = "None";
+     ProcessDataFlag[ProcessDataFlag["Memory"] = 1] = "Memory";
+     ProcessDataFlag[ProcessDataFlag["CommandLine"] = 2] = "CommandLine";
++    ProcessDataFlag[ProcessDataFlag["CreationTime"] = 4] = "CreationTime";
+ })(ProcessDataFlag = exports.ProcessDataFlag || (exports.ProcessDataFlag = {}));
+ // requestInProgress is used for any function that uses CreateToolhelp32Snapshot, as multiple calls
+ // to this cannot be done at the same time.
+diff --git a/lib/index.ts b/lib/index.ts
+index 7b53aad..fe6b9f1 100644
+--- a/lib/index.ts
++++ b/lib/index.ts
+@@ -11,7 +11,8 @@ import { IProcessInfo, IProcessTreeNode, IProcessCpuInfo } from '@vscode/windows
+ export enum ProcessDataFlag {
+   None = 0,
+   Memory = 1,
+-  CommandLine = 2
++  CommandLine = 2,
++  CreationTime = 4
+ }
+
+ type RequestCallback = (processList: IProcessInfo[]) => void;
 diff --git a/src/process.cc b/src/process.cc
-index 3eea92077c4d1d433119361d5c432881859131e9..1998f4addd4d7e9aba946ea6f7f7a4a5d13291bc 100644
+index ad63727..4fed0eb 100644
 --- a/src/process.cc
 +++ b/src/process.cc
-@@ -37,7 +37,7 @@ uint32_t GetRawProcessList(std::vector<ProcessInfo>& process_info,
+@@ -24,6 +24,7 @@ uint32_t GetRawProcessList(std::vector<ProcessInfo>& process_info,
+         ProcessInfo pinfo;
+         pinfo.pid = process_entry.th32ProcessID;
+         pinfo.ppid = process_entry.th32ParentProcessID;
++        pinfo.creationTimeMs = 0;
+
+         if (MEMORY & process_data_flags) {
+           GetProcessMemoryUsage(pinfo);
+@@ -33,11 +34,15 @@ uint32_t GetRawProcessList(std::vector<ProcessInfo>& process_info,
+           GetProcessCommandLine(pinfo);
+         }
+
++        if (CREATIONTIME & process_data_flags) {
++          GetProcessCreationTime(pinfo);
++        }
++
+         strcpy(pinfo.name, process_entry.szExeFile);
          process_info.push_back(std::move(pinfo));
          process_count++;
        }
 -    } while (process_count < 1024 && Process32Next(snapshot_handle, &process_entry));
 +    } while (Process32Next(snapshot_handle, &process_entry));
    }
- 
+
    CloseHandle(snapshot_handle);
+@@ -62,6 +67,32 @@ void GetProcessMemoryUsage(ProcessInfo& process_info) {
+   CloseHandle(hProcess);
+ }
+
++bool GetProcessCreationTime(ProcessInfo& process_info) {
++  HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false,
++                                process_info.pid);
++  if (hProcess == NULL) {
++    return false;
++  }
++
++  FILETIME creationTime, exitTime, kernelTime, userTime;
++  bool success = false;
++  if (GetProcessTimes(hProcess, &creationTime, &exitTime, &kernelTime,
++                      &userTime)) {
++    ULARGE_INTEGER creationTimeValue;
++    creationTimeValue.LowPart = creationTime.dwLowDateTime;
++    creationTimeValue.HighPart = creationTime.dwHighDateTime;
++    const ULONGLONG windowsToUnixEpochTicks = 116444736000000000ULL;
++    if (creationTimeValue.QuadPart > windowsToUnixEpochTicks) {
++      process_info.creationTimeMs =
++          (creationTimeValue.QuadPart - windowsToUnixEpochTicks) / 10000ULL;
++      success = process_info.creationTimeMs > 0;
++    }
++  }
++
++  CloseHandle(hProcess);
++  return success;
++}
++
+ // Per documentation, it is not recommended to add or subtract values from the FILETIME
+ // structure, or to cast it to ULARGE_INTEGER as this can cause alignment faults on 64-bit Windows.
+ // Copy the high and low part to a ULARGE_INTEGER and peform arithmetic on that instead.
+diff --git a/src/process.h b/src/process.h
+index 3c9b852..b0bd71a 100644
+--- a/src/process.h
++++ b/src/process.h
+@@ -22,17 +22,20 @@ struct ProcessInfo {
+   DWORD ppid;
+   DWORD memory; // Reported in bytes
+   std::string commandLine;
++  ULONGLONG creationTimeMs;
+ };
+
+ enum ProcessDataFlags {
+   NONE = 0,
+   MEMORY = 1,
+-  COMMANDLINE = 2
++  COMMANDLINE = 2,
++  CREATIONTIME = 4
+ };
+
+ uint32_t GetRawProcessList(std::vector<ProcessInfo>& process_info, DWORD flags);
+
+ void GetProcessMemoryUsage(ProcessInfo& process_info);
++bool GetProcessCreationTime(ProcessInfo& process_info);
+
+ void GetCpuUsage(Cpu& cpu_info, bool first_run);
+
+diff --git a/src/process_worker.cc b/src/process_worker.cc
+index f59559d..852b92a 100644
+--- a/src/process_worker.cc
++++ b/src/process_worker.cc
+@@ -43,6 +43,11 @@ void GetProcessesWorker::OnOK() {
+           Napi::String::New(env, pinfo.commandLine));
+     }
+
++    if ((CREATIONTIME & process_data_flags_) && pinfo.creationTimeMs > 0) {
++      object.Set("creationTimeMs",
++          Napi::Number::New(env, static_cast<double>(pinfo.creationTimeMs)));
++    }
++
+     result.Set(i, object);
+   }
+
+diff --git a/typings/windows-process-tree.d.ts b/typings/windows-process-tree.d.ts
+index 70e242b..c10e32f 100644
+--- a/typings/windows-process-tree.d.ts
++++ b/typings/windows-process-tree.d.ts
+@@ -7,7 +7,8 @@ declare module '@vscode/windows-process-tree' {
+   export enum ProcessDataFlag {
+     None = 0,
+     Memory = 1,
+-    CommandLine = 2
++    CommandLine = 2,
++    CreationTime = 4
+   }
+
+   export interface IProcessInfo {
+@@ -24,6 +25,11 @@ declare module '@vscode/windows-process-tree' {
+      * The string returned is at most 512 chars, strings exceeding this length are truncated.
+      */
+     commandLine?: string;
++
++    /**
++     * Process creation time in Unix milliseconds.
++     */
++    creationTimeMs?: number;
+   }
+
+   export interface IProcessCpuInfo extends IProcessInfo {
